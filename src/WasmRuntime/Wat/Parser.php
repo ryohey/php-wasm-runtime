@@ -34,6 +34,9 @@ final class Parser
     /** Label stack during bytecode compilation: innermost label first (null = anonymous) */
     private array $compileLabelStack = [];
 
+    /** Local variable name -> index map for the function currently being parsed */
+    private array $localNames = [];
+
     public function parseModule(string $src): Module
     {
         $this->tokens = (new Lexer($src))->tokenize();
@@ -206,24 +209,34 @@ final class Parser
             }
         }
 
-        $typeIdx = $this->resolveTypeUse();
+        // Reset local name map for this function; param names are captured inside resolveTypeUse()
+        $this->localNames = [];
+        $typeIdx = $this->resolveTypeUse(captureParamNames: true);
         $this->mod->funcTypeIndices[] = $typeIdx;
 
-        // local declarations
-        $locals = [];
+        // local declarations – capture names so $name-based local.get/set work
+        $locals      = [];
+        $localOffset = count($this->mod->types[$typeIdx]->params);
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'local') {
             $this->consume(); // (
             $this->consume(); // local
+            $localName = null;
             if ($this->peek()->type === Token::ID) {
-                $this->consume(); // local id (ignore)
+                $localName = $this->consume()->value;
             }
+            $prevCount = count($locals);
             while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
                 $locals[] = ValType::fromString($this->consume()->value);
             }
+            $added = count($locals) - $prevCount;
+            if ($localName !== null) {
+                $this->localNames[$localName] = $localOffset;
+            }
+            $localOffset += $added;
             $this->expect(Token::RPAREN);
         }
 
-        $params   = $this->mod->types[$typeIdx]->params;
+        $params    = $this->mod->types[$typeIdx]->params;
         $allLocals = array_merge(array_fill(0, count($params), 0), $locals);
 
         // Parse instructions (flat list, may be folded)
@@ -485,8 +498,12 @@ final class Parser
         return new FuncType($params, $results);
     }
 
-    /** Parse typeuse: optional (type idx) then optional (param)* (result)* */
-    private function resolveTypeUse(): int
+    /**
+     * Parse typeuse: optional (type idx) then optional (param)* (result)*
+     *
+     * @param bool $captureParamNames When true, named params populate $this->localNames.
+     */
+    private function resolveTypeUse(bool $captureParamNames = false): int
     {
         $typeIdx = -1;
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'type') {
@@ -496,21 +513,28 @@ final class Parser
             $this->expect(Token::RPAREN);
         }
         // Inline param/result
-        $saved   = $this->pos;
-        $hasSig  = false;
-        $params  = [];
-        $results = [];
+        $hasSig   = false;
+        $params   = [];
+        $results  = [];
+        $paramIdx = 0; // running index for name capture
         while ($this->peek()->type === Token::LPAREN && in_array($this->peekAhead(1)->value, ['param', 'result'], true)) {
             $hasSig = true;
             $this->consume();
             $kw = $this->consume()->value;
             if ($kw === 'param') {
+                $paramName = null;
                 if ($this->peek()->type === Token::ID) {
-                    $this->consume();
+                    $paramName = $this->consume()->value;
                 }
+                $prevCount = count($params);
                 while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
                     $params[] = ValType::fromString($this->consume()->value);
                 }
+                $added = count($params) - $prevCount;
+                if ($captureParamNames && $paramName !== null) {
+                    $this->localNames[$paramName] = $paramIdx;
+                }
+                $paramIdx += $added;
             } else {
                 while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
                     $results[] = ValType::fromString($this->consume()->value);
@@ -1060,7 +1084,7 @@ final class Parser
         throw new WasmError("Expected global index");
     }
 
-    private function resolveLocalIdx(): int|string
+    private function resolveLocalIdx(): int
     {
         $tok = $this->peek();
         if ($tok->type === Token::INT) {
@@ -1069,7 +1093,11 @@ final class Parser
         }
         if ($tok->type === Token::ID) {
             $this->consume();
-            return (string)$tok->value; // resolved later in executor
+            $name = (string)$tok->value;
+            if (!isset($this->localNames[$name])) {
+                throw new WasmError("Unknown local variable '$name' at line {$tok->line}");
+            }
+            return $this->localNames[$name];
         }
         throw new WasmError("Expected local index at line {$tok->line}");
     }

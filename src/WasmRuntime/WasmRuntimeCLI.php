@@ -4,17 +4,28 @@ declare(strict_types=1);
 
 namespace WasmRuntime;
 
+use WasmRuntime\Wasi\Wasi;
+use WasmRuntime\Wasi\WasiExitException;
 use WasmRuntime\Wat\Parser;
 
 /**
  * CLI wrapper for WasmRuntime.
  *
- * Usage:
- *   php bin/wasm <file.wat|file.wasm> [function] [arg1 arg2 ...]
+ * Usage (standard mode):
+ *   php bin/wasm <file.wat> [function] [arg1 arg2 ...]
  *
- * If no function is specified, tries to call "_start" or "main".
- * Arguments are parsed as i32 by default; prefix with "f32:" or "f64:" for floats,
- * or "i64:" for 64-bit integers.
+ * Usage (WASI mode):
+ *   php bin/wasm --wasi [--dir=<path>] <file.wat> [wasi-args...]
+ *
+ * Standard mode:
+ *   - If no function is specified, tries '_start' or 'main'.
+ *   - Arguments default to i32; prefix with 'i64:', 'f32:', or 'f64:' to override.
+ *
+ * WASI mode (--wasi):
+ *   - Enables the wasi_snapshot_preview1 interface.
+ *   - Always calls the '_start' export.
+ *   - Remaining arguments after the file path become WASI argv.
+ *   - --dir=<path>  Pre-open a directory for WASI path access (repeatable).
  */
 final class WasmRuntimeCLI
 {
@@ -27,6 +38,27 @@ final class WasmRuntimeCLI
             return 0;
         }
 
+        // ---- Parse flags ----
+        $wasiMode    = false;
+        $preopenDirs = [];
+        $rest        = [];
+
+        foreach ($args as $arg) {
+            if ($arg === '--wasi') {
+                $wasiMode = true;
+            } elseif (str_starts_with($arg, '--dir=')) {
+                $preopenDirs[] = substr($arg, 6);
+            } else {
+                $rest[] = $arg;
+            }
+        }
+        $args = $rest;
+
+        if (count($args) === 0) {
+            fwrite(STDERR, "Error: no input file specified.\n");
+            return 1;
+        }
+
         $file = array_shift($args);
 
         if (!file_exists($file)) {
@@ -34,6 +66,21 @@ final class WasmRuntimeCLI
             return 1;
         }
 
+        // ---- WASI mode ----
+        if ($wasiMode) {
+            return $this->runWasi($file, $args, $preopenDirs);
+        }
+
+        // ---- Standard mode ----
+        return $this->runStandard($file, $args);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Standard (non-WASI) execution                                      //
+    // ------------------------------------------------------------------ //
+
+    private function runStandard(string $file, array $args): int
+    {
         try {
             $instance = $this->loadAndInstantiate($file);
         } catch (\Throwable $e) {
@@ -50,7 +97,6 @@ final class WasmRuntimeCLI
             $funcArgs = $this->parseArgs($args);
         } else {
             $funcArgs = $this->parseArgs($args);
-            // Auto-detect entry point
             foreach (['_start', 'main'] as $candidate) {
                 if (isset($instance->module->exports[$candidate])) {
                     $funcName = $candidate;
@@ -79,18 +125,71 @@ final class WasmRuntimeCLI
         return 0;
     }
 
+    // ------------------------------------------------------------------ //
+    //  WASI execution                                                     //
+    // ------------------------------------------------------------------ //
+
+    private function runWasi(string $file, array $wasiArgs, array $preopenDirs): int
+    {
+        // argv[0] is the program name (the WAT file path)
+        $argv = array_merge([$file], $wasiArgs);
+
+        // Build env from $_SERVER (filter to KEY=VALUE pairs)
+        $env = [];
+        foreach ($_SERVER as $key => $value) {
+            if (is_string($key) && is_string($value)) {
+                $env[$key] = $value;
+            }
+        }
+
+        $wasi = new Wasi(args: $argv, env: $env, preopenDirs: $preopenDirs);
+
+        try {
+            $module   = $this->parseModule($file);
+            $instance = Instance::instantiate($module, $wasi->getImports());
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "Error loading module: " . $e->getMessage() . "\n");
+            return 1;
+        }
+
+        $wasi->bindInstance($instance);
+
+        if (!isset($instance->module->exports['_start'])) {
+            fwrite(STDERR, "Error: WASI module must export '_start'.\n");
+            return 1;
+        }
+
+        try {
+            $instance->callExport('_start', []);
+        } catch (WasiExitException $e) {
+            return $e->exitCode;
+        } catch (\Throwable $e) {
+            fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
+            return 1;
+        }
+
+        return 0;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Helpers                                                            //
+    // ------------------------------------------------------------------ //
+
     private function loadAndInstantiate(string $file): Instance
+    {
+        return Instance::instantiate($this->parseModule($file));
+    }
+
+    private function parseModule(string $file): Module
     {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
 
         if ($ext === 'wat') {
             $source = file_get_contents($file);
-            $module = (new Parser())->parseModule($source);
-        } else {
-            throw new WasmError("Unsupported file format: .$ext (only .wat is supported)");
+            return (new Parser())->parseModule($source);
         }
 
-        return Instance::instantiate($module);
+        throw new WasmError("Unsupported file format: .$ext (only .wat is supported)");
     }
 
     /**
@@ -133,18 +232,26 @@ final class WasmRuntimeCLI
     private function printUsage(): void
     {
         echo <<<'USAGE'
-        Usage: wasm <file.wat> [function] [arg1 arg2 ...]
+        Usage:
+          wasm <file.wat> [function] [arg1 arg2 ...]
+          wasm --wasi [--dir=<path>] <file.wat> [wasi-args...]
 
-        Arguments:
+        Standard mode:
           file.wat     Path to a WebAssembly text format file
           function     Exported function to call (default: _start or main)
-          arg1 ...     Arguments passed to the function (default type: i32)
-                       Prefix with i64:, f32:, or f64: to specify type
+          arg1 ...     Arguments (default type i32; prefix i64:, f32:, f64: to override)
+
+        WASI mode (--wasi):
+          Enables wasi_snapshot_preview1 and calls the '_start' export.
+          --dir=<path>  Pre-open a directory for WASI path access (repeatable)
+          wasi-args     Arguments passed as WASI argv to the program
 
         Examples:
           php bin/wasm example.wat
           php bin/wasm example.wat add 10 32
           php bin/wasm example.wat mul f64:3.14 f64:2.0
+          php bin/wasm --wasi hello.wat
+          php bin/wasm --wasi --dir=. app.wat myarg1 myarg2
 
         USAGE;
     }
