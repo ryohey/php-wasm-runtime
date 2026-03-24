@@ -28,22 +28,23 @@ A WebAssembly runtime implemented in pure PHP. No C extensions or external libra
 
 ```
 src/WasmRuntime/
-├── ValType.php       Value type constants (I32, I64, F32, F64, FUNCREF, EXTERNREF)
-├── WasmValue.php     Runtime value (type + value pair)
-├── FuncType.php      Function signature (params[], results[])
-├── Trap.php          Runtime trap exception
-├── WasmError.php     Validation/parse error
-├── Module.php        Module definition (parse output)
-├── Memory.php        Linear memory backed by a PHP string buffer
-├── Table.php         Function reference table
-├── Instance.php      Module instantiation and export dispatch
-├── Executor.php      Iterative Wasm interpreter
+├── ValType.php          Value type constants (I32, I64, F32, F64, FUNCREF, EXTERNREF)
+├── WasmValue.php        Runtime value (type + value pair)
+├── FuncType.php         Function signature (params[], results[])
+├── Trap.php             Runtime trap exception
+├── WasmError.php        Validation/parse error
+├── Module.php           Module definition (parse output)
+├── Memory.php           Linear memory backed by a PHP string buffer
+├── Table.php            Function reference table
+├── Instance.php         Module instantiation and export dispatch
+├── Executor.php         Iterative Wasm interpreter
+├── WasmRuntimeCLI.php   CLI wrapper (bin/wasm entry point)
 ├── Wat/
-│   ├── Lexer.php     WAT tokenizer
-│   ├── Token.php     Token type definitions
-│   └── Parser.php    WAT/WAST parser (two-pass compilation)
+│   ├── Lexer.php        WAT tokenizer
+│   ├── Token.php        Token type definitions
+│   └── Parser.php       WAT/WAST parser (two-pass compilation)
 └── Wast/
-    └── Runner.php    .wast spec test runner
+    └── Runner.php       .wast spec test runner
 ```
 
 ### Execution pipeline
@@ -85,6 +86,31 @@ composer install
 ```
 
 **Requirements:** PHP 8.1+, Composer
+
+## CLI
+
+Run a WAT file directly from the command line:
+
+```bash
+php bin/wasm <file.wat> [function] [arg1 arg2 ...]
+```
+
+```bash
+# Call a specific exported function with arguments
+php bin/wasm example.wat add 10 32
+# => 42
+
+# Run _start or main automatically (if exported)
+php bin/wasm example.wat
+
+# Specify argument types with a prefix (default: i32)
+php bin/wasm example.wat mul f64:3.14 f64:2.0
+
+# Show help
+php bin/wasm --help
+```
+
+Supported argument type prefixes: `i64:`, `f32:`, `f64:` (default is `i32`).
 
 ## Running tests
 
