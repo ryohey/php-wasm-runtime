@@ -4,8 +4,81 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "8529200c5e4112ff56b1fbd22858326c",
-    "packages": [],
+    "content-hash": "b3580045a0cde459ab36dd71d19ced8c",
+    "packages": [
+        {
+            "name": "php-wasm/cli",
+            "version": "dev-claude/php-wasm-runtime-rCmK2",
+            "dist": {
+                "type": "path",
+                "url": "packages/cli",
+                "reference": "c6e0af88ac2343eed6d5bc4b0c9f42e78e925556"
+            },
+            "require": {
+                "php": ">=8.1",
+                "php-wasm/runtime": "*",
+                "php-wasm/wasi": "*"
+            },
+            "bin": [
+                "bin/wasm"
+            ],
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "WasmRuntime\\": "src/"
+                }
+            },
+            "description": "Command-line interface for php-wasm/runtime with optional WASI support",
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "php-wasm/runtime",
+            "version": "dev-claude/php-wasm-runtime-rCmK2",
+            "dist": {
+                "type": "path",
+                "url": "packages/runtime",
+                "reference": "d48d08a41ac2cda2aac989cf2201006798b85796"
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "WasmRuntime\\": "src/"
+                }
+            },
+            "description": "Pure PHP WebAssembly (WAT/WAST) runtime – core interpreter",
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "php-wasm/wasi",
+            "version": "dev-claude/php-wasm-runtime-rCmK2",
+            "dist": {
+                "type": "path",
+                "url": "packages/wasi",
+                "reference": "b0ec21676b17554cf313d8b56b978464191c48cd"
+            },
+            "require": {
+                "php": ">=8.1",
+                "php-wasm/runtime": "*"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "WasmRuntime\\Wasi\\": "src/"
+                }
+            },
+            "description": "WASI (wasi_snapshot_preview1) implementation for php-wasm/runtime",
+            "transport-options": {
+                "relative": true
+            }
+        }
+    ],
     "packages-dev": [
         {
             "name": "myclabs/deep-copy",
@@ -1790,13 +1863,13 @@
         }
     ],
     "aliases": [],
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
     "stability-flags": {},
-    "prefer-stable": false,
+    "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {
         "php": ">=8.1"
     },
     "platform-dev": {},
-    "plugin-api-version": "2.6.0"
+    "plugin-api-version": "2.9.0"
 }

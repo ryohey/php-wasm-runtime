@@ -10,7 +10,9 @@
     </testsuites>
     <source>
         <include>
-            <directory suffix=".php">src</directory>
+            <directory suffix=".php">packages/runtime/src</directory>
+            <directory suffix=".php">packages/wasi/src</directory>
+            <directory suffix=".php">packages/cli/src</directory>
         </include>
     </source>
 </phpunit>

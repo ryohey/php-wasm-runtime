@@ -1,0 +1,15 @@
+#!/usr/bin/env php
+<?php
+
+// Support both: installed as a dependency (vendor/) and monorepo path-repo layout
+foreach ([__DIR__ . '/../../../vendor/autoload.php', __DIR__ . '/../vendor/autoload.php'] as $autoload) {
+    if (file_exists($autoload)) {
+        require $autoload;
+        break;
+    }
+}
+
+use WasmRuntime\WasmRuntimeCLI;
+
+$cli = new WasmRuntimeCLI();
+exit($cli->run($argv));

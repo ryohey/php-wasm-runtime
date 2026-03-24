@@ -1,0 +1,14 @@
+{
+    "name": "php-wasm/wasi",
+    "description": "WASI (wasi_snapshot_preview1) implementation for php-wasm/runtime",
+    "type": "library",
+    "require": {
+        "php": ">=8.1",
+        "php-wasm/runtime": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "WasmRuntime\\Wasi\\": "src/"
+        }
+    }
+}
