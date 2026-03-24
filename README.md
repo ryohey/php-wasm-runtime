@@ -1,71 +1,71 @@
 # php-wasm-runtime
 
-Pure PHP による WebAssembly ランタイムの実装です。C モジュールや外部ライブラリを一切使用せず、PHP だけで WAT (WebAssembly Text Format) のパースから実行まで行います。
+A WebAssembly runtime implemented in pure PHP. No C extensions or external libraries required — just PHP parsing and executing WAT (WebAssembly Text Format) from scratch.
 
-## 特徴
+## Features
 
-- **Pure PHP** — PHP 8.1+ のみで動作。拡張モジュール不要
-- **WAT/WAST パーサー** — S 式形式のテキストフォーマットを直接パース
-- **イテレーティブ実行** — ラベルスタック方式のインタープリター（再帰なし）
-- **公式スペックテスト対応** — `.wast` ファイルを直接 PHPUnit で実行
+- **Pure PHP** — runs on PHP 8.1+ with no extensions
+- **WAT/WAST parser** — full S-expression text format support
+- **Iterative interpreter** — label-stack based execution (no recursion per block level)
+- **Spec test compatible** — runs `.wast` files directly via PHPUnit
 
-## 対応機能
+## Supported
 
-| カテゴリ | 対応内容 |
+| Category | Details |
 |---|---|
-| 値型 | `i32`, `i64`, `f32`, `f64` |
-| 命令 | 算術・比較・ビット演算・変換・メモリ・制御フロー |
-| 制御フロー | `block`, `loop`, `if/else`, `br`, `br_if`, `br_table`, `return` |
-| ラベル | `block $l`, `loop $l`, `br $label` など名前付きラベル |
-| 関数 | 直接呼び出し `call`、間接呼び出し `call_indirect` |
-| メモリ | 線形メモリ、`memory.grow/size`、各サイズのロード/ストア |
-| テーブル | `funcref` テーブル、要素セグメント |
-| グローバル | mutable/immutable グローバル変数 |
-| インポート | ホスト関数・メモリ・テーブル・グローバルのインポート |
-| エクスポート | 関数・メモリ・テーブル・グローバルのエクスポート |
+| Value types | `i32`, `i64`, `f32`, `f64` |
+| Instructions | Arithmetic, comparison, bitwise, conversion, memory, control flow |
+| Control flow | `block`, `loop`, `if/else`, `br`, `br_if`, `br_table`, `return` |
+| Labels | Named labels: `block $l`, `loop $l`, `br $label` |
+| Calls | Direct `call`, indirect `call_indirect` |
+| Memory | Linear memory, `memory.grow/size`, all load/store widths |
+| Tables | `funcref` tables, element segments |
+| Globals | Mutable and immutable globals |
+| Imports | Host functions, memory, tables, and globals |
+| Exports | Functions, memory, tables, and globals |
 
-## アーキテクチャ
+## Architecture
 
 ```
 src/WasmRuntime/
-├── ValType.php       値型定数 (I32, I64, F32, F64, FUNCREF, EXTERNREF)
-├── WasmValue.php     ランタイム値 (型 + 値のペア)
-├── FuncType.php      関数シグネチャ (params[], results[])
-├── Trap.php          ランタイムトラップ例外
-├── WasmError.php     検証・パースエラー
-├── Module.php        モジュール定義 (パース結果)
-├── Memory.php        線形メモリ (PHP 文字列バッファ)
-├── Table.php         関数参照テーブル
-├── Instance.php      モジュールインスタンス化・エクスポート呼び出し
-├── Executor.php      イテレーティブ Wasm インタープリター
+├── ValType.php       Value type constants (I32, I64, F32, F64, FUNCREF, EXTERNREF)
+├── WasmValue.php     Runtime value (type + value pair)
+├── FuncType.php      Function signature (params[], results[])
+├── Trap.php          Runtime trap exception
+├── WasmError.php     Validation/parse error
+├── Module.php        Module definition (parse output)
+├── Memory.php        Linear memory backed by a PHP string buffer
+├── Table.php         Function reference table
+├── Instance.php      Module instantiation and export dispatch
+├── Executor.php      Iterative Wasm interpreter
 ├── Wat/
-│   ├── Lexer.php     WAT トークナイザー
-│   ├── Token.php     トークン型定義
-│   └── Parser.php    WAT/WAST パーサー (2パスコンパイル)
+│   ├── Lexer.php     WAT tokenizer
+│   ├── Token.php     Token type definitions
+│   └── Parser.php    WAT/WAST parser (two-pass compilation)
 └── Wast/
-    └── Runner.php    .wast スペックテストランナー
+    └── Runner.php    .wast spec test runner
 ```
 
-### 実行フロー
+### Execution pipeline
 
 ```
-WAT ソース
+WAT source
     │
-    ▼ Wat\Lexer → トークン列
+    ▼  Wat\Lexer → token stream
     │
-    ▼ Wat\Parser (1パス目) → 命令ツリー (S 式)
+    ▼  Wat\Parser  pass 1 → instruction tree (S-expressions)
     │
-    ▼ Wat\Parser (2パス目) → フラットバイトコード
-    │   block/loop/if の分岐先 IP を事前計算
+    ▼  Wat\Parser  pass 2 → flat bytecode
+    │   pre-computes branch target IPs for block/loop/if
     │
-    ▼ Instance::instantiate() → インポート解決・データ/要素セグメント初期化
+    ▼  Instance::instantiate() → resolve imports, run data/element segments
     │
-    ▼ Executor::run() → ラベルスタック方式インタープリター
+    ▼  Executor::run() → label-stack iterative interpreter
 ```
 
-### 2パスコンパイル
+### Two-pass compilation
 
-WAT パーサーは `block`/`loop`/`if` の分岐先 IP を**事前計算**してフラットバイトコードに変換します。これにより実行時のネスト解析が不要になり、高速なイテレーティブ実行が可能です。
+The WAT parser pre-computes branch target IPs for `block`/`loop`/`if` during compilation, eliminating runtime nesting analysis and enabling a tight iterative dispatch loop.
 
 ```
 block $b (result i32)   →   IP 0: ['block', i32, endIp=3]
@@ -74,9 +74,9 @@ block $b (result i32)   →   IP 0: ['block', i32, endIp=3]
 end                         IP 3: ['end']
 ```
 
-`loop` の `contIp` はループ先頭を、`block`/`if` の `contIp` は `end` の次を指します。`br N` はラベルスタックを `N` 段たどって対応するブロックの `contIp` へジャンプします。
+For `loop`, `contIp` points to the loop body start (re-entry on `br 0`). For `block`/`if`, `contIp` points past the `end`. `br N` walks N levels up the label stack and jumps to the target's `contIp`.
 
-## セットアップ
+## Setup
 
 ```bash
 git clone <repo>
@@ -84,35 +84,35 @@ cd php-wasm-runtime
 composer install
 ```
 
-**必要環境:** PHP 8.1 以上、Composer
+**Requirements:** PHP 8.1+, Composer
 
-## テスト実行
+## Running tests
 
 ```bash
-# 全テスト実行
+# Run all tests
 ./vendor/bin/phpunit
 
-# 特定のスペックファイルのみ
+# Filter to a specific spec file
 ./vendor/bin/phpunit --filter "testWastFile.*i32"
 
-# インラインテストのみ
+# Run a specific inline test
 ./vendor/bin/phpunit --filter testI32BasicArithmetic
 ```
 
-テストスイートには以下が含まれます:
+Spec test files:
 
-| テスト | 内容 |
+| File | Coverage |
 |---|---|
-| `tests/spec/i32.wast` | i32 算術・比較・ビット演算・符号拡張 |
-| `tests/spec/f64.wast` | f64 浮動小数点演算 |
+| `tests/spec/i32.wast` | Arithmetic, comparison, bitwise, sign extension |
+| `tests/spec/f64.wast` | Floating-point arithmetic and math functions |
 | `tests/spec/control.wast` | block/loop/if/br/br_if/br_table/select |
-| `tests/spec/memory.wast` | メモリロード/ストア・grow/size・範囲外アクセス |
-| `tests/spec/call.wast` | 再帰・相互再帰関数呼び出し |
-| `tests/spec/globals.wast` | mutable/immutable グローバル変数 |
+| `tests/spec/memory.wast` | Load/store, grow/size, out-of-bounds traps |
+| `tests/spec/call.wast` | Recursion, mutual recursion |
+| `tests/spec/globals.wast` | Mutable and immutable globals |
 
-## コードサンプル
+## Usage examples
 
-### 基本的な WAT モジュールの実行
+### Basic module execution
 
 ```php
 <?php
@@ -121,9 +121,7 @@ require 'vendor/autoload.php';
 use WasmRuntime\Wat\Parser;
 use WasmRuntime\Instance;
 use WasmRuntime\WasmValue;
-use WasmRuntime\ValType;
 
-// WAT ソースをパースしてインスタンス化
 $module = (new Parser())->parseModule('
     (module
         (func (export "add") (param i32 i32) (result i32)
@@ -135,17 +133,15 @@ $module = (new Parser())->parseModule('
 
 $instance = Instance::instantiate($module);
 
-// エクスポートされた関数を呼び出す
-$args = [
+$results = $instance->callExport('add', [
     WasmValue::i32(10),
     WasmValue::i32(32),
-];
-$results = $instance->callExport('add', $args);
+]);
 
 echo $results[0]->value; // 42
 ```
 
-### 再帰関数 (フィボナッチ数列)
+### Recursive function (Fibonacci)
 
 ```php
 $module = (new Parser())->parseModule('
@@ -175,7 +171,7 @@ $result = $instance->callExport('fib', [WasmValue::i64(10)]);
 echo $result[0]->value; // 55
 ```
 
-### 線形メモリの利用
+### Linear memory
 
 ```php
 $module = (new Parser())->parseModule('
@@ -193,15 +189,12 @@ $module = (new Parser())->parseModule('
 
 $instance = Instance::instantiate($module);
 
-// アドレス 0 に値 12345 を書き込む
 $instance->callExport('store', [WasmValue::i32(0), WasmValue::i32(12345)]);
-
-// 読み戻す
 $result = $instance->callExport('load', [WasmValue::i32(0)]);
 echo $result[0]->value; // 12345
 ```
 
-### ホスト関数のインポート
+### Importing host functions
 
 ```php
 $module = (new Parser())->parseModule('
@@ -226,7 +219,7 @@ $instance->callExport('run', [WasmValue::i32(42)]);
 // Wasm says: 42
 ```
 
-### .wast スペックファイルの実行
+### Running a .wast spec file
 
 ```php
 use WasmRuntime\Wast\Runner;
@@ -239,9 +232,9 @@ echo "failed: {$result['failed']}\n";
 echo "total:  {$result['total']}\n";
 ```
 
-## 制限事項
+## Limitations
 
-- Wasm MVP (バージョン 1.0) の主要命令セットをカバー
-- SIMD・スレッド・例外処理などの拡張提案は未対応
-- バイナリ形式 (`.wasm`) の直接読み込みは未対応 (テキスト形式 `.wat`/`.wast` のみ)
-- 浮動小数点の NaN 伝播は簡易実装
+- Covers the Wasm MVP (version 1.0) core instruction set
+- Proposals (SIMD, threads, exceptions, GC) are not supported
+- Binary format (`.wasm`) is not supported — text format (`.wat`/`.wast`) only
+- NaN bit-pattern propagation is simplified
