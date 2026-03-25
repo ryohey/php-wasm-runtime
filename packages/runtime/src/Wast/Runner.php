@@ -107,6 +107,10 @@ final class Runner
         $mod            = $this->parseModule($src);
         $imports        = $this->buildImports($mod);
         $this->current  = Instance::instantiate($mod, $imports);
+        // If the module has an id ($name), register it for later invoke/get
+        if ($mod->id !== null) {
+            $this->namedModules[$mod->id] = $this->current;
+        }
     }
 
     private function cmdRegister(string $src): void
@@ -114,7 +118,14 @@ final class Runner
         $inner = $this->innerTokens($src);
         // (register "name" [$id])
         $name  = $this->expectStringAt($inner, 1);
-        $this->namedModules[$name] = $this->current
+        // Optional $id to look up a specific named module
+        $inst = $this->current;
+        if (isset($inner[2]) && $inner[2]->type === Token::ID) {
+            $id   = (string)$inner[2]->value;
+            $inst = $this->namedModules[$id]
+                ?? throw new WasmError("Unknown module id: $id");
+        }
+        $this->namedModules[$name] = $inst
             ?? throw new WasmError('No current module to register');
     }
 
@@ -472,6 +483,15 @@ final class Runner
                 str_starts_with($op, 'i64.const') => WasmValue::i64((int)$valTok->value),
                 str_starts_with($op, 'f32.const') => WasmValue::f32($this->tokToFloat($valTok, false)),
                 str_starts_with($op, 'f64.const') => WasmValue::f64($this->tokToFloat($valTok, true)),
+                // ref.func with no argument = any non-null funcref (wildcard, value=-1)
+                $op === 'ref.func'   => new WasmValue(ValType::FUNCREF, -1),
+                // ref.null [type] = null reference
+                $op === 'ref.null'   => match ((string)$valTok->value) {
+                    'extern', 'externref' => new WasmValue(ValType::EXTERNREF, 0),
+                    default               => new WasmValue(ValType::FUNCREF, 0),
+                },
+                // ref.extern N = specific external reference with integer id N
+                $op === 'ref.extern' => new WasmValue(ValType::EXTERNREF, (int)$valTok->value),
                 default => WasmValue::i32((int)$valTok->value),
             };
         }
@@ -589,6 +609,11 @@ final class Runner
         foreach ($actual as $i => $a) {
             if (!isset($expected[$i])) return false;
             $e = $expected[$i];
+            // Handle ref patterns (FUNCREF / EXTERNREF expected values)
+            if ($e->type === ValType::FUNCREF || $e->type === ValType::EXTERNREF) {
+                if (!$this->refMatches($a, $e)) return false;
+                continue;
+            }
             if ($a->type !== $e->type) return false;
             $av = $a->value;
             $ev = $e->value;
@@ -596,6 +621,29 @@ final class Runner
             if ($av !== $ev) return false;
         }
         return true;
+    }
+
+    /**
+     * Match an actual WasmValue against a ref pattern expected value.
+     * Expected value semantics:
+     *   value = -1 → wildcard "any non-null ref" (matches any non-zero actual)
+     *   value =  0 → null ref (matches zero/null actual)
+     *   value =  N → specific ref id N (matches exact actual value N)
+     */
+    private function refMatches(WasmValue $actual, WasmValue $expected): bool
+    {
+        $ev = $expected->value;
+        $av = $actual->value;
+        if ($ev === -1) {
+            // Wildcard: any non-null funcref (actual must be non-zero)
+            return $av !== 0 && $av !== null;
+        }
+        if ($ev === 0) {
+            // Null ref: actual must be zero or null
+            return $av === 0 || $av === null;
+        }
+        // Specific externref or funcref: exact match
+        return $av === $ev;
     }
 
     private function recordFail(string $msg): void

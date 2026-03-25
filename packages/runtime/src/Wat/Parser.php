@@ -59,6 +59,7 @@ final class Parser
             // only consume if it's not the start of a module field
             $next = $this->peek();
             if ($next->type === Token::ID) {
+                $this->mod->id = (string)$next->value;
                 $this->consume();
             } elseif ($next->type === Token::KEYWORD && !str_contains((string)$next->value, '.') &&
                       !in_array($next->value, ['type','import','func','table','memory','global','export','start','elem','data'], true)) {
@@ -302,16 +303,56 @@ final class Parser
     private function parseTable(): void
     {
         $tableIdx = count($this->mod->tables);
+        $tableId  = null;
         if ($this->peek()->type === Token::ID) {
-            $this->tableIds[$this->consume()->value] = $tableIdx;
+            $tableId = (string)$this->consume()->value;
+            $this->tableIds[$tableId] = $tableIdx;
         }
-        // optional inline export
+        // optional inline export(s)
+        $inlineExports = [];
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'export') {
             $this->consume();
             $this->consume();
             $ename = $this->expect(Token::STRING)->value;
             $this->expect(Token::RPAREN);
+            $inlineExports[] = $ename;
             $this->mod->exports[$ename] = ['kind' => 'table', 'index' => $tableIdx];
+        }
+
+        // Inline import: (table [$id] [(export ...)] (import "mod" "name") limits reftype)
+        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'import') {
+            // Compute absolute import index
+            $importedCount = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'table'));
+            $absIdx = $importedCount;
+            // Fix up id and exports to use absolute index
+            if ($tableId !== null) {
+                $this->tableIds[$tableId] = $absIdx;
+            }
+            foreach ($inlineExports as $ename) {
+                $this->mod->exports[$ename] = ['kind' => 'table', 'index' => $absIdx];
+            }
+            $this->consume(); // (
+            $this->consume(); // import
+            $modName  = (string)$this->expect(Token::STRING)->value;
+            $itemName = (string)$this->expect(Token::STRING)->value;
+            $this->expect(Token::RPAREN); // )
+            [$min, $max] = $this->parseLimits();
+            if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
+                $this->skipRefType();
+                $refType = 'funcref';
+            } else {
+                $refType = $this->expectKeyword(null);
+            }
+            $this->mod->imports[] = [
+                'kind'    => 'table',
+                'module'  => $modName,
+                'name'    => $itemName,
+                'min'     => $min,
+                'max'     => $max,
+                'refType' => $refType,
+            ];
+            $this->expect(Token::RPAREN);
+            return;
         }
 
         // inline elem shorthand: (table funcref (elem funcidx...))
@@ -567,10 +608,18 @@ final class Parser
             if ($kw === 'offset') {
                 $this->consume();
                 $this->consume();
-                $offset = $this->parseConstExprVal();
+                $offsetVal = $this->parseConstExpr();
+                if ($offsetVal->type !== ValType::I32) {
+                    throw new WasmError('type mismatch');
+                }
+                $offset = $offsetVal->value;
                 $this->expect(Token::RPAREN);
             } elseif ($this->isInstrKeyword($kw)) {
-                $offset = $this->parseConstExprVal();
+                $offsetVal = $this->parseConstExpr();
+                if ($offsetVal->type !== ValType::I32) {
+                    throw new WasmError('type mismatch');
+                }
+                $offset = $offsetVal->value;
             }
         }
         $data = '';
@@ -745,11 +794,24 @@ final class Parser
         // global.get idx — returns the global value (for constant init)
         $idx = $this->resolveGlobalIdx();
         // Look up the value in already-parsed globals (imports or earlier globals)
-        $importedCount = $this->mod->importedGlobalCount;
+        // Count dynamically (importedGlobalCount is set after parsing finishes)
+        $importedGlobalImports = array_values(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'global'));
+        $importedCount = count($importedGlobalImports);
+        $totalLocals   = count($this->mod->globals);
+        $totalGlobals  = $importedCount + $totalLocals;
+        if ($idx >= $totalGlobals) {
+            throw new WasmError("unknown global $idx");
+        }
         if ($idx < $importedCount) {
-            // Imported global — we don't have the value, return 0
+            // Imported global: check mutability
+            $imp = $importedGlobalImports[$idx];
+            if ($imp['mutable'] ?? false) {
+                throw new WasmError('constant expression required');
+            }
             return WasmValue::i32(0);
         }
+        // Local (non-imported) global — only allowed in extended-const, not MVP
+        // For now, allow but don't validate mutability since it's commonly needed
         $localIdx = $idx - $importedCount;
         return $this->mod->globals[$localIdx]['init'] ?? WasmValue::i32(0);
     }
@@ -757,10 +819,15 @@ final class Parser
     private function parseConstRefNull(): WasmValue
     {
         // ref.null heaptype — consume heap type keyword or id
+        $heapType = ValType::FUNCREF;
         if ($this->peek()->type === Token::KEYWORD || $this->peek()->type === Token::ID) {
-            $this->consume();
+            $raw = (string)$this->consume()->value;
+            $heapType = match ($raw) {
+                'extern', 'externref' => ValType::EXTERNREF,
+                default               => ValType::FUNCREF,
+            };
         }
-        return WasmValue::i32(0); // null reference represented as 0
+        return new WasmValue($heapType, 0); // null reference
     }
 
     private function parseConstRefFunc(): WasmValue

@@ -7,6 +7,9 @@ namespace WasmRuntime;
 /** Wasm module definition (decoded from WAT / binary) */
 final class Module
 {
+    /** Optional module identifier ($name) from WAT source */
+    public ?string $id = null;
+
     /** @var FuncType[] */
     public array $types = [];
 

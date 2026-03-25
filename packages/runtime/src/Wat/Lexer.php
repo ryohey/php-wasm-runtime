@@ -121,7 +121,6 @@ final class Lexer
                     '"'  => '"',
                     '\'' => "'",
                     '\\' => '\\',
-                    '0'  => "\0",
                     default => $this->readHexEscape($esc),
                 };
                 $this->pos++;
@@ -332,7 +331,9 @@ final class Lexer
 
     private function isSymStart(string $ch): bool
     {
-        return ctype_alnum($ch) || $ch === '_' || $ch === '-' || $ch === '+' || $ch === '.' || $ch === ':';
+        // Any printable ASCII except whitespace and reserved chars: '(', ')', '"', ';'
+        $o = ord($ch);
+        return $o >= 0x21 && $o <= 0x7E && !in_array($ch, ['(', ')', '"', ';'], true);
     }
 
     private function isSymChar(string $ch): bool

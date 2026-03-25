@@ -468,29 +468,154 @@ final class Executor
                 // ---- Memory ----
                 case 'memory.size': $stack[]=$this->instance->memories[0]->size(); break;
                 case 'memory.grow': { $stack[]=$this->instance->memories[0]->grow((int)array_pop($stack)); break; }
-                case 'i32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32($a+(int)$instr[1]); break; }
-                case 'i64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI64($a+(int)$instr[1]); break; }
-                case 'f32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF32($a+(int)$instr[1]); break; }
-                case 'f64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF64($a+(int)$instr[1]); break; }
-                case 'i32.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s($a+(int)$instr[1]); break; }
-                case 'i32.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u($a+(int)$instr[1]); break; }
-                case 'i32.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s($a+(int)$instr[1]); break; }
-                case 'i32.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u($a+(int)$instr[1]); break; }
-                case 'i64.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s($a+(int)$instr[1]); break; }
-                case 'i64.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u($a+(int)$instr[1]); break; }
-                case 'i64.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s($a+(int)$instr[1]); break; }
-                case 'i64.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u($a+(int)$instr[1]); break; }
-                case 'i64.load32_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32s($a+(int)$instr[1]); break; }
-                case 'i64.load32_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadU32($a+(int)$instr[1]); break; }
-                case 'i32.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32($a+(int)$instr[1],$v); break; }
-                case 'i64.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI64($a+(int)$instr[1],$v); break; }
-                case 'f32.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF32($a+(int)$instr[1],$v); break; }
-                case 'f64.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF64($a+(int)$instr[1],$v); break; }
-                case 'i32.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8($a+(int)$instr[1],$v); break; }
-                case 'i32.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16($a+(int)$instr[1],$v); break; }
-                case 'i64.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8($a+(int)$instr[1],$v); break; }
-                case 'i64.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16($a+(int)$instr[1],$v); break; }
-                case 'i64.store32': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32($a+(int)$instr[1],$v); break; }
+                case 'i32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI64(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'f32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'f64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF64(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i32.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i32.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i32.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i32.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load32_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i64.load32_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadU32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
+                case 'i32.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i64.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'f32.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'f64.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i32.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i32.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i64.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i64.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'i64.store32': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+
+                // ---- Table ----
+                case 'table.size': {
+                    $tIdx = $instr[1] ?? 0;
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $stack[] = $table->size();
+                    break;
+                }
+                case 'table.grow': {
+                    $tIdx = $instr[1] ?? 0;
+                    $n    = (int)array_pop($stack);
+                    $val  = array_pop($stack);
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $stack[] = $table->grow($n, $val);
+                    break;
+                }
+                case 'table.get': {
+                    $tIdx = $instr[1] ?? 0;
+                    $idx  = (int)array_pop($stack);
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $stack[] = $table->get($idx);
+                    break;
+                }
+                case 'table.set': {
+                    $tIdx = $instr[1] ?? 0;
+                    $val  = array_pop($stack);
+                    $idx  = (int)array_pop($stack);
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table->set($idx, $val);
+                    break;
+                }
+                case 'table.fill': {
+                    $tIdx = $instr[1] ?? 0;
+                    $n    = (int)array_pop($stack);
+                    $val  = array_pop($stack);
+                    $i    = (int)array_pop($stack);
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($i < 0 || $n < 0 || ($i & 0xFFFFFFFF) + ($n & 0xFFFFFFFF) > $table->size()) {
+                        throw Trap::outOfBoundsTableAccess();
+                    }
+                    for ($k = 0; $k < $n; $k++) $table->set($i + $k, $val);
+                    break;
+                }
+                case 'table.copy': {
+                    $dIdx = $instr[1] ?? 0;
+                    $sIdx = $instr[2] ?? 0;
+                    $n    = (int)array_pop($stack);
+                    $s    = (int)array_pop($stack);
+                    $d    = (int)array_pop($stack);
+                    $dTable = $this->instance->tables[$dIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $sTable = $this->instance->tables[$sIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($s + $n > $sTable->size() || $d + $n > $dTable->size()) {
+                        throw Trap::outOfBoundsTableAccess();
+                    }
+                    $vals = [];
+                    for ($k = 0; $k < $n; $k++) $vals[] = $sTable->get($s + $k);
+                    for ($k = 0; $k < $n; $k++) $dTable->set($d + $k, $vals[$k]);
+                    break;
+                }
+                case 'table.init': {
+                    $tIdx = $instr[1] ?? 0;
+                    $eIdx = $instr[2] ?? 0;
+                    $n    = (int)array_pop($stack);
+                    $s    = (int)array_pop($stack);
+                    $d    = (int)array_pop($stack);
+                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $elem  = $this->instance->module->elements[$eIdx] ?? null;
+                    $funcIndices = $elem ? $elem['funcIndices'] : [];
+                    if ($s + $n > count($funcIndices) || $d + $n > $table->size()) {
+                        throw Trap::outOfBoundsTableAccess();
+                    }
+                    for ($k = 0; $k < $n; $k++) $table->set($d + $k, $funcIndices[$s + $k] ?? null);
+                    break;
+                }
+                case 'elem.drop':
+                    // Drop elem segment (passive) - no-op for now
+                    break;
+                // ---- References ----
+                case 'ref.null':
+                    $stack[] = null;
+                    break;
+                case 'ref.func': {
+                    $fIdx = $instr[1] ?? 0;
+                    $stack[] = $fIdx;
+                    break;
+                }
+                case 'ref.is_null':
+                    $stack[] = (array_pop($stack) === null) ? 1 : 0;
+                    break;
+                case 'ref.as_non_null': {
+                    $val = array_pop($stack);
+                    if ($val === null) throw new Trap('null dereference');
+                    $stack[] = $val;
+                    break;
+                }
+                // ---- Memory bulk operations ----
+                case 'memory.fill': {
+                    $n   = (int)array_pop($stack);
+                    $val = (int)array_pop($stack);
+                    $d   = (int)array_pop($stack);
+                    $mem = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
+                    $mem->fill($d, $val & 0xFF, $n);
+                    break;
+                }
+                case 'memory.copy': {
+                    $n = (int)array_pop($stack);
+                    $s = (int)array_pop($stack);
+                    $d = (int)array_pop($stack);
+                    $mem = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
+                    $mem->copy($d, $s, $n);
+                    break;
+                }
+                case 'memory.init': {
+                    $segIdx = $instr[1] ?? 0;
+                    $n = (int)array_pop($stack);
+                    $s = (int)array_pop($stack);
+                    $d = (int)array_pop($stack);
+                    $mem  = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
+                    $data = $this->instance->module->dataSegments[$segIdx]['bytes'] ?? '';
+                    $mem->initFromData($d, $data, $s, $n);
+                    break;
+                }
+                case 'data.drop':
+                    // Drop data segment - no-op for now
+                    break;
 
                 default:
                     break; // unknown/future instructions silently skipped

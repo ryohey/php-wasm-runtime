@@ -46,6 +46,16 @@ final class Validator
             }
         }
 
+        // Validate data segments: each active segment must reference a valid memory
+        $memCount = $mod->importedMemoryCount + count($mod->memories);
+        foreach ($mod->dataSegments as $seg) {
+            if (!isset($seg['offset'])) continue; // passive segment, no memory required
+            $memIdx = $seg['memIndex'] ?? 0;
+            if ($memCount === 0 || $memIdx >= $memCount) {
+                throw new WasmError('unknown memory');
+            }
+        }
+
         foreach ($mod->funcBodies as $i => $body) {
             $absIdx = $mod->importedFuncCount + $i;
             $ft     = $mod->funcType($absIdx);
@@ -343,21 +353,29 @@ final class Validator
                 // ---- Memory ----
                 case 'i32.load': case 'i32.load8_s': case 'i32.load8_u':
                 case 'i32.load16_s': case 'i32.load16_u':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
                 case 'i64.load': case 'i64.load8_s': case 'i64.load8_u':
                 case 'i64.load16_s': case 'i64.load16_u': case 'i64.load32_s': case 'i64.load32_u':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::I64); break;
                 case 'f32.load':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::F32); break;
                 case 'f64.load':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::F64); break;
                 case 'i32.store': case 'i32.store8': case 'i32.store16':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->pop(ValType::I32); break;
                 case 'i64.store': case 'i64.store8': case 'i64.store16': case 'i64.store32':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::I64); $this->pop(ValType::I32); break;
                 case 'f32.store':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::F32); $this->pop(ValType::I32); break;
                 case 'f64.store':
+                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
                     $this->pop(ValType::F64); $this->pop(ValType::I32); break;
                 case 'memory.size':
                     $this->push(ValType::I32); break;
@@ -370,16 +388,34 @@ final class Validator
                 case 'data.drop': break;
 
                 // ---- Table ----
-                case 'table.get':
-                    $this->pop(ValType::I32); $this->push(ValType::FUNCREF); break;
-                case 'table.set':
-                    $this->pop(ValType::FUNCREF); $this->pop(ValType::I32); break;
+                case 'table.get': {
+                    $tIdx = (int)($instr[1] ?? 0);
+                    $this->pop(ValType::I32);
+                    $this->push($this->tableElemType($tIdx));
+                    break;
+                }
+                case 'table.set': {
+                    $tIdx = (int)($instr[1] ?? 0);
+                    $this->pop($this->tableElemType($tIdx));
+                    $this->pop(ValType::I32);
+                    break;
+                }
                 case 'table.size':
                     $this->push(ValType::I32); break;
-                case 'table.grow':
-                    $this->pop(ValType::I32); $this->pop(null); $this->push(ValType::I32); break;
-                case 'table.fill':
-                    $this->pop(ValType::I32); $this->pop(null); $this->pop(ValType::I32); break;
+                case 'table.grow': {
+                    $tIdx = (int)($instr[1] ?? 0);
+                    $this->pop(ValType::I32);
+                    $this->pop($this->tableElemType($tIdx));
+                    $this->push(ValType::I32);
+                    break;
+                }
+                case 'table.fill': {
+                    $tIdx = (int)($instr[1] ?? 0);
+                    $this->pop(ValType::I32);
+                    $this->pop($this->tableElemType($tIdx));
+                    $this->pop(ValType::I32);
+                    break;
+                }
                 case 'table.copy':
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
                 case 'table.init':
@@ -387,8 +423,15 @@ final class Validator
                 case 'elem.drop': break;
 
                 // ---- Ref types ----
-                case 'ref.null':
-                    $this->push(ValType::FUNCREF); break;
+                case 'ref.null': {
+                    $heapType = (string)($instr[1] ?? 'func');
+                    $refType  = match ($heapType) {
+                        'extern', 'externref' => ValType::EXTERNREF,
+                        default               => ValType::FUNCREF,
+                    };
+                    $this->push($refType);
+                    break;
+                }
                 case 'ref.is_null':
                     $this->pop(null); $this->push(ValType::I32); break;
                 case 'ref.func':
@@ -550,6 +593,48 @@ final class Validator
             throw new WasmError('type mismatch'); // unknown local index
         }
         return $this->currentLocals[$localIdx];
+    }
+
+    /** Natural alignment (bytes) for each memory instruction */
+    private const NATURAL_ALIGN = [
+        'i32.load8_s' => 1,  'i32.load8_u' => 1,
+        'i32.load16_s' => 2, 'i32.load16_u' => 2,
+        'i32.load' => 4,     'f32.load' => 4,     'f32.store' => 4,
+        'i32.store8' => 1,   'i32.store16' => 2,  'i32.store' => 4,
+        'i64.load8_s' => 1,  'i64.load8_u' => 1,
+        'i64.load16_s' => 2, 'i64.load16_u' => 2,
+        'i64.load32_s' => 4, 'i64.load32_u' => 4,
+        'i64.load' => 8,     'f64.load' => 8,
+        'i64.store8' => 1,   'i64.store16' => 2,  'i64.store32' => 4,
+        'i64.store' => 8,    'f64.store' => 8,
+    ];
+
+    private function checkAlignment(string $op, int $align): void
+    {
+        if ($align === 0) return; // default (natural) — always valid
+        $natural = self::NATURAL_ALIGN[$op] ?? PHP_INT_MAX;
+        if ($align > $natural) {
+            throw new WasmError('alignment must not be larger than natural');
+        }
+    }
+
+    private function tableElemType(int $tIdx): int
+    {
+        $importedCount = 0;
+        $tableImports  = [];
+        foreach ($this->mod->imports as $imp) {
+            if ($imp['kind'] === 'table') {
+                $tableImports[] = $imp;
+                $importedCount++;
+            }
+        }
+        if ($tIdx < $importedCount) {
+            $refType = $tableImports[$tIdx]['refType'] ?? 'funcref';
+            return is_int($refType) ? $refType : ValType::fromString((string)$refType);
+        }
+        $localIdx = $tIdx - $importedCount;
+        $refType = $this->mod->tables[$localIdx]['type'] ?? 'funcref';
+        return is_int($refType) ? $refType : ValType::fromString((string)$refType);
     }
 
     private function globalType(int $idx): int

@@ -7,7 +7,7 @@ namespace WasmRuntime;
 /** WebAssembly function-reference table */
 final class Table
 {
-    /** @var (int|null)[] absolute function indices, null = uninitialized */
+    /** @var mixed[] element values (null = uninitialized/null-ref, int = func index, or any ref) */
     private array $elements;
     private ?int $maxSize;
 
@@ -22,7 +22,7 @@ final class Table
         return count($this->elements);
     }
 
-    public function get(int $idx): ?int
+    public function get(int $idx): mixed
     {
         if ($idx < 0 || $idx >= count($this->elements)) {
             throw Trap::outOfBoundsTableAccess();
@@ -30,19 +30,19 @@ final class Table
         return $this->elements[$idx];
     }
 
-    public function set(int $idx, ?int $funcIndex): void
+    public function set(int $idx, mixed $value): void
     {
         if ($idx < 0 || $idx >= count($this->elements)) {
             throw Trap::outOfBoundsTableAccess();
         }
-        $this->elements[$idx] = $funcIndex;
+        $this->elements[$idx] = $value;
     }
 
-    public function grow(int $delta, ?int $initVal = null): int
+    public function grow(int $delta, mixed $initVal = null): int
     {
         $old = count($this->elements);
         $new = $old + $delta;
-        if ($this->maxSize !== null && $new > $this->maxSize) {
+        if ($delta < 0 || ($this->maxSize !== null && $new > $this->maxSize)) {
             return -1;
         }
         for ($i = 0; $i < $delta; $i++) {

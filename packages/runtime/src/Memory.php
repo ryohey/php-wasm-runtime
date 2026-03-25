@@ -176,6 +176,41 @@ final class Memory
         $this->bytes = substr_replace($this->bytes, $data, $addr, $len);
     }
 
+    public function fill(int $addr, int $byte, int $n): void
+    {
+        if ($n === 0) return;
+        $this->check($addr, $n);
+        $this->bytes = substr_replace($this->bytes, str_repeat(chr($byte & 0xFF), $n), $addr, $n);
+    }
+
+    public function copy(int $dst, int $src, int $n): void
+    {
+        if ($n === 0) return;
+        $limit = $this->pages * self::PAGE_SIZE;
+        if ($dst < 0 || $src < 0 || $dst + $n > $limit || $src + $n > $limit) {
+            throw Trap::outOfBoundsMemoryAccess();
+        }
+        // Ensure bytes are allocated
+        $needed = max($dst + $n, $src + $n);
+        if ($needed > strlen($this->bytes)) {
+            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
+        }
+        $chunk = substr($this->bytes, $src, $n);
+        $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
+    }
+
+    public function initFromData(int $dst, string $data, int $src, int $n): void
+    {
+        if ($n === 0) return;
+        $dataLen = strlen($data);
+        if ($src < 0 || $src + $n > $dataLen) {
+            throw Trap::outOfBoundsMemoryAccess();
+        }
+        $this->check($dst, $n);
+        $chunk = substr($data, $src, $n);
+        $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
+    }
+
     public function rawBytes(): string
     {
         return $this->bytes;
