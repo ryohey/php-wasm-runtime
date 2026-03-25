@@ -1,0 +1,560 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WasmRuntime;
+
+/**
+ * WebAssembly module type validator.
+ *
+ * Performs the same abstract-interpretation type check that the spec mandates.
+ * Throws WasmError("type mismatch") when a function body is ill-typed.
+ *
+ * Control-frame shape:
+ *   ['opcode'      => string,        // 'func'|'block'|'loop'|'if'
+ *    'label_types' => int[],         // types for br to this label
+ *    'end_types'   => int[],         // types expected at 'end'
+ *    'height'      => int,           // typeStack depth at frame entry
+ *    'unreachable' => bool]          // dead-code flag
+ */
+final class Validator
+{
+    /** @var int[] */
+    private array $typeStack = [];
+    /** @var array[] */
+    private array $ctrlStack = [];
+
+    private Module $mod;
+    private FuncType $currentFt;
+    private array $currentLocals = [];
+
+    // -------------------------------------------------------------------------
+
+    public function validateModule(Module $mod): void
+    {
+        $this->mod = $mod;
+        foreach ($mod->funcBodies as $i => $body) {
+            $absIdx = $mod->importedFuncCount + $i;
+            $ft     = $mod->funcType($absIdx);
+            $this->validateFunction($body, $ft);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+
+    private function validateFunction(array $body, FuncType $ft): void
+    {
+        $this->typeStack    = [];
+        $this->ctrlStack    = [];
+        $this->currentFt    = $ft;
+        $this->currentLocals = $body['locals'] ?? [];
+
+        // Outer "function" control frame.
+        // label_types = results (br 0 inside a function is like returning)
+        $this->pushCtrl('func', $ft->results, $ft->results);
+
+        $code = $body['code'];
+        $n    = count($code);
+
+        for ($ip = 0; $ip < $n; $ip++) {
+            $instr = $code[$ip];
+            $op    = $instr[0];
+
+            switch ($op) {
+
+
+                // ---- Unreachable / nop ----
+                case 'unreachable':
+                    $this->markUnreachable();
+                    break;
+                case 'nop':
+                    break;
+
+                // ---- Block / loop / if / else / end ----
+                case 'block': {
+                    $bt = $instr[1]; // FuncType|null
+                    [$pin, $pout] = $this->blockTypes($bt);
+                    $this->popTypes($pin);
+                    $this->pushCtrl('block', $pout, $pout, $pin);
+                    $this->pushTypes($pin);
+                    break;
+                }
+                case 'loop': {
+                    $bt = $instr[1];
+                    [$pin, $pout] = $this->blockTypes($bt);
+                    $this->popTypes($pin);
+                    $this->pushCtrl('loop', $pin, $pout, $pin);  // label_types = params for loop
+                    $this->pushTypes($pin);
+                    break;
+                }
+                case 'if': {
+                    $bt      = $instr[1];
+                    $elseIp  = $instr[2];
+                    $endIp   = $instr[3];
+                    [$pin, $pout] = $this->blockTypes($bt);
+                    $this->pop(ValType::I32); // condition
+                    $this->popTypes($pin);
+                    // if without else is only valid when result type is empty
+                    if ($elseIp === $endIp && !empty($pout)) {
+                        throw new WasmError('type mismatch');
+                    }
+                    $this->pushCtrl('if', $pout, $pout, $pin);
+                    $this->pushTypes($pin);
+                    break;
+                }
+                case 'else': {
+                    $frame = $this->popCtrl();
+                    if ($frame['opcode'] !== 'if') {
+                        throw new WasmError('type mismatch');
+                    }
+                    // else starts fresh with the if's param types (not result types)
+                    $this->pushCtrl('else', $frame['label_types'], $frame['end_types'], $frame['in_types']);
+                    $this->pushTypes($frame['in_types']);
+                    break;
+                }
+                case 'end': {
+                    $frame = $this->popCtrl();
+                    $this->pushTypes($frame['end_types']);
+                    break;
+                }
+
+                // ---- Branches / return ----
+                case 'return': {
+                    $ft2 = $this->ctrlStack[0];
+                    $this->popTypes($ft2['end_types']);
+                    $this->markUnreachable();
+                    break;
+                }
+                case 'br': {
+                    $depth = (int)$instr[1];
+                    $label = $this->labelAt($depth);
+                    $this->popTypes($label['label_types']);
+                    $this->markUnreachable();
+                    break;
+                }
+                case 'br_if': {
+                    $depth = (int)$instr[1];
+                    $label = $this->labelAt($depth);
+                    $this->pop(ValType::I32);
+                    $this->popTypes($label['label_types']);
+                    $this->pushTypes($label['label_types']);
+                    break;
+                }
+                case 'br_table': {
+                    $cnt     = count($instr) - 1;
+                    $targets = array_slice($instr, 1, $cnt - 1);
+                    $default = (int)$instr[$cnt];
+                    $this->pop(ValType::I32);
+                    $defLabel = $this->labelAt($default);
+                    foreach ($targets as $t) {
+                        $label = $this->labelAt((int)$t);
+                        // All targets must have same arity as default
+                        if (count($label['label_types']) !== count($defLabel['label_types'])) {
+                            throw new WasmError('type mismatch');
+                        }
+                    }
+                    $this->popTypes($defLabel['label_types']);
+                    $this->markUnreachable();
+                    break;
+                }
+
+                // ---- Call ----
+                case 'call': {
+                    $cft = $this->mod->funcType((int)$instr[1]);
+                    $this->popTypes($cft->params);
+                    $this->pushTypes($cft->results);
+                    break;
+                }
+                case 'call_indirect': {
+                    $typeIdx = (int)$instr[1];
+                    $cft     = $this->mod->types[$typeIdx] ?? null;
+                    if ($cft === null) throw new WasmError('type mismatch');
+                    $this->pop(ValType::I32); // table index
+                    $this->popTypes($cft->params);
+                    $this->pushTypes($cft->results);
+                    break;
+                }
+
+                // ---- Parametric ----
+                case 'drop':
+                    $this->pop(null);
+                    break;
+                case 'select': {
+                    $this->pop(ValType::I32);
+                    $t2 = $this->pop(null);
+                    $t1 = $this->pop(null);
+                    // Untyped select is only valid for numeric types (not ref types)
+                    $refTypes = [ValType::FUNCREF, ValType::EXTERNREF];
+                    if ($t1 !== null && in_array($t1, $refTypes, true)) {
+                        throw new WasmError('type mismatch');
+                    }
+                    if ($t2 !== null && in_array($t2, $refTypes, true)) {
+                        throw new WasmError('type mismatch');
+                    }
+                    if ($t1 !== null && $t2 !== null && $t1 !== $t2) {
+                        throw new WasmError('type mismatch');
+                    }
+                    $this->push($t1 ?? $t2 ?? ValType::I32);
+                    break;
+                }
+
+                // ---- Locals ----
+                case 'local.get': {
+                    $idx = (int)$instr[1];
+                    $this->push($this->localType($idx));
+                    break;
+                }
+                case 'local.set': {
+                    $idx = (int)$instr[1];
+                    $this->pop($this->localType($idx));
+                    break;
+                }
+                case 'local.tee': {
+                    $idx = (int)$instr[1];
+                    $t = $this->localType($idx);
+                    $this->pop($t);
+                    $this->push($t);
+                    break;
+                }
+
+                // ---- Globals ----
+                case 'global.get': {
+                    $t = $this->globalType((int)$instr[1]);
+                    $this->push($t);
+                    break;
+                }
+                case 'global.set': {
+                    $t = $this->globalType((int)$instr[1]);
+                    $this->pop($t);
+                    break;
+                }
+
+                // ---- Constants ----
+                case 'i32.const': $this->push(ValType::I32); break;
+                case 'i64.const': $this->push(ValType::I64); break;
+                case 'f32.const': $this->push(ValType::F32); break;
+                case 'f64.const': $this->push(ValType::F64); break;
+
+                // ---- i32 arithmetic / comparison ----
+                case 'i32.clz': case 'i32.ctz': case 'i32.popcnt':
+                    $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'i32.add': case 'i32.sub': case 'i32.mul':
+                case 'i32.div_s': case 'i32.div_u': case 'i32.rem_s': case 'i32.rem_u':
+                case 'i32.and': case 'i32.or': case 'i32.xor':
+                case 'i32.shl': case 'i32.shr_s': case 'i32.shr_u':
+                case 'i32.rotl': case 'i32.rotr':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'i32.eqz':
+                    $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'i32.eq': case 'i32.ne':
+                case 'i32.lt_s': case 'i32.lt_u': case 'i32.gt_s': case 'i32.gt_u':
+                case 'i32.le_s': case 'i32.le_u': case 'i32.ge_s': case 'i32.ge_u':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->push(ValType::I32); break;
+
+                // ---- i64 arithmetic / comparison ----
+                case 'i64.clz': case 'i64.ctz': case 'i64.popcnt':
+                    $this->pop(ValType::I64); $this->push(ValType::I64); break;
+                case 'i64.add': case 'i64.sub': case 'i64.mul':
+                case 'i64.div_s': case 'i64.div_u': case 'i64.rem_s': case 'i64.rem_u':
+                case 'i64.and': case 'i64.or': case 'i64.xor':
+                case 'i64.shl': case 'i64.shr_s': case 'i64.shr_u':
+                case 'i64.rotl': case 'i64.rotr':
+                    $this->pop(ValType::I64); $this->pop(ValType::I64); $this->push(ValType::I64); break;
+                case 'i64.eqz':
+                    $this->pop(ValType::I64); $this->push(ValType::I32); break;
+                case 'i64.eq': case 'i64.ne':
+                case 'i64.lt_s': case 'i64.lt_u': case 'i64.gt_s': case 'i64.gt_u':
+                case 'i64.le_s': case 'i64.le_u': case 'i64.ge_s': case 'i64.ge_u':
+                    $this->pop(ValType::I64); $this->pop(ValType::I64); $this->push(ValType::I32); break;
+
+                // ---- f32 arithmetic / comparison ----
+                case 'f32.abs': case 'f32.neg': case 'f32.ceil': case 'f32.floor':
+                case 'f32.trunc': case 'f32.nearest': case 'f32.sqrt':
+                    $this->pop(ValType::F32); $this->push(ValType::F32); break;
+                case 'f32.add': case 'f32.sub': case 'f32.mul': case 'f32.div':
+                case 'f32.min': case 'f32.max': case 'f32.copysign':
+                    $this->pop(ValType::F32); $this->pop(ValType::F32); $this->push(ValType::F32); break;
+                case 'f32.eq': case 'f32.ne':
+                case 'f32.lt': case 'f32.gt': case 'f32.le': case 'f32.ge':
+                    $this->pop(ValType::F32); $this->pop(ValType::F32); $this->push(ValType::I32); break;
+
+                // ---- f64 arithmetic / comparison ----
+                case 'f64.abs': case 'f64.neg': case 'f64.ceil': case 'f64.floor':
+                case 'f64.trunc': case 'f64.nearest': case 'f64.sqrt':
+                    $this->pop(ValType::F64); $this->push(ValType::F64); break;
+                case 'f64.add': case 'f64.sub': case 'f64.mul': case 'f64.div':
+                case 'f64.min': case 'f64.max': case 'f64.copysign':
+                    $this->pop(ValType::F64); $this->pop(ValType::F64); $this->push(ValType::F64); break;
+                case 'f64.eq': case 'f64.ne':
+                case 'f64.lt': case 'f64.gt': case 'f64.le': case 'f64.ge':
+                    $this->pop(ValType::F64); $this->pop(ValType::F64); $this->push(ValType::I32); break;
+
+                // ---- Conversions ----
+                case 'i32.wrap_i64':
+                    $this->pop(ValType::I64); $this->push(ValType::I32); break;
+                case 'i32.trunc_f32_s': case 'i32.trunc_f32_u': case 'i32.trunc_sat_f32_s': case 'i32.trunc_sat_f32_u':
+                    $this->pop(ValType::F32); $this->push(ValType::I32); break;
+                case 'i32.trunc_f64_s': case 'i32.trunc_f64_u': case 'i32.trunc_sat_f64_s': case 'i32.trunc_sat_f64_u':
+                    $this->pop(ValType::F64); $this->push(ValType::I32); break;
+                case 'i64.extend_i32_s': case 'i64.extend_i32_u':
+                    $this->pop(ValType::I32); $this->push(ValType::I64); break;
+                case 'i64.trunc_f32_s': case 'i64.trunc_f32_u': case 'i64.trunc_sat_f32_s': case 'i64.trunc_sat_f32_u':
+                    $this->pop(ValType::F32); $this->push(ValType::I64); break;
+                case 'i64.trunc_f64_s': case 'i64.trunc_f64_u': case 'i64.trunc_sat_f64_s': case 'i64.trunc_sat_f64_u':
+                    $this->pop(ValType::F64); $this->push(ValType::I64); break;
+                case 'f32.convert_i32_s': case 'f32.convert_i32_u':
+                    $this->pop(ValType::I32); $this->push(ValType::F32); break;
+                case 'f32.convert_i64_s': case 'f32.convert_i64_u':
+                    $this->pop(ValType::I64); $this->push(ValType::F32); break;
+                case 'f32.demote_f64':
+                    $this->pop(ValType::F64); $this->push(ValType::F32); break;
+                case 'f64.convert_i32_s': case 'f64.convert_i32_u':
+                    $this->pop(ValType::I32); $this->push(ValType::F64); break;
+                case 'f64.convert_i64_s': case 'f64.convert_i64_u':
+                    $this->pop(ValType::I64); $this->push(ValType::F64); break;
+                case 'f64.promote_f32':
+                    $this->pop(ValType::F32); $this->push(ValType::F64); break;
+                case 'i32.reinterpret_f32':
+                    $this->pop(ValType::F32); $this->push(ValType::I32); break;
+                case 'i64.reinterpret_f64':
+                    $this->pop(ValType::F64); $this->push(ValType::I64); break;
+                case 'f32.reinterpret_i32':
+                    $this->pop(ValType::I32); $this->push(ValType::F32); break;
+                case 'f64.reinterpret_i64':
+                    $this->pop(ValType::I64); $this->push(ValType::F64); break;
+                case 'i32.extend8_s': case 'i32.extend16_s':
+                    $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'i64.extend8_s': case 'i64.extend16_s': case 'i64.extend32_s':
+                    $this->pop(ValType::I64); $this->push(ValType::I64); break;
+
+                // ---- Memory ----
+                case 'i32.load': case 'i32.load8_s': case 'i32.load8_u':
+                case 'i32.load16_s': case 'i32.load16_u':
+                    $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'i64.load': case 'i64.load8_s': case 'i64.load8_u':
+                case 'i64.load16_s': case 'i64.load16_u': case 'i64.load32_s': case 'i64.load32_u':
+                    $this->pop(ValType::I32); $this->push(ValType::I64); break;
+                case 'f32.load':
+                    $this->pop(ValType::I32); $this->push(ValType::F32); break;
+                case 'f64.load':
+                    $this->pop(ValType::I32); $this->push(ValType::F64); break;
+                case 'i32.store': case 'i32.store8': case 'i32.store16':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case 'i64.store': case 'i64.store8': case 'i64.store16': case 'i64.store32':
+                    $this->pop(ValType::I64); $this->pop(ValType::I32); break;
+                case 'f32.store':
+                    $this->pop(ValType::F32); $this->pop(ValType::I32); break;
+                case 'f64.store':
+                    $this->pop(ValType::F64); $this->pop(ValType::I32); break;
+                case 'memory.size':
+                    $this->push(ValType::I32); break;
+                case 'memory.grow':
+                    $this->pop(ValType::I32); $this->push(ValType::I32); break;
+                case 'memory.copy': case 'memory.fill':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case 'memory.init':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case 'data.drop': break;
+
+                // ---- Table ----
+                case 'table.get':
+                    $this->pop(ValType::I32); $this->push(ValType::FUNCREF); break;
+                case 'table.set':
+                    $this->pop(ValType::FUNCREF); $this->pop(ValType::I32); break;
+                case 'table.size':
+                    $this->push(ValType::I32); break;
+                case 'table.grow':
+                    $this->pop(ValType::I32); $this->pop(null); $this->push(ValType::I32); break;
+                case 'table.fill':
+                    $this->pop(ValType::I32); $this->pop(null); $this->pop(ValType::I32); break;
+                case 'table.copy':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case 'table.init':
+                    $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case 'elem.drop': break;
+
+                // ---- Ref types ----
+                case 'ref.null':
+                    $this->push(ValType::FUNCREF); break;
+                case 'ref.is_null':
+                    $this->pop(null); $this->push(ValType::I32); break;
+                case 'ref.func':
+                    $this->push(ValType::FUNCREF); break;
+
+                // ---- Unknown: skip (don't fail on unknown instructions) ----
+                default:
+                    break;
+            }
+        }
+
+        // If the function frame is still open (no explicit 'end'), validate it now
+        if (!empty($this->ctrlStack)) {
+            $frame = $this->ctrlStack[0];
+            if (!$frame['unreachable']) {
+                $expected = $frame['end_types'];
+                $need     = count($expected);
+                $have     = count($this->typeStack) - $frame['height'];
+                if ($have !== $need) {
+                    throw new WasmError('type mismatch');
+                }
+                for ($i = 0; $i < $need; $i++) {
+                    if ($this->typeStack[$frame['height'] + $i] !== $expected[$i]) {
+                        throw new WasmError('type mismatch');
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Control stack helpers
+    // =========================================================================
+
+    private function pushCtrl(string $opcode, array $labelTypes, array $endTypes, array $inTypes = []): void
+    {
+        $this->ctrlStack[] = [
+            'opcode'      => $opcode,
+            'label_types' => $labelTypes,
+            'end_types'   => $endTypes,
+            'in_types'    => $inTypes,   // param types (for else restoration)
+            'height'      => count($this->typeStack),
+            'unreachable' => false,
+        ];
+    }
+
+    private function popCtrl(): array
+    {
+        if (empty($this->ctrlStack)) {
+            throw new WasmError('type mismatch');
+        }
+        $frame = $this->ctrlStack[count($this->ctrlStack) - 1];
+
+        if (!$frame['unreachable']) {
+            // Check that the stack top matches end_types exactly
+            $expected = $frame['end_types'];
+            $need     = count($expected);
+            $have     = count($this->typeStack) - $frame['height'];
+            if ($have !== $need) {
+                throw new WasmError('type mismatch');
+            }
+            for ($i = 0; $i < $need; $i++) {
+                if ($this->typeStack[$frame['height'] + $i] !== $expected[$i]) {
+                    throw new WasmError('type mismatch');
+                }
+            }
+        }
+
+        // Restore stack to frame's base height
+        $this->typeStack = array_slice($this->typeStack, 0, $frame['height']);
+        array_pop($this->ctrlStack);
+        return $frame;
+    }
+
+    private function markUnreachable(): void
+    {
+        if (empty($this->ctrlStack)) return;
+        $idx = count($this->ctrlStack) - 1;
+        $this->ctrlStack[$idx]['unreachable'] = true;
+        // Truncate stack to frame height
+        $this->typeStack = array_slice($this->typeStack, 0, $this->ctrlStack[$idx]['height']);
+    }
+
+    /** @return ?array */
+    private function labelAt(int $depth): array
+    {
+        $idx = count($this->ctrlStack) - 1 - $depth;
+        if ($idx < 0) throw new WasmError('type mismatch');
+        return $this->ctrlStack[$idx];
+    }
+
+    // =========================================================================
+    // Type-stack helpers
+    // =========================================================================
+
+    /** Pop one value; if $expected !== null, check it matches. Returns actual type (or $expected if unreachable). */
+    private function pop(?int $expected): ?int
+    {
+        if (empty($this->ctrlStack)) return $expected;
+        $frame = &$this->ctrlStack[count($this->ctrlStack) - 1];
+
+        if ($frame['unreachable']) {
+            return $expected;
+        }
+
+        if (count($this->typeStack) <= $frame['height']) {
+            throw new WasmError('type mismatch');
+        }
+
+        $actual = array_pop($this->typeStack);
+        if ($expected !== null && $actual !== $expected) {
+            throw new WasmError('type mismatch');
+        }
+        return $actual;
+    }
+
+    private function push(int $t): void
+    {
+        if (empty($this->ctrlStack)) return;
+        $frame = $this->ctrlStack[count($this->ctrlStack) - 1];
+        if ($frame['unreachable']) return; // don't push in dead code
+        $this->typeStack[] = $t;
+    }
+
+    /** @param int[] $types */
+    private function popTypes(array $types): void
+    {
+        // Pop in reverse order
+        for ($i = count($types) - 1; $i >= 0; $i--) {
+            $this->pop($types[$i]);
+        }
+    }
+
+    /** @param int[] $types */
+    private function pushTypes(array $types): void
+    {
+        foreach ($types as $t) {
+            $this->push($t);
+        }
+    }
+
+    // =========================================================================
+    // Utility
+    // =========================================================================
+
+    /** @return [int[], int[]] params, results for a block type */
+    private function blockTypes(?FuncType $bt): array
+    {
+        if ($bt === null) {
+            return [[], []];
+        }
+        return [$bt->params, $bt->results];
+    }
+
+    private function localType(int $idx): int
+    {
+        $params = $this->currentFt->params;
+        if ($idx < count($params)) {
+            return $params[$idx];
+        }
+        $localIdx = $idx - count($params);
+        return $this->currentLocals[$localIdx] ?? ValType::I32;
+    }
+
+    private function globalType(int $idx): int
+    {
+        // Imported globals come first
+        $imported = 0;
+        foreach ($this->mod->imports as $imp) {
+            if ($imp['kind'] === 'global') {
+                if ($idx === $imported) {
+                    return $imp['globalType'] ?? ValType::I32;
+                }
+                $imported++;
+            }
+        }
+        $localIdx = $idx - $imported;
+        return $this->mod->globals[$localIdx]['type'] ?? ValType::I32;
+    }
+
+}
+

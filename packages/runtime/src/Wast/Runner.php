@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WasmRuntime\Wast;
 
-use WasmRuntime\{Instance, Module, Trap, WasmError, WasmValue, ValType};
+use WasmRuntime\{Instance, Module, Trap, WasmError, WasmValue, ValType, Validator};
 use WasmRuntime\Wat\{Lexer, Parser, Token};
 
 /**
@@ -191,9 +191,10 @@ final class Runner
     {
         $this->total++;
         try {
-            // Just try parsing and instantiating; expect WasmError or Trap
             $inner = $this->extractModuleSrc($src);
             $mod   = $this->parseModule($inner);
+            // Run the type validator — throws WasmError for ill-typed modules
+            (new Validator())->validateModule($mod);
             Instance::instantiate($mod, []);
             // If we get here without error, it's a failure
             $this->failed++;
