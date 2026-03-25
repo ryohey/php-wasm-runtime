@@ -73,8 +73,8 @@ final class Lexer
                 $this->pos++;
                 $this->line++;
             } elseif ($ch === ';' && $this->pos + 1 < $this->len && $this->src[$this->pos + 1] === ';') {
-                // Line comment
-                while ($this->pos < $this->len && $this->src[$this->pos] !== "\n") {
+                // Line comment: terminated by LF, CR, or CRLF
+                while ($this->pos < $this->len && $this->src[$this->pos] !== "\n" && $this->src[$this->pos] !== "\r") {
                     $this->pos++;
                 }
             } elseif ($ch === '(' && $this->pos + 1 < $this->len && $this->src[$this->pos + 1] === ';') {

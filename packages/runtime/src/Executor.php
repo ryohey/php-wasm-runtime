@@ -59,47 +59,59 @@ final class Executor
     /** @return WasmValue[] */
     private function callFunction(int $funcIdx, array $args): array
     {
-        $mod = $this->instance->module;
+        // Trampoline loop for tail-call optimisation (return_call / return_call_indirect).
+        // When a tail call is encountered, run() throws TailCallSignal and we restart
+        // the loop with the new function and args — never growing the PHP call stack.
+        while (true) {
+            $mod = $this->instance->module;
 
-        if (isset($this->hostFuncs[$funcIdx])) {
-            $r = ($this->hostFuncs[$funcIdx])($args);
-            return is_array($r) ? $r : ($r !== null ? [$r] : []);
+            if (isset($this->hostFuncs[$funcIdx])) {
+                $r = ($this->hostFuncs[$funcIdx])($args);
+                return is_array($r) ? $r : ($r !== null ? [$r] : []);
+            }
+
+            $localIdx = $funcIdx - $mod->importedFuncCount;
+            if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
+                throw new Trap("Invalid function index: $funcIdx");
+            }
+
+            $body = $mod->funcBodies[$localIdx];
+            $ft   = $mod->funcType($funcIdx);
+
+            $locals = [];
+            foreach ($args as $a) {
+                $locals[] = $a->value;
+            }
+            foreach ($body['locals'] as $lt) {
+                $locals[] = match ($lt) {
+                    ValType::I32, ValType::I64 => 0,
+                    ValType::F32, ValType::F64 => 0.0,
+                    default => 0,
+                };
+            }
+
+            try {
+                $rawResults = $this->run($body['code'], $locals, $ft);
+            } catch (TailCallSignal $tcs) {
+                // Tail call: restart loop with new function and args (no stack growth)
+                $funcIdx = $tcs->funcIdx;
+                $args    = $tcs->args;
+                continue;
+            }
+
+            $out = [];
+            foreach ($ft->results as $i => $rtype) {
+                $v     = $rawResults[$i] ?? 0;
+                $out[] = match ($rtype) {
+                    ValType::I32 => WasmValue::i32((int)$v),
+                    ValType::I64 => WasmValue::i64((int)$v),
+                    ValType::F32 => WasmValue::f32((float)$v),
+                    ValType::F64 => WasmValue::f64((float)$v),
+                    default      => WasmValue::i32((int)$v),
+                };
+            }
+            return $out;
         }
-
-        $localIdx = $funcIdx - $mod->importedFuncCount;
-        if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
-            throw new Trap("Invalid function index: $funcIdx");
-        }
-
-        $body = $mod->funcBodies[$localIdx];
-        $ft   = $mod->funcType($funcIdx);
-
-        $locals = [];
-        foreach ($args as $a) {
-            $locals[] = $a->value;
-        }
-        foreach ($body['locals'] as $lt) {
-            $locals[] = match ($lt) {
-                ValType::I32, ValType::I64 => 0,
-                ValType::F32, ValType::F64 => 0.0,
-                default => 0,
-            };
-        }
-
-        $rawResults = $this->run($body['code'], $locals, $ft);
-
-        $out = [];
-        foreach ($ft->results as $i => $rtype) {
-            $v     = $rawResults[$i] ?? 0;
-            $out[] = match ($rtype) {
-                ValType::I32 => WasmValue::i32((int)$v),
-                ValType::I64 => WasmValue::i64((int)$v),
-                ValType::F32 => WasmValue::f32((float)$v),
-                ValType::F64 => WasmValue::f64((float)$v),
-                default      => WasmValue::i32((int)$v),
-            };
-        }
-        return $out;
     }
 
     /**
@@ -228,6 +240,19 @@ final class Executor
                     break;
                 }
 
+                case 'return_call': {
+                    // Tail call: call then return (same result as call + return)
+                    $fIdx = $instr[1];
+                    $cft  = $this->instance->module->funcType($fIdx);
+                    $pc   = count($cft->params);
+                    $reversed = [];
+                    for ($j = 0; $j < $pc; $j++) {
+                        $reversed[] = $this->makeVal($cft->params[$pc - 1 - $j], array_pop($stack));
+                    }
+                    $cargs = array_reverse($reversed);
+                    throw new TailCallSignal($fIdx, $cargs);
+                }
+
                 case 'call_indirect': {
                     $typeIdx  = $instr[1];
                     $tableIdx = $instr[2] ?? 0;
@@ -249,6 +274,27 @@ final class Executor
                         $stack[] = $r->value;
                     }
                     break;
+                }
+
+                case 'return_call_indirect': {
+                    // Tail indirect call: call then return
+                    $typeIdx  = $instr[1];
+                    $tableIdx = $instr[2] ?? 0;
+                    $elemIdx  = (int)array_pop($stack);
+                    $cft      = $this->instance->module->types[$typeIdx];
+                    $pc       = count($cft->params);
+                    $reversed = [];
+                    for ($j = 0; $j < $pc; $j++) {
+                        $reversed[] = $this->makeVal($cft->params[$pc - 1 - $j], array_pop($stack));
+                    }
+                    $cargs = array_reverse($reversed);
+                    $table = $this->instance->tables[$tableIdx]
+                        ?? throw Trap::outOfBoundsTableAccess();
+                    $fIdx  = $table->get($elemIdx);
+                    if ($fIdx === null) throw Trap::uninitializedElement();
+                    if (!$cft->equals($this->instance->module->funcType($fIdx)))
+                        throw Trap::indirectCallTypeMismatch();
+                    throw new TailCallSignal($fIdx, $cargs);
                 }
 
                 // ---- Parametric ----
@@ -903,4 +949,18 @@ final class Executor
 final class EarlyReturn extends \Exception
 {
     public function __construct(public readonly array $values) { parent::__construct(); }
+}
+
+/** @internal Signals a tail call (return_call / return_call_indirect) for TCO */
+final class TailCallSignal extends \Exception
+{
+    /**
+     * @param WasmValue[] $args
+     */
+    public function __construct(
+        public readonly int   $funcIdx,
+        public readonly array $args,
+    ) {
+        parent::__construct();
+    }
 }

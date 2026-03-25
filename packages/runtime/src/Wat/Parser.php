@@ -55,6 +55,7 @@ final class Parser
         $this->expectKeyword('module');
 
         // optional module id ($name or bare keyword used as name)
+        $moduleKeyword = null;
         if ($this->peek()->type === Token::ID || $this->peek()->type === Token::KEYWORD && $this->peek()->value !== '(') {
             // only consume if it's not the start of a module field
             $next = $this->peek();
@@ -63,14 +64,30 @@ final class Parser
                 $this->consume();
             } elseif ($next->type === Token::KEYWORD && !str_contains((string)$next->value, '.') &&
                       !in_array($next->value, ['type','import','func','table','memory','global','export','start','elem','data'], true)) {
+                $moduleKeyword = (string)$next->value;
                 $this->consume();
             }
         }
 
-        // Reject (module binary ...) and (module quote ...) forms — binary/text
-        // shorthand encoding is not supported; throw so assert_invalid/assert_malformed pass.
+        // Handle (module quote "str1" "str2" ...) form: concatenate strings and re-parse
+        if ($this->peek()->type === Token::STRING && $moduleKeyword === 'quote') {
+            $content = '';
+            while ($this->peek()->type === Token::STRING) {
+                $content .= (string)$this->consume()->value;
+            }
+            $this->expect(Token::RPAREN);
+            // If the content is already a complete module (starts with '(module'), parse it
+            // directly. Otherwise treat the content as module fields and wrap in '(module ...)'.
+            $trimmed = ltrim($content);
+            if (str_starts_with($trimmed, '(module')) {
+                return (new self())->parseModule($trimmed);
+            }
+            return (new self())->parseModule('(module ' . $content . ')');
+        }
+
+        // Reject (module binary ...) and other non-text forms
         if ($this->peek()->type === Token::STRING) {
-            throw new WasmError('binary/quote module format not supported');
+            throw new WasmError('binary module format not supported');
         }
 
         // Two-pass module field parsing:
@@ -725,16 +742,25 @@ final class Parser
             $typeIdx = $this->resolveTypeIdx();
             $this->expect(Token::RPAREN);
         }
-        // Inline param/result
-        $hasSig   = false;
-        $params   = [];
-        $results  = [];
-        $paramIdx = 0; // running index for name capture
+        // Inline param/result — must appear in order: (param)* then (result)*
+        $hasSig     = false;
+        $params     = [];
+        $results    = [];
+        $paramIdx   = 0; // running index for name capture
+        $seenResult = false;
         while ($this->peek()->type === Token::LPAREN && in_array($this->peekAhead(1)->value, ['param', 'result'], true)) {
             $hasSig = true;
             $this->consume();
             $kw = $this->consume()->value;
             if ($kw === 'param') {
+                if ($seenResult) {
+                    // (param ...) after (result ...) is invalid
+                    throw new WasmError('unexpected token');
+                }
+                // Named params (param $id type) are only valid in function definitions
+                if (!$captureParamNames && $this->peek()->type === Token::ID) {
+                    throw new WasmError('unexpected token');
+                }
                 $paramName = null;
                 if ($this->peek()->type === Token::ID) {
                     $paramName = $this->consume()->value;
@@ -747,11 +773,19 @@ final class Parser
                 }
                 $paramIdx += $added;
             } else {
+                $seenResult = true;
                 $this->consumeValTypesInto($results);
             }
             $this->expect(Token::RPAREN);
         }
         if ($typeIdx >= 0) {
+            if ($hasSig) {
+                // When both explicit (type idx) and inline sig are given, they must match
+                $refType = $this->mod->types[$typeIdx] ?? null;
+                if ($refType === null || !$refType->equals(new FuncType($params, $results))) {
+                    throw new WasmError('inline function type');
+                }
+            }
             return $typeIdx;
         }
         if ($hasSig) {
@@ -1008,16 +1042,23 @@ final class Parser
                 $elseInstrs = [];
                 if ($op === 'if' && $this->peek()->type === Token::KEYWORD && $this->peek()->value === 'else') {
                     $this->consume(); // else
-                    // optional label
+                    // optional label — must match the if's label if present
                     if ($this->peek()->type === Token::ID) {
-                        $this->consume();
+                        $elseLabel = (string)$this->consume()->value;
+                        if ($elseLabel !== $label) {
+                            throw new WasmError('mismatching label');
+                        }
                     }
                     $elseInstrs = $this->parseInstrSeq();
                 }
                 if ($this->peek()->type === Token::KEYWORD && $this->peek()->value === 'end') {
                     $this->consume();
+                    // optional label — must match the block's label if present
                     if ($this->peek()->type === Token::ID) {
-                        $this->consume(); // end label
+                        $endLabel = (string)$this->consume()->value;
+                        if ($endLabel !== $label) {
+                            throw new WasmError('mismatching label');
+                        }
                     }
                 }
                 $i['then'] = $thenInstrs;
@@ -1044,8 +1085,10 @@ final class Parser
                 $i['imm'] = $labels;
                 break;
             case 'call':
+            case 'return_call':
                 $i['imm'][] = $this->resolveFuncIdx();
                 break;
+            case 'return_call_indirect':
             case 'call_indirect':
                 // Optional table index before type use: call_indirect $t (type $check) OR call_indirect N (type ..)
                 $tableIdx = 0;
@@ -1309,37 +1352,59 @@ final class Parser
 
     private function parseBlockType(): ?FuncType
     {
-        $params  = [];
-        $results = [];
-        // Consume all block type annotations: (type ...) (param ...) (result ...)
-        while ($this->peek()->type === Token::LPAREN) {
-            $kw = (string)$this->peekAhead(1)->value;
-            if ($kw === 'result') {
-                $this->consume(); $this->consume();
-                $this->consumeValTypesInto($results);
-                $this->expect(Token::RPAREN);
-            } elseif ($kw === 'param') {
-                $this->consume(); $this->consume();
-                if ($this->peek()->type === Token::ID) $this->consume(); // optional name
-                $this->consumeValTypesInto($params);
-                $this->expect(Token::RPAREN);
-            } elseif ($kw === 'type') {
-                $this->consume(); $this->consume();
-                $typeIdx = $this->resolveTypeIdx();
-                $this->expect(Token::RPAREN);
-                if (isset($this->mod->types[$typeIdx])) {
-                    $ft = $this->mod->types[$typeIdx];
-                    $params  = $ft->params;
-                    $results = $ft->results;
-                }
-            } else {
-                break;
-            }
+        // Per the WAT spec, block typeuse has strict ordering:
+        // (type idx)? (param ...)* (result ...)*
+        // Named params are not allowed; (result) before (param) is invalid.
+        $typeIdx    = -1;
+        $params     = [];
+        $results    = [];
+        $seenResult = false;
+
+        // Optional (type idx) — must come first
+        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'type') {
+            $this->consume(); $this->consume();
+            $typeIdx = $this->resolveTypeIdx();
+            $this->expect(Token::RPAREN);
         }
+
+        // Optional (param ...)* then (result ...)*
+        while ($this->peek()->type === Token::LPAREN &&
+               in_array($this->peekAhead(1)->value, ['param', 'result'], true)) {
+            $this->consume();
+            $kw = $this->consume()->value;
+            if ($kw === 'param') {
+                if ($seenResult) {
+                    throw new WasmError('unexpected token');
+                }
+                // Named params not allowed in block typeuse
+                if ($this->peek()->type === Token::ID) {
+                    throw new WasmError('unexpected token');
+                }
+                $this->consumeValTypesInto($params);
+            } else {
+                $seenResult = true;
+                $this->consumeValTypesInto($results);
+            }
+            $this->expect(Token::RPAREN);
+        }
+
         // Bare valtype (e.g. block i32 ...)
-        if (empty($results) && $this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+        if (empty($results) && empty($params) && $this->peek()->type === Token::KEYWORD
+            && $this->isValType($this->peek()->value)) {
             $results[] = ValType::fromString($this->consume()->value);
         }
+
+        if ($typeIdx >= 0) {
+            $refType = $this->mod->types[$typeIdx] ?? null;
+            if ($params !== [] || $results !== []) {
+                // When explicit (type idx) and inline sig are both given, they must match
+                if ($refType === null || !$refType->equals(new FuncType($params, $results))) {
+                    throw new WasmError('inline function type');
+                }
+            }
+            return $refType;
+        }
+
         return ($params !== [] || $results !== []) ? new FuncType($params, $results) : null;
     }
 
@@ -1365,9 +1430,17 @@ final class Parser
             $rawVal = str_starts_with($clean, '0x')
                 ? hexdec(substr($clean, 2))
                 : (float)$clean;
-            // Valid alignments are powers of 2, at most 8 (natural align of f64).
-            // Store -1 as a sentinel for "out of range" alignment.
-            $align = ($rawVal > 0x80000000 || $rawVal < 0) ? -1 : (int)$rawVal;
+            // Valid alignments are powers of 2 (>0 and only one bit set).
+            // Non-power-of-2 alignment is a parse-time error per the WAT spec.
+            if ($rawVal > 0x80000000 || $rawVal < 0) {
+                $align = -1; // sentinel for out-of-range, validator will throw
+            } else {
+                $ival = (int)$rawVal;
+                if ($ival <= 0 || ($ival & ($ival - 1)) !== 0) {
+                    throw new \WasmRuntime\WasmError('alignment');
+                }
+                $align = $ival;
+            }
         }
         return ['offset' => $offset, 'align' => $align];
     }

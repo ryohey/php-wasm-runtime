@@ -225,6 +225,16 @@ final class Validator
                     $this->pushTypes($cft->results);
                     break;
                 }
+                case 'return_call': {
+                    // Tail call: callee's result types must match enclosing function's result types
+                    $cft = $this->mod->funcType((int)$instr[1]);
+                    $this->popTypes($cft->params);
+                    if ($cft->results !== $this->currentFt->results) {
+                        throw new WasmError('type mismatch');
+                    }
+                    $this->markUnreachable();
+                    break;
+                }
                 case 'call_indirect': {
                     $typeIdx  = (int)$instr[1];
                     $tableIdx = (int)($instr[2] ?? 0);
@@ -236,6 +246,22 @@ final class Validator
                     $this->pop(ValType::I32); // table index
                     $this->popTypes($cft->params);
                     $this->pushTypes($cft->results);
+                    break;
+                }
+                case 'return_call_indirect': {
+                    // Tail indirect call: callee's result types must match enclosing function's result types
+                    $typeIdx  = (int)$instr[1];
+                    $tableIdx = (int)($instr[2] ?? 0);
+                    $cft      = $this->mod->types[$typeIdx] ?? null;
+                    if ($cft === null) throw new WasmError('unknown type');
+                    $elemType = $this->tableElemType($tableIdx);
+                    if ($elemType !== ValType::FUNCREF) throw new WasmError('type mismatch');
+                    $this->pop(ValType::I32);
+                    $this->popTypes($cft->params);
+                    if ($cft->results !== $this->currentFt->results) {
+                        throw new WasmError('type mismatch');
+                    }
+                    $this->markUnreachable();
                     break;
                 }
 
