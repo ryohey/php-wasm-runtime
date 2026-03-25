@@ -129,33 +129,38 @@ final class Executor
                     break;
 
                 case 'block': {
-                    $blockType    = $instr[1];
+                    $blockType    = $instr[1]; // FuncType|null
                     $endIp        = $instr[2];
-                    $resultCount  = ($blockType !== null) ? 1 : 0;
-                    $labelStack[] = ['block', $endIp + 1, count($stack), $resultCount];
+                    $paramCount   = $blockType ? count($blockType->params)   : 0;
+                    $resultCount  = $blockType ? count($blockType->results)  : 0;
+                    $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                     break;
                 }
 
                 case 'loop': {
+                    $blockType    = $instr[1]; // FuncType|null
                     $contIp       = $instr[2]; // first body instruction IP
-                    $labelStack[] = ['loop', $contIp, count($stack), 0];
+                    $paramCount   = $blockType ? count($blockType->params) : 0;
+                    // Loop's branch arity = paramCount (br to a loop restarts it with param values)
+                    $labelStack[] = ['loop', $contIp, count($stack) - $paramCount, $paramCount];
                     break;
                 }
 
                 case 'if': {
-                    $blockType   = $instr[1];
+                    $blockType   = $instr[1]; // FuncType|null
                     $elseIp      = $instr[2];
                     $endIp       = $instr[3];
                     $hasElse     = ($elseIp !== $endIp);
-                    $resultCount = ($blockType !== null) ? 1 : 0;
+                    $paramCount  = $blockType ? count($blockType->params)  : 0;
+                    $resultCount = $blockType ? count($blockType->results) : 0;
                     $cond        = (int)array_pop($stack);
 
                     if ($cond !== 0) {
-                        $labelStack[] = ['block', $endIp + 1, count($stack), $resultCount];
+                        $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                     } else {
                         if ($hasElse) {
                             $ip           = $elseIp + 1; // skip 'else' instruction
-                            $labelStack[] = ['block', $endIp + 1, count($stack), $resultCount];
+                            $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                         } else {
                             $ip = $endIp + 1; // skip 'end', no label needed
                         }
@@ -327,9 +332,9 @@ final class Executor
                 case 'i32.ge_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case 'i64.add': { [$a,$b]=self::p2i($stack); $stack[]=$a+$b; break; }
-                case 'i64.sub': { [$a,$b]=self::p2i($stack); $stack[]=$a-$b; break; }
-                case 'i64.mul': { [$a,$b]=self::p2i($stack); $stack[]=intval($a)*intval($b); break; }
+                case 'i64.add': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Add($a,$b); break; }
+                case 'i64.sub': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Sub($a,$b); break; }
+                case 'i64.mul': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Mul($a,$b); break; }
                 case 'i64.div_s': {
                     [$a,$b]=self::p2i($stack);
                     if ($b===0) throw Trap::integerDivideByZero();
@@ -616,6 +621,27 @@ final class Executor
         return gmp_intval($v);
     }
 
+    /** Signed 64-bit add with wrapping (handles PHP int overflow). */
+    private static function int64Add(int $a, int $b): int
+    {
+        $r = gmp_add($a, $b);
+        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
+    /** Signed 64-bit subtract with wrapping (handles PHP int overflow). */
+    private static function int64Sub(int $a, int $b): int
+    {
+        $r = gmp_sub($a, $b);
+        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
+    /** Signed 64-bit multiply with wrapping. */
+    private static function int64Mul(int $a, int $b): int
+    {
+        $r = gmp_mul($a, $b);
+        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
     private static function u64mul(int $a, int $b): int
     {
         $r = gmp_mod(gmp_mul(self::u64ToGmp($a), self::u64ToGmp($b)), gmp_pow(2, 64));
@@ -687,14 +713,16 @@ final class Executor
     private static function truncF2I32s(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        if (!is_finite($a)||$a>=2147483648.0||$a<-2147483648.0) throw Trap::integerOverflow();
+        // Values in (-2147483649, -2147483648) truncate to INT32_MIN — trap only when trunc(a) < INT32_MIN
+        if (!is_finite($a)||$a>=2147483648.0||$a<=-2147483649.0) throw Trap::integerOverflow();
         return WasmValue::mask32((int)$a);
     }
 
     private static function truncF2I32u(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        if (!is_finite($a)||$a>=4294967296.0||$a<0.0) throw Trap::integerOverflow();
+        // Values in (-1, 0) truncate to 0 — only trap when trunc(a) < 0, i.e. a <= -1
+        if (!is_finite($a)||$a>=4294967296.0||$a<=-1.0) throw Trap::integerOverflow();
         return WasmValue::mask32((int)$a);
     }
 
@@ -708,7 +736,8 @@ final class Executor
     private static function truncF2I64u(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        if (!is_finite($a)||$a<0.0||$a>=1.8446744073709552E+19) throw Trap::integerOverflow();
+        // Values in (-1, 0) truncate to 0 — only trap when trunc(a) < 0, i.e. a <= -1
+        if (!is_finite($a)||$a<=-1.0||$a>=1.8446744073709552E+19) throw Trap::integerOverflow();
         if ($a>=9.223372036854776E+18) return (int)($a-9.223372036854776E+18)|PHP_INT_MIN;
         return (int)$a;
     }

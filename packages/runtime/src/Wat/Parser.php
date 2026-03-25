@@ -1004,38 +1004,44 @@ final class Parser
         throw new WasmError("Unknown label: $label");
     }
 
-    private function parseBlockType(): ?int
+    private function parseBlockType(): ?FuncType
     {
-        $t = null;
+        $params  = [];
+        $results = [];
         // Consume all block type annotations: (type ...) (param ...) (result ...)
         while ($this->peek()->type === Token::LPAREN) {
             $kw = (string)$this->peekAhead(1)->value;
             if ($kw === 'result') {
                 $this->consume(); $this->consume();
                 while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $t = ValType::fromString($this->consume()->value);
+                    $results[] = ValType::fromString($this->consume()->value);
                 }
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'param') {
                 $this->consume(); $this->consume();
                 if ($this->peek()->type === Token::ID) $this->consume(); // optional name
                 while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $this->consume();
+                    $params[] = ValType::fromString($this->consume()->value);
                 }
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'type') {
                 $this->consume(); $this->consume();
-                $this->resolveTypeIdx();
+                $typeIdx = $this->resolveTypeIdx();
                 $this->expect(Token::RPAREN);
+                if (isset($this->mod->types[$typeIdx])) {
+                    $ft = $this->mod->types[$typeIdx];
+                    $params  = $ft->params;
+                    $results = $ft->results;
+                }
             } else {
                 break;
             }
         }
         // Bare valtype (e.g. block i32 ...)
-        if ($t === null && $this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-            $t = ValType::fromString($this->consume()->value);
+        if (empty($results) && $this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+            $results[] = ValType::fromString($this->consume()->value);
         }
-        return $t;
+        return ($params !== [] || $results !== []) ? new FuncType($params, $results) : null;
     }
 
     private function parseMemArg(): array

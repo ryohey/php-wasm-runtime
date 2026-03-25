@@ -357,13 +357,49 @@ final class Runner
     private function makeConst(string $op, Token $tok): WasmValue
     {
         $raw = $tok->value;
+        if ($op === 'f32.const' || $op === 'f64.const') {
+            $fv = $this->tokToFloat($tok, $op === 'f64.const');
+            return $op === 'f32.const' ? WasmValue::f32($fv) : WasmValue::f64($fv);
+        }
         return match ($op) {
             'i32.const' => WasmValue::i32((int)$raw),
             'i64.const' => WasmValue::i64((int)$raw),
-            'f32.const' => WasmValue::f32((float)$raw),
-            'f64.const' => WasmValue::f64((float)$raw),
             default     => WasmValue::i32((int)$raw),
         };
+    }
+
+    /** Convert a Token to a PHP float, handling nan:* and inf keywords. */
+    private function tokToFloat(Token $tok, bool $isF64 = false): float
+    {
+        if ($tok->type === Token::FLOAT) {
+            return (float)$tok->value;
+        }
+        if ($tok->type === Token::KEYWORD) {
+            $kw = (string)$tok->value;
+            if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
+                $neg     = ($m[1] === '-');
+                $hexStr  = str_replace('_', '', $m[2]);
+                if ($isF64) {
+                    // f64: 52-bit mantissa payload
+                    $payload = hexdec($hexStr); // up to 52-bit value
+                    $hi32    = ($neg ? 0x80000000 : 0) | 0x7FF00000 | (int)(($payload >> 32) & 0xFFFFF);
+                    $lo32    = (int)($payload & 0xFFFFFFFF);
+                    return (float)unpack('d', pack('VV', $lo32, $hi32))[1];
+                }
+                // f32: 23-bit mantissa payload
+                $payload = (int)(hexdec($hexStr) & 0x7FFFFF);
+                $sign    = $neg ? 0x80000000 : 0;
+                $bits32  = $sign | 0x7F800000 | $payload;
+                return (float)unpack('f', pack('V', $bits32))[1];
+            }
+            // nan:canonical, nan:arithmetic, -nan, nan
+            if (str_contains($kw, 'nan') || $kw === '-nan') {
+                return ($kw[0] === '-') ? (float)unpack('d', "\x00\x00\x00\x00\x00\x00\xF8\xFF")[1] : NAN;
+            }
+            if ($kw === 'inf')  return INF;
+            if ($kw === '-inf') return -INF;
+        }
+        return (float)$tok->value;
     }
 
     /**
@@ -415,20 +451,26 @@ final class Runner
             }
             $valTok = $tokens[$pos] ?? new Token(Token::INT, 0, 0);
             $isNanPattern = $valTok->type === Token::KEYWORD
-                && in_array((string)$valTok->value, ['nan:canonical', 'nan:arithmetic', 'nan'], true);
-            if ($valTok->type === Token::INT || $valTok->type === Token::FLOAT || $isNanPattern) {
+                && (in_array((string)$valTok->value, ['nan:canonical', 'nan:arithmetic', 'nan'], true)
+                    || str_starts_with((string)$valTok->value, 'nan:0x')
+                    || str_starts_with((string)$valTok->value, '-nan:0x'));
+            if ($valTok->type === Token::INT || $valTok->type === Token::FLOAT || $isNanPattern
+                || $valTok->type === Token::KEYWORD) {
                 $pos++; // value
             }
             $pos++; // )
             if ($isNanPattern) {
-                $expected[] = str_starts_with($op, 'f32.const') ? WasmValue::f32(NAN) : WasmValue::f64(NAN);
+                $isF64 = str_starts_with($op, 'f64.const');
+                $expected[] = $isF64
+                    ? WasmValue::f64($this->tokToFloat($valTok, true))
+                    : WasmValue::f32($this->tokToFloat($valTok, false));
                 continue;
             }
             $expected[] = match (true) {
                 str_starts_with($op, 'i32.const') => WasmValue::i32((int)$valTok->value),
                 str_starts_with($op, 'i64.const') => WasmValue::i64((int)$valTok->value),
-                str_starts_with($op, 'f32.const') => WasmValue::f32((float)$valTok->value),
-                str_starts_with($op, 'f64.const') => WasmValue::f64((float)$valTok->value),
+                str_starts_with($op, 'f32.const') => WasmValue::f32($this->tokToFloat($valTok, false)),
+                str_starts_with($op, 'f64.const') => WasmValue::f64($this->tokToFloat($valTok, true)),
                 default => WasmValue::i32((int)$valTok->value),
             };
         }
