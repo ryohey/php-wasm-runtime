@@ -56,6 +56,43 @@ final class Validator
             }
         }
 
+        // Validate element segments
+        $tableCount  = $mod->importedTableCount + count($mod->tables);
+        $funcCount   = $mod->importedFuncCount + count($mod->funcBodies);
+        foreach ($mod->elements as $elem) {
+            // Active elem segments must reference a valid table
+            if (isset($elem['offset'])) {
+                $tIdx = $elem['tableIndex'] ?? 0;
+                if ($tableCount === 0 || $tIdx >= $tableCount) {
+                    throw new WasmError('unknown table');
+                }
+            }
+            // All func indices in elem must be valid
+            foreach ($elem['funcIndices'] ?? [] as $fIdx) {
+                if ($fIdx >= $funcCount) {
+                    throw new WasmError('unknown function');
+                }
+            }
+        }
+
+        // Validate function type indices (local functions)
+        $typeCount = count($mod->types);
+        foreach ($mod->funcTypeIndices as $typeIdx) {
+            if ($typeIdx >= $typeCount) {
+                throw new WasmError('unknown type');
+            }
+        }
+
+        // Validate imported function type indices
+        foreach ($mod->imports as $imp) {
+            if ($imp['kind'] === 'func') {
+                $typeIdx = $imp['typeIndex'] ?? -1;
+                if ($typeIdx >= 0 && $typeIdx >= $typeCount) {
+                    throw new WasmError('unknown type');
+                }
+            }
+        }
+
         foreach ($mod->funcBodies as $i => $body) {
             $absIdx = $mod->importedFuncCount + $i;
             $ft     = $mod->funcType($absIdx);
@@ -189,9 +226,13 @@ final class Validator
                     break;
                 }
                 case 'call_indirect': {
-                    $typeIdx = (int)$instr[1];
-                    $cft     = $this->mod->types[$typeIdx] ?? null;
-                    if ($cft === null) throw new WasmError('type mismatch');
+                    $typeIdx  = (int)$instr[1];
+                    $tableIdx = (int)($instr[2] ?? 0);
+                    $cft      = $this->mod->types[$typeIdx] ?? null;
+                    if ($cft === null) throw new WasmError('unknown type');
+                    // call_indirect requires a funcref table (not externref)
+                    $elemType = $this->tableElemType($tableIdx);
+                    if ($elemType !== ValType::FUNCREF) throw new WasmError('type mismatch');
                     $this->pop(ValType::I32); // table index
                     $this->popTypes($cft->params);
                     $this->pushTypes($cft->results);
@@ -353,29 +394,29 @@ final class Validator
                 // ---- Memory ----
                 case 'i32.load': case 'i32.load8_s': case 'i32.load8_u':
                 case 'i32.load16_s': case 'i32.load16_u':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
                 case 'i64.load': case 'i64.load8_s': case 'i64.load8_u':
                 case 'i64.load16_s': case 'i64.load16_u': case 'i64.load32_s': case 'i64.load32_u':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::I64); break;
                 case 'f32.load':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::F32); break;
                 case 'f64.load':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->push(ValType::F64); break;
                 case 'i32.store': case 'i32.store8': case 'i32.store16':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I32); $this->pop(ValType::I32); break;
                 case 'i64.store': case 'i64.store8': case 'i64.store16': case 'i64.store32':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::I64); $this->pop(ValType::I32); break;
                 case 'f32.store':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::F32); $this->pop(ValType::I32); break;
                 case 'f64.store':
-                    $this->checkAlignment($op, (int)($instr[2] ?? 0));
+                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
                     $this->pop(ValType::F64); $this->pop(ValType::I32); break;
                 case 'memory.size':
                     $this->push(ValType::I32); break;
@@ -609,11 +650,22 @@ final class Validator
         'i64.store' => 8,    'f64.store' => 8,
     ];
 
+    /** Validate memarg: check alignment first, then offset range. */
+    private function checkMemArg(string $op, int $offset, int $align): void
+    {
+        $this->checkAlignment($op, $align);
+        // -1 is sentinel stored by parseMemArg when offset > 0xFFFFFFFF
+        if ($offset === -1) {
+            throw new WasmError('offset out of range');
+        }
+    }
+
     private function checkAlignment(string $op, int $align): void
     {
         if ($align === 0) return; // default (natural) — always valid
         $natural = self::NATURAL_ALIGN[$op] ?? PHP_INT_MAX;
-        if ($align > $natural) {
+        // -1 is sentinel for "overflow from too large alignment value"
+        if ($align < 0 || $align > $natural) {
             throw new WasmError('alignment must not be larger than natural');
         }
     }
@@ -633,6 +685,9 @@ final class Validator
             return is_int($refType) ? $refType : ValType::fromString((string)$refType);
         }
         $localIdx = $tIdx - $importedCount;
+        if ($localIdx >= count($this->mod->tables)) {
+            throw new WasmError('unknown table');
+        }
         $refType = $this->mod->tables[$localIdx]['type'] ?? 'funcref';
         return is_int($refType) ? $refType : ValType::fromString((string)$refType);
     }

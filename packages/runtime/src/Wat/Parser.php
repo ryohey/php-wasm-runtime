@@ -67,6 +67,12 @@ final class Parser
             }
         }
 
+        // Reject (module binary ...) and (module quote ...) forms — binary/text
+        // shorthand encoding is not supported; throw so assert_invalid/assert_malformed pass.
+        if ($this->peek()->type === Token::STRING) {
+            throw new WasmError('binary/quote module format not supported');
+        }
+
         // Two-pass module field parsing:
         // Pass 1: parse only (type ...) fields so forward type references work
         // Pass 2: parse all other fields (they may reference types by id)
@@ -431,6 +437,33 @@ final class Parser
             $this->expect(Token::RPAREN);
             $this->mod->exports[$ename] = ['kind' => 'memory', 'index' => $memIdx];
         }
+        // inline import: (memory (export "n") (import "mod" "name") limits)
+        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'import') {
+            $importedCount = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'memory'));
+            $absIdx        = $importedCount;
+            // Fix up already-registered exports to use the import index
+            foreach ($this->mod->exports as &$exp) {
+                if ($exp['kind'] === 'memory' && $exp['index'] === $memIdx) {
+                    $exp['index'] = $absIdx;
+                }
+            }
+            unset($exp);
+            $this->consume(); // (
+            $this->consume(); // import
+            $modName  = (string)$this->expect(Token::STRING)->value;
+            $itemName = (string)$this->expect(Token::STRING)->value;
+            $this->expect(Token::RPAREN);
+            [$min, $max] = $this->parseLimits();
+            $this->mod->imports[] = [
+                'kind'   => 'memory',
+                'module' => $modName,
+                'name'   => $itemName,
+                'min'    => $min,
+                'max'    => $max,
+            ];
+            $this->expect(Token::RPAREN);
+            return;
+        }
         // inline data shorthand: (memory (data "..."))
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'data') {
             $this->consume();
@@ -537,8 +570,9 @@ final class Parser
 
         // Simple form: (elem (table N) (offset expr) funcref (elem funcidx...))
         // OR: (elem (offset expr) funcidx...)
-        $tableIdx = 0;
-        $offset   = 0;
+        $tableIdx  = 0;
+        $offset    = 0;
+        $hasOffset = false;  // true when an active offset expression was parsed
 
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'table') {
             $this->consume();
@@ -552,10 +586,20 @@ final class Parser
             if ($kw === 'offset') {
                 $this->consume();
                 $this->consume();
-                $offset = $this->parseConstExprVal();
+                $offsetVal = $this->parseConstExpr();
+                if ($offsetVal->type !== ValType::I32) {
+                    throw new WasmError('type mismatch');
+                }
+                $offset    = (int)$offsetVal->value;
+                $hasOffset = true;
                 $this->expect(Token::RPAREN);
             } elseif ($this->isInstrKeyword($kw)) {
-                $offset = $this->parseConstExprVal();
+                $offsetVal = $this->parseConstExpr();
+                if ($offsetVal->type !== ValType::I32) {
+                    throw new WasmError('type mismatch');
+                }
+                $offset    = (int)$offsetVal->value;
+                $hasOffset = true;
             }
         }
 
@@ -587,10 +631,17 @@ final class Parser
         }
         $this->expect(Token::RPAREN);
 
-        if ($funcIndices) {
+        if ($hasOffset) {
+            // Active segment: always store so the validator can check the table exists.
             $this->mod->elements[] = [
                 'tableIndex'  => $tableIdx,
                 'offset'      => $offset,
+                'funcIndices' => $funcIndices,
+            ];
+        } elseif ($funcIndices) {
+            // Passive/declarative segment with func indices but no offset.
+            $this->mod->elements[] = [
+                'tableIndex'  => $tableIdx,
                 'funcIndices' => $funcIndices,
             ];
         }
@@ -1297,16 +1348,26 @@ final class Parser
         $offset = 0;
         $align  = 0;
         if ($this->peek()->type === Token::KEYWORD && str_starts_with((string)$this->peek()->value, 'offset=')) {
-            $tok    = $this->consume()->value;
-            $offset = (int)hexdec(str_replace('offset=', '', (string)$tok)) ?: (int)substr((string)$tok, 7);
-            // handle hex and decimal
-            $raw    = substr((string)$tok, 7);
-            $offset = str_starts_with($raw, '0x') ? hexdec($raw) : (int)$raw;
+            $tok   = $this->consume()->value;
+            $raw   = substr((string)$tok, 7);
+            $clean = str_replace('_', '', $raw);
+            $rawVal = str_starts_with($clean, '0x')
+                ? hexdec(substr($clean, 2))   // strip '0x' first so hexdec gets pure hex digits
+                : (float)$clean;
+            // WebAssembly memory offsets are u32 (0..4294967295).
+            // Store -1 as a sentinel for "out of range" so the validator can throw.
+            $offset = ($rawVal > 0xFFFFFFFF || $rawVal < 0) ? -1 : (int)$rawVal;
         }
         if ($this->peek()->type === Token::KEYWORD && str_starts_with((string)$this->peek()->value, 'align=')) {
             $tok   = $this->consume()->value;
             $raw   = substr((string)$tok, 6);
-            $align = str_starts_with($raw, '0x') ? hexdec($raw) : (int)$raw;
+            $clean = str_replace('_', '', $raw);
+            $rawVal = str_starts_with($clean, '0x')
+                ? hexdec(substr($clean, 2))
+                : (float)$clean;
+            // Valid alignments are powers of 2, at most 8 (natural align of f64).
+            // Store -1 as a sentinel for "out of range" alignment.
+            $align = ($rawVal > 0x80000000 || $rawVal < 0) ? -1 : (int)$rawVal;
         }
         return ['offset' => $offset, 'align' => $align];
     }
