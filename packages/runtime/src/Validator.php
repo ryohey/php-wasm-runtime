@@ -33,6 +33,19 @@ final class Validator
     public function validateModule(Module $mod): void
     {
         $this->mod = $mod;
+
+        // Validate start function
+        if ($mod->startFunc >= 0) {
+            $total = $mod->importedFuncCount + count($mod->funcBodies);
+            if ($mod->startFunc >= $total) {
+                throw new WasmError('unknown function');
+            }
+            $startFt = $mod->funcType($mod->startFunc);
+            if (!empty($startFt->params) || !empty($startFt->results)) {
+                throw new WasmError('type mismatch');
+            }
+        }
+
         foreach ($mod->funcBodies as $i => $body) {
             $absIdx = $mod->importedFuncCount + $i;
             $ft     = $mod->funcType($absIdx);
@@ -389,20 +402,7 @@ final class Validator
 
         // If the function frame is still open (no explicit 'end'), validate it now
         if (!empty($this->ctrlStack)) {
-            $frame = $this->ctrlStack[0];
-            if (!$frame['unreachable']) {
-                $expected = $frame['end_types'];
-                $need     = count($expected);
-                $have     = count($this->typeStack) - $frame['height'];
-                if ($have !== $need) {
-                    throw new WasmError('type mismatch');
-                }
-                for ($i = 0; $i < $need; $i++) {
-                    if ($this->typeStack[$frame['height'] + $i] !== $expected[$i]) {
-                        throw new WasmError('type mismatch');
-                    }
-                }
-            }
+            $this->popCtrl(); // reuse the same polymorphic-aware check
         }
     }
 
@@ -429,23 +429,29 @@ final class Validator
         }
         $frame = $this->ctrlStack[count($this->ctrlStack) - 1];
 
-        if (!$frame['unreachable']) {
-            // Check that the stack top matches end_types exactly
-            $expected = $frame['end_types'];
-            $need     = count($expected);
-            $have     = count($this->typeStack) - $frame['height'];
-            if ($have !== $need) {
-                throw new WasmError('type mismatch');
-            }
-            for ($i = 0; $i < $need; $i++) {
-                if ($this->typeStack[$frame['height'] + $i] !== $expected[$i]) {
+        // Pop end_types from the stack (polymorphic-aware).
+        // In polymorphic mode, underflows produce ⊥ (any-match) without actual pop.
+        $expected = $frame['end_types'];
+        for ($i = count($expected) - 1; $i >= 0; $i--) {
+            if (count($this->typeStack) <= $frame['height']) {
+                if (!$frame['unreachable']) {
+                    throw new WasmError('type mismatch');
+                }
+                // Polymorphic underflow: treat as ⊥, skip actual pop
+            } else {
+                $actual = array_pop($this->typeStack);
+                if ($actual !== $expected[$i]) {
                     throw new WasmError('type mismatch');
                 }
             }
         }
 
-        // Restore stack to frame's base height
-        $this->typeStack = array_slice($this->typeStack, 0, $frame['height']);
+        // After popping end_types, stack must be exactly at frame height.
+        // This applies even in unreachable mode — extra unconsumed values are invalid.
+        if (count($this->typeStack) !== $frame['height']) {
+            throw new WasmError('type mismatch');
+        }
+
         array_pop($this->ctrlStack);
         return $frame;
     }
@@ -471,17 +477,21 @@ final class Validator
     // Type-stack helpers
     // =========================================================================
 
-    /** Pop one value; if $expected !== null, check it matches. Returns actual type (or $expected if unreachable). */
+    /**
+     * Pop one value; if $expected !== null, check it matches.
+     * In unreachable (polymorphic) mode, underflows are allowed (return expected/⊥).
+     * But if there IS a concrete type on the stack, still check it.
+     */
     private function pop(?int $expected): ?int
     {
         if (empty($this->ctrlStack)) return $expected;
         $frame = &$this->ctrlStack[count($this->ctrlStack) - 1];
 
-        if ($frame['unreachable']) {
-            return $expected;
-        }
-
         if (count($this->typeStack) <= $frame['height']) {
+            // Stack underflow
+            if ($frame['unreachable']) {
+                return $expected; // polymorphic: ⊥ matches anything
+            }
             throw new WasmError('type mismatch');
         }
 
@@ -495,8 +505,7 @@ final class Validator
     private function push(int $t): void
     {
         if (empty($this->ctrlStack)) return;
-        $frame = $this->ctrlStack[count($this->ctrlStack) - 1];
-        if ($frame['unreachable']) return; // don't push in dead code
+        // Always push, even in unreachable mode — concrete types may be checked by later pops
         $this->typeStack[] = $t;
     }
 
@@ -537,7 +546,10 @@ final class Validator
             return $params[$idx];
         }
         $localIdx = $idx - count($params);
-        return $this->currentLocals[$localIdx] ?? ValType::I32;
+        if (!isset($this->currentLocals[$localIdx])) {
+            throw new WasmError('type mismatch'); // unknown local index
+        }
+        return $this->currentLocals[$localIdx];
     }
 
     private function globalType(int $idx): int
@@ -553,7 +565,10 @@ final class Validator
             }
         }
         $localIdx = $idx - $imported;
-        return $this->mod->globals[$localIdx]['type'] ?? ValType::I32;
+        if (!isset($this->mod->globals[$localIdx])) {
+            throw new WasmError('type mismatch'); // unknown global index
+        }
+        return $this->mod->globals[$localIdx]['type'];
     }
 
 }
