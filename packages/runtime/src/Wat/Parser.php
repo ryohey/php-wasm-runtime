@@ -47,7 +47,8 @@ final class Parser
         $this->mod        = new Module();
         $this->memoryUsed = false;
 
-        // Pre-scan to register all func IDs so forward references work
+        // Pre-scan to register all func IDs so forward references work.
+        // Type IDs are registered in the first pass of module field parsing.
         $this->preScanFuncIds();
 
         $this->expect(Token::LPAREN);
@@ -65,9 +66,36 @@ final class Parser
             }
         }
 
+        // Two-pass module field parsing:
+        // Pass 1: parse only (type ...) fields so forward type references work
+        // Pass 2: parse all other fields (they may reference types by id)
+        $fieldPositions = [];
         while ($this->peek()->type !== Token::RPAREN && $this->peek()->type !== Token::EOF) {
-            $this->parseModuleField();
+            $fieldStart = $this->pos;
+            if ($this->peekAhead(1)->value === 'type') {
+                $this->parseModuleField();
+            } else {
+                // Skip to end of this S-expression
+                $this->consume(); // (
+                $depth = 1;
+                while ($depth > 0 && $this->peek()->type !== Token::EOF) {
+                    $t = $this->consume();
+                    if ($t->type === Token::LPAREN)      $depth++;
+                    elseif ($t->type === Token::RPAREN)  $depth--;
+                }
+            }
+            $fieldPositions[] = $fieldStart;
         }
+        $endPos = $this->pos; // position of closing ) of module
+
+        // Pass 2: parse all non-type fields
+        foreach ($fieldPositions as $pos) {
+            if ($this->tokens[$pos + 1]->value !== 'type') {
+                $this->pos = $pos;
+                $this->parseModuleField();
+            }
+        }
+        $this->pos = $endPos;
         $this->expect(Token::RPAREN);
 
         $this->resolveImportCounts();
@@ -236,7 +264,7 @@ final class Parser
 
         // local declarations – capture names so $name-based local.get/set work
         $locals      = [];
-        $localOffset = count($this->mod->types[$typeIdx]->params);
+        $localOffset = count($this->mod->types[$typeIdx]->params ?? []);
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'local') {
             $this->consume(); // (
             $this->consume(); // local
@@ -256,11 +284,12 @@ final class Parser
             $this->expect(Token::RPAREN);
         }
 
-        $params    = $this->mod->types[$typeIdx]->params;
+        $funcType  = $this->mod->types[$typeIdx] ?? new FuncType([], []);
+        $params    = $funcType->params;
         $allLocals = array_merge(array_fill(0, count($params), 0), $locals);
 
         // Parse instructions (flat list, may be folded)
-        $instrs = $this->parseInstrSeq($this->mod->types[$typeIdx]);
+        $instrs = $this->parseInstrSeq($funcType);
 
         // Compile to flat instruction stream (reset label stack for each function)
         $this->compileLabelStack = [];
@@ -294,7 +323,13 @@ final class Parser
         $tok = $this->peek();
         if ($tok->type === Token::INT) {
             [$min, $max] = $this->parseLimits();
-            $refType = $this->expectKeyword(null);
+            // reftype may be a keyword (funcref/externref) or (ref ...)
+            if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
+                $this->skipRefType();
+                $refType = 'funcref';
+            } else {
+                $refType = $this->expectKeyword(null);
+            }
             $this->mod->tables[] = ['type' => $refType, 'min' => $min, 'max' => $max];
         } elseif ($tok->type === Token::KEYWORD && ($tok->value === 'funcref' || $tok->value === 'externref')) {
             // inline form: funcref (elem ...)
@@ -314,6 +349,29 @@ final class Parser
                 'offset'      => 0,
                 'funcIndices' => $funcIndices,
             ];
+        } elseif ($tok->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
+            // inline form: (ref null $t) (elem ...)
+            $this->skipRefType();
+            $refType = 'funcref';
+            if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'elem') {
+                $this->consume(); // (
+                $this->consume(); // elem
+                $funcIndices = [];
+                while ($this->peek()->type !== Token::RPAREN) {
+                    $funcIndices[] = $this->resolveFuncIdx();
+                }
+                $this->expect(Token::RPAREN);
+                $min = count($funcIndices);
+                $this->mod->tables[] = ['type' => $refType, 'min' => $min, 'max' => $min];
+                $tableIdx2 = count($this->mod->tables) - 1;
+                $this->mod->elements[] = [
+                    'tableIndex'  => $tableIdx2,
+                    'offset'      => 0,
+                    'funcIndices' => $funcIndices,
+                ];
+            } else {
+                $this->mod->tables[] = ['type' => $refType, 'min' => 0, 'max' => null];
+            }
         }
         $this->expect(Token::RPAREN);
     }
@@ -499,16 +557,12 @@ final class Parser
                 if ($this->peek()->type === Token::ID) {
                     $this->consume(); // param id
                 }
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $params[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($params);
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'result') {
                 $this->consume();
                 $this->consume();
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $results[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($results);
                 $this->expect(Token::RPAREN);
             } else {
                 break;
@@ -546,18 +600,14 @@ final class Parser
                     $paramName = $this->consume()->value;
                 }
                 $prevCount = count($params);
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $params[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($params);
                 $added = count($params) - $prevCount;
                 if ($captureParamNames && $paramName !== null) {
                     $this->localNames[$paramName] = $paramIdx;
                 }
                 $paramIdx += $added;
             } else {
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $results[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($results);
             }
             $this->expect(Token::RPAREN);
         }
@@ -815,6 +865,32 @@ final class Parser
                     $this->expect(Token::RPAREN);
                 }
                 break;
+            case 'table.get': case 'table.set': case 'table.size': case 'table.grow':
+            case 'table.fill': case 'table.copy': case 'table.init': case 'elem.drop':
+                // optional table index
+                if ($this->peek()->type === Token::INT || $this->peek()->type === Token::ID) {
+                    $i['imm'][] = $this->resolveTableIdx();
+                }
+                // table.copy and table.init take a second index
+                if (($op === 'table.copy' || $op === 'table.init') &&
+                    ($this->peek()->type === Token::INT || $this->peek()->type === Token::ID)) {
+                    $i['imm'][] = $this->resolveTableIdx();
+                }
+                break;
+            case 'ref.func':
+                // function index immediate
+                if ($this->peek()->type === Token::INT || $this->peek()->type === Token::ID) {
+                    $i['imm'][] = $this->resolveFuncIdx();
+                }
+                break;
+            case 'ref.null':
+                // heap type: func, extern, $id, or keyword
+                if ($this->peek()->type === Token::KEYWORD || $this->peek()->type === Token::ID) {
+                    $i['imm'][] = (string)$this->consume()->value;
+                }
+                break;
+            case 'ref.is_null': case 'ref.as_non_null':
+                break; // no immediates
             default:
                 // Memory instructions: offset= align= immediates
                 if ($this->isMemInstr($op)) {
@@ -1013,16 +1089,12 @@ final class Parser
             $kw = (string)$this->peekAhead(1)->value;
             if ($kw === 'result') {
                 $this->consume(); $this->consume();
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $results[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($results);
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'param') {
                 $this->consume(); $this->consume();
                 if ($this->peek()->type === Token::ID) $this->consume(); // optional name
-                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                    $params[] = ValType::fromString($this->consume()->value);
-                }
+                $this->consumeValTypesInto($params);
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'type') {
                 $this->consume(); $this->consume();
@@ -1256,6 +1328,51 @@ final class Parser
         }
     }
 
+    /**
+     * Pre-scan the token stream to register all type IDs before full parsing.
+     * This enables forward references (e.g. using $forward before it is defined).
+     */
+    private function preScanTypeIds(): void
+    {
+        $typeCount = 0;
+        $n = count($this->tokens);
+
+        $i = 0;
+        while ($i < $n && !($this->tokens[$i]->type === Token::KEYWORD && $this->tokens[$i]->value === 'module')) {
+            $i++;
+        }
+        $i++; // skip 'module'
+        if ($i < $n && $this->tokens[$i]->type === Token::ID) {
+            $i++; // skip optional module id
+        }
+
+        while ($i < $n && $this->tokens[$i]->type === Token::LPAREN) {
+            $kw = $this->tokens[$i + 1] ?? null;
+            if (!$kw || $kw->type !== Token::KEYWORD) {
+                break;
+            }
+
+            $j = $i + 1;
+            $depth = 1;
+            while ($j < $n && $depth > 0) {
+                if ($this->tokens[$j]->type === Token::LPAREN)     $depth++;
+                elseif ($this->tokens[$j]->type === Token::RPAREN) $depth--;
+                $j++;
+            }
+
+            if ($kw->value === 'type') {
+                $p = $i + 2;
+                $idTok = $this->tokens[$p] ?? null;
+                if ($idTok && $idTok->type === Token::ID) {
+                    $this->typeIds[(string)$idTok->value] = $typeCount;
+                }
+                $typeCount++;
+            }
+
+            $i = $j;
+        }
+    }
+
     private function resolveImportCounts(): void
     {
         $fc = $gc = $mc = $tc = 0;
@@ -1388,6 +1505,41 @@ final class Parser
     private function isValType(string $s): bool
     {
         return in_array($s, ['i32', 'i64', 'f32', 'f64', 'funcref', 'externref'], true);
+    }
+
+    /**
+     * Skip a (ref ...) reference type, treating it as a ValType::FUNCREF placeholder.
+     * Handles forms like: (ref null func), (ref null $t), (ref $t), (ref func), etc.
+     */
+    private function skipRefType(): void
+    {
+        $this->consume(); // (
+        $this->consume(); // ref
+        // consume tokens until matching )
+        $depth = 1;
+        while ($depth > 0) {
+            $t = $this->consume();
+            if ($t->type === Token::LPAREN) $depth++;
+            elseif ($t->type === Token::RPAREN) $depth--;
+            elseif ($t->type === Token::EOF) break;
+        }
+    }
+
+    /**
+     * Consume value types into $types, handling both simple keywords and (ref ...) forms.
+     */
+    private function consumeValTypesInto(array &$types): void
+    {
+        while (true) {
+            if ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+                $types[] = ValType::fromString($this->consume()->value);
+            } elseif ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
+                $types[] = ValType::FUNCREF; // placeholder for ref types
+                $this->skipRefType();
+            } else {
+                break;
+            }
+        }
     }
 
     private function isMemInstr(string $op): bool
