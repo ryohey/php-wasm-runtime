@@ -824,15 +824,20 @@ final class Parser
                 $i['imm'][] = $this->resolveFuncIdx();
                 break;
             case 'call_indirect':
-                $typeIdx = $this->resolveTypeUse();
+                // Optional table index before type use: call_indirect $t (type $check) OR call_indirect N (type ..)
                 $tableIdx = 0;
+                if ($this->peek()->type === Token::INT) {
+                    $tableIdx = (int)$this->consume()->value;
+                } elseif ($this->peek()->type === Token::ID) {
+                    $tableIdx = $this->resolveTableIdx();
+                }
+                $typeIdx = $this->resolveTypeUse();
+                // Also handle (table ...) form after type use
                 if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'table') {
                     $this->consume();
                     $this->consume();
                     $tableIdx = $this->resolveTableIdx();
                     $this->expect(Token::RPAREN);
-                } elseif ($this->peek()->type === Token::INT) {
-                    $tableIdx = (int)$this->consume()->value;
                 }
                 $i['imm'] = [$typeIdx, $tableIdx];
                 break;
