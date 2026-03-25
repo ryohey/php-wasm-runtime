@@ -411,7 +411,8 @@ final class Parser
 
     private function parseGlobal(): void
     {
-        $gIdx = count($this->mod->globals);
+        $importedGlobals = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'global'));
+        $gIdx = $importedGlobals + count($this->mod->globals);
         if ($this->peek()->type === Token::ID) {
             $this->globalIds[$this->consume()->value] = $gIdx;
         }
@@ -422,6 +423,24 @@ final class Parser
             $ename = $this->expect(Token::STRING)->value;
             $this->expect(Token::RPAREN);
             $this->mod->exports[$ename] = ['kind' => 'global', 'index' => $gIdx];
+        }
+        // optional inline import: (global [$id] (import "mod" "name") type)
+        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'import') {
+            $this->consume(); // (
+            $this->consume(); // import
+            $imod  = $this->expect(Token::STRING)->value;
+            $iname = $this->expect(Token::STRING)->value;
+            $this->expect(Token::RPAREN);
+            [$gtype, $mutable] = $this->parseGlobalType();
+            $this->mod->imports[] = [
+                'kind'       => 'global',
+                'module'     => $imod,
+                'name'       => $iname,
+                'globalType' => $gtype,
+                'mutable'    => $mutable,
+            ];
+            $this->expect(Token::RPAREN);
+            return;
         }
         [$gtype, $mutable] = $this->parseGlobalType();
         $initExpr = $this->parseConstExpr();
@@ -454,6 +473,27 @@ final class Parser
 
     private function parseElem(): void
     {
+        // Declarative segment: (elem declare ...)
+        // These declare functions used in funcref context but don't allocate a table slot.
+        if ($this->peek()->type === Token::KEYWORD && $this->peek()->value === 'declare') {
+            $this->consume(); // declare
+            // skip optional reftype keyword
+            if ($this->peek()->type === Token::KEYWORD && in_array($this->peek()->value, ['funcref', 'func', 'externref', 'null_ref'], true)) {
+                $this->consume();
+            }
+            // skip (ref.func ...) or func indices
+            while ($this->peek()->type !== Token::RPAREN) {
+                if ($this->peek()->type === Token::LPAREN) {
+                    $this->consume();
+                    $this->skipUntilRParen();
+                } else {
+                    $this->consume();
+                }
+            }
+            $this->expect(Token::RPAREN);
+            return;
+        }
+
         // Simple form: (elem (table N) (offset expr) funcref (elem funcidx...))
         // OR: (elem (offset expr) funcidx...)
         $tableIdx = 0;
@@ -645,14 +685,23 @@ final class Parser
     private function parseGlobalType(): array
     {
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'mut') {
-            $this->consume();
-            $this->consume();
-            $t = ValType::fromString($this->expectKeyword(null));
+            $this->consume(); // (
+            $this->consume(); // mut
+            $t = $this->parseValTypeOrRef();
             $this->expect(Token::RPAREN);
             return [$t, true];
         }
-        $t = ValType::fromString($this->expectKeyword(null));
+        $t = $this->parseValTypeOrRef();
         return [$t, false];
+    }
+
+    private function parseValTypeOrRef(): int
+    {
+        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
+            $this->skipRefType();
+            return ValType::FUNCREF;
+        }
+        return ValType::fromString($this->expectKeyword(null));
     }
 
     /** Parse a constant expression returning a WasmValue */
@@ -678,12 +727,68 @@ final class Parser
     private function parseConstValue(string $op): WasmValue
     {
         return match ($op) {
-            'i32.const' => WasmValue::i32((int)$this->consumeNumeric()),
-            'i64.const' => WasmValue::i64((int)$this->consumeNumeric()),
-            'f32.const' => WasmValue::f32($this->consumeF32Float()),
-            'f64.const' => WasmValue::f64($this->consumeF64Float()),
-            default     => throw new WasmError("Not a const expr: $op"),
+            'i32.const'  => WasmValue::i32((int)$this->consumeNumeric()),
+            'i64.const'  => WasmValue::i64((int)$this->consumeNumeric()),
+            'f32.const'  => WasmValue::f32($this->consumeF32Float()),
+            'f64.const'  => WasmValue::f64($this->consumeF64Float()),
+            'global.get' => $this->parseConstGlobalGet(),
+            'ref.null'   => $this->parseConstRefNull(),
+            'ref.func'   => $this->parseConstRefFunc(),
+            'i32.add', 'i32.sub', 'i32.mul' => $this->parseConstBinop($op),
+            'i64.add', 'i64.sub', 'i64.mul' => $this->parseConstBinop($op),
+            default      => throw new WasmError("Not a const expr: $op"),
         };
+    }
+
+    private function parseConstGlobalGet(): WasmValue
+    {
+        // global.get idx — returns the global value (for constant init)
+        $idx = $this->resolveGlobalIdx();
+        // Look up the value in already-parsed globals (imports or earlier globals)
+        $importedCount = $this->mod->importedGlobalCount;
+        if ($idx < $importedCount) {
+            // Imported global — we don't have the value, return 0
+            return WasmValue::i32(0);
+        }
+        $localIdx = $idx - $importedCount;
+        return $this->mod->globals[$localIdx]['init'] ?? WasmValue::i32(0);
+    }
+
+    private function parseConstRefNull(): WasmValue
+    {
+        // ref.null heaptype — consume heap type keyword or id
+        if ($this->peek()->type === Token::KEYWORD || $this->peek()->type === Token::ID) {
+            $this->consume();
+        }
+        return WasmValue::i32(0); // null reference represented as 0
+    }
+
+    private function parseConstRefFunc(): WasmValue
+    {
+        // ref.func funcidx — consume func index
+        if ($this->peek()->type === Token::INT || $this->peek()->type === Token::ID) {
+            $this->resolveFuncIdx();
+        }
+        return WasmValue::i32(0); // func reference represented as 0
+    }
+
+    private function parseConstBinop(string $op): WasmValue
+    {
+        // Folded const binary operation: already consumed op, now consume two operands
+        // Each operand is a folded const expr
+        $a = $this->parseConstExpr();
+        $b = $this->parseConstExpr();
+        [$av, $bv] = [(int)$a->value, (int)$b->value];
+        $result = match ($op) {
+            'i32.add' => WasmValue::i32($av + $bv),
+            'i32.sub' => WasmValue::i32($av - $bv),
+            'i32.mul' => WasmValue::i32($av * $bv),
+            'i64.add' => WasmValue::i64($av + $bv),
+            'i64.sub' => WasmValue::i64($av - $bv),
+            'i64.mul' => WasmValue::i64($av * $bv),
+            default   => WasmValue::i32(0),
+        };
+        return $result;
     }
 
     // -------------------------------------------------------------------------
@@ -860,13 +965,12 @@ final class Parser
                 $i['imm'][] = $this->consumeF64Float();
                 break;
             case 'select':
-                // optional type annotation
-                if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'result') {
+                // optional type annotation(s): (result ...) may contain ref types
+                while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'result') {
                     $this->consume();
                     $this->consume();
-                    while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-                        $this->consume();
-                    }
+                    $dummy = [];
+                    $this->consumeValTypesInto($dummy);
                     $this->expect(Token::RPAREN);
                 }
                 break;
