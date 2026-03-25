@@ -39,15 +39,23 @@
             "dist": {
                 "type": "path",
                 "url": "packages/runtime",
-                "reference": "d48d08a41ac2cda2aac989cf2201006798b85796"
+                "reference": "4170beed383011a4515da25befdf0f51849c4c12"
             },
             "require": {
                 "php": ">=8.1"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^11.0"
             },
             "type": "library",
             "autoload": {
                 "psr-4": {
                     "WasmRuntime\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "WasmRuntime\\Tests\\": "tests/"
                 }
             },
             "description": "Pure PHP WebAssembly (WAT/WAST) runtime – core interpreter",
@@ -61,16 +69,24 @@
             "dist": {
                 "type": "path",
                 "url": "packages/wasi",
-                "reference": "b0ec21676b17554cf313d8b56b978464191c48cd"
+                "reference": "29d1cdfb2c4bd85181aa3260fe8459d06ee601e3"
             },
             "require": {
                 "php": ">=8.1",
                 "php-wasm/runtime": "*"
             },
+            "require-dev": {
+                "phpunit/phpunit": "^11.0"
+            },
             "type": "library",
             "autoload": {
                 "psr-4": {
                     "WasmRuntime\\Wasi\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "WasmRuntime\\Tests\\Wasi\\": "tests/"
                 }
             },
             "description": "WASI (wasi_snapshot_preview1) implementation for php-wasm/runtime",

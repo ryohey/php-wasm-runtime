@@ -366,7 +366,7 @@ final class Executor
                 case 'f32.add':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a+$b); break; }
                 case 'f32.sub':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a-$b); break; }
                 case 'f32.mul':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a*$b); break; }
-                case 'f32.div':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a/$b); break; }
+                case 'f32.div':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
                 case 'f32.min':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmin($a,$b)); break; }
                 case 'f32.max':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmax($a,$b)); break; }
                 case 'f32.abs':     { $stack[]=WasmValue::canonF32(abs((float)array_pop($stack))); break; }
@@ -388,7 +388,7 @@ final class Executor
                 case 'f64.add':     { [$a,$b]=self::p2f($stack); $stack[]=$a+$b; break; }
                 case 'f64.sub':     { [$a,$b]=self::p2f($stack); $stack[]=$a-$b; break; }
                 case 'f64.mul':     { [$a,$b]=self::p2f($stack); $stack[]=$a*$b; break; }
-                case 'f64.div':     { [$a,$b]=self::p2f($stack); $stack[]=$a/$b; break; }
+                case 'f64.div':     { [$a,$b]=self::p2f($stack); $stack[]=self::fdiv($a,$b); break; }
                 case 'f64.min':     { [$a,$b]=self::p2f($stack); $stack[]=self::fmin($a,$b); break; }
                 case 'f64.max':     { [$a,$b]=self::p2f($stack); $stack[]=self::fmax($a,$b); break; }
                 case 'f64.abs':     { $stack[]=abs((float)array_pop($stack)); break; }
@@ -601,32 +601,69 @@ final class Executor
         return (float)(($v>>1)&PHP_INT_MAX)*2.0+($v&1);
     }
 
+    /** Convert a PHP signed int (used as unsigned 64-bit) to a GMP integer. */
+    private static function u64ToGmp(int $a): \GMP
+    {
+        return $a >= 0 ? gmp_init($a) : gmp_add(gmp_init($a), gmp_pow(2, 64));
+    }
+
+    /** Convert a GMP integer in [0, 2^64) back to a PHP signed int (bit-identical). */
+    private static function gmpToU64(\GMP $v): int
+    {
+        if (gmp_cmp($v, gmp_pow(2, 63)) >= 0) {
+            $v = gmp_sub($v, gmp_pow(2, 64));
+        }
+        return gmp_intval($v);
+    }
+
+    private static function u64mul(int $a, int $b): int
+    {
+        $r = gmp_mod(gmp_mul(self::u64ToGmp($a), self::u64ToGmp($b)), gmp_pow(2, 64));
+        return self::gmpToU64($r);
+    }
+
     private static function u64div(int $a, int $b): int
     {
-        if ($a>=0 && $b>0) return intdiv($a,$b);
-        $fa=self::u64toFloat($a); $fb=self::u64toFloat($b);
-        $q=(int)($fa/$fb);
-        while(self::u64cmp(intval($q)*intval($b),$a)>0) $q--;
-        while(self::u64cmp(intval($q+1)*intval($b),$a)<=0) $q++;
-        return $q;
+        if ($a >= 0 && $b > 0) return intdiv($a, $b);
+        return self::gmpToU64(gmp_div_q(self::u64ToGmp($a), self::u64ToGmp($b)));
     }
 
     private static function u64rem(int $a, int $b): int
     {
-        return $a-intval(self::u64div($a,$b))*intval($b);
+        if ($a >= 0 && $b > 0) return $a % $b;
+        return self::gmpToU64(gmp_mod(self::u64ToGmp($a), self::u64ToGmp($b)));
+    }
+
+    /** IEEE 754 float division — handles 0.0/0.0 which throws in PHP 8 */
+    private static function fdiv(float $a, float $b): float
+    {
+        if ($b == 0.0) {
+            if ($a == 0.0 || is_nan($a)) return NAN;
+            // ±inf with sign = sign(a) XOR sign(b)
+            // Note: use ^ (bitwise) not XOR (logical) — XOR has lower precedence than =
+            $neg = self::isNegZero($b) ^ ($a < 0);
+            return $neg ? -INF : INF;
+        }
+        return $a / $b;
+    }
+
+    private static function isNegZero(float $v): bool
+    {
+        $bytes = unpack('C8', pack('d', $v));
+        return ($bytes[8] & 0x80) !== 0;
     }
 
     private static function fmin(float $a, float $b): float
     {
         if (is_nan($a)||is_nan($b)) return NAN;
-        if ($a===0.0&&$b===0.0) return (1/$a===-INF||1/$b===-INF)?-0.0:0.0;
+        if ($a===0.0&&$b===0.0) return (self::isNegZero($a)||self::isNegZero($b))?-0.0:0.0;
         return min($a,$b);
     }
 
     private static function fmax(float $a, float $b): float
     {
         if (is_nan($a)||is_nan($b)) return NAN;
-        if ($a===0.0&&$b===0.0) return (1/$a===INF||1/$b===INF)?0.0:-0.0;
+        if ($a===0.0&&$b===0.0) return (!self::isNegZero($a)||!self::isNegZero($b))?0.0:-0.0;
         return max($a,$b);
     }
 
@@ -641,8 +678,10 @@ final class Executor
 
     private static function copysign(float $a, float $b): float
     {
-        $neg=($b<0.0||(1/$b)===-INF);
-        return $neg?-abs($a):abs($a);
+        // Use pack/unpack to inspect the sign bit — avoids DivisionByZeroError on -0.0
+        $bytes = unpack('C8', pack('d', $b));
+        $neg   = ($bytes[8] & 0x80) !== 0;
+        return $neg ? -abs($a) : abs($a);
     }
 
     private static function truncF2I32s(float $a): int

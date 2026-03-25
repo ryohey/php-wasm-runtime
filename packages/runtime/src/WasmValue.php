@@ -45,9 +45,23 @@ final class WasmValue
         return $v & 0xFFFFFFFF;
     }
 
-    /** Round float to f32 precision via pack/unpack */
+    /** Round float to f32 precision via pack/unpack, preserving NaN payloads. */
     public static function canonF32(float $v): float
     {
+        if (is_nan($v)) {
+            // Explicit bit-level f64 → f32 narrowing to preserve NaN payloads.
+            // PHP's pack('f',...) may canonicalise NaN payloads on some platforms.
+            $w    = unpack('V2', pack('d', $v));
+            $hi32 = $w[2]; // high 32 bits of f64 (little-endian layout)
+            $lo32 = $w[1]; // low  32 bits of f64
+            $sign     = $hi32 & 0x80000000;
+            // f64 mantissa bits [51:29] map to f32 mantissa bits [22:0]
+            $mant_hi  = $hi32 & 0xFFFFF;
+            $mant_f32 = (($mant_hi << 3) | (($lo32 >> 29) & 0x7)) & 0x7FFFFF;
+            if ($mant_f32 === 0) $mant_f32 = 0x400000; // keep non-infinite
+            $bits32 = $sign | 0x7F800000 | $mant_f32;
+            return (float)unpack('f', pack('V', (int)$bits32))[1];
+        }
         $packed = pack('f', $v);
         return (float)unpack('f', $packed)[1];
     }

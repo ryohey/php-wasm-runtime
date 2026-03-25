@@ -97,9 +97,10 @@ final class Instance
         foreach ($mod->dataSegments as $ds) {
             $memIdx = $ds['memIndex'];
             $offset = (int)(($ds['offset'] instanceof WasmValue) ? $ds['offset']->value : $ds['offset']);
-            if (isset($inst->memories[$memIdx])) {
-                $inst->memories[$memIdx]->init($offset, $ds['bytes']);
+            if (!isset($inst->memories[$memIdx])) {
+                throw new WasmError("unknown memory $memIdx");
             }
+            $inst->memories[$memIdx]->init($offset, $ds['bytes']);
         }
 
         // ---- Element segments ----

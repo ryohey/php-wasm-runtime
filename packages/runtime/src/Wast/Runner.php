@@ -414,10 +414,16 @@ final class Runner
                 continue;
             }
             $valTok = $tokens[$pos] ?? new Token(Token::INT, 0, 0);
-            if ($valTok->type === Token::INT || $valTok->type === Token::FLOAT) {
+            $isNanPattern = $valTok->type === Token::KEYWORD
+                && in_array((string)$valTok->value, ['nan:canonical', 'nan:arithmetic', 'nan'], true);
+            if ($valTok->type === Token::INT || $valTok->type === Token::FLOAT || $isNanPattern) {
                 $pos++; // value
             }
             $pos++; // )
+            if ($isNanPattern) {
+                $expected[] = str_starts_with($op, 'f32.const') ? WasmValue::f32(NAN) : WasmValue::f64(NAN);
+                continue;
+            }
             $expected[] = match (true) {
                 str_starts_with($op, 'i32.const') => WasmValue::i32((int)$valTok->value),
                 str_starts_with($op, 'i64.const') => WasmValue::i64((int)$valTok->value),
@@ -481,6 +487,23 @@ final class Runner
         }
     }
 
+    private static function floatToWat(float $v): string
+    {
+        if (is_nan($v)) {
+            // Preserve sign bit of NaN
+            $bytes = unpack('C8', pack('d', $v));
+            return ($bytes[8] & 0x80) ? '-nan' : 'nan';
+        }
+        if (is_infinite($v)) {
+            return $v > 0 ? 'inf' : '-inf';
+        }
+        // Use var_export for exact round-trip precision.
+        // PHP's (string) uses precision=14 which loses precision for adjacent f64 values.
+        // var_export uses serialize_precision=-1 (minimum digits for exact round-trip).
+        // It also correctly handles -0.0 → "-0.0" (preserves sign bit).
+        return (string)var_export($v, true);
+    }
+
     private function findMatchingRParen(array $tokens, int $start): int
     {
         $depth = 0;
@@ -507,7 +530,7 @@ final class Runner
                 Token::STRING  => '"' . addcslashes((string)$tok->value, '"\\') . '"',
                 Token::ID      => (string)$tok->value,
                 Token::INT     => (string)$tok->value,
-                Token::FLOAT   => is_nan((float)$tok->value) ? 'nan' : (string)$tok->value,
+                Token::FLOAT   => self::floatToWat((float)$tok->value),
                 Token::KEYWORD => (string)$tok->value,
                 default        => '',
             };

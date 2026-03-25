@@ -34,16 +34,32 @@ final class Wasi
 
     private int $nextFd = 3; // 0=stdin, 1=stdout, 2=stderr are fixed
 
+    /** @var resource */
+    private $stdout;
+    /** @var resource */
+    private $stderr;
+    /** @var resource */
+    private $stdin;
+
     /**
-     * @param string[]            $args        argv (index 0 is the program name)
-     * @param array<string,string> $env        environment variables (key => value)
-     * @param string[]            $preopenDirs directories to pre-open for path access
+     * @param string[]             $args        argv (index 0 is the program name)
+     * @param array<string,string> $env         environment variables (key => value)
+     * @param string[]             $preopenDirs directories to pre-open for path access
+     * @param resource|null        $stdout      stream for fd 1 (default: STDOUT)
+     * @param resource|null        $stderr      stream for fd 2 (default: STDERR)
+     * @param resource|null        $stdin       stream for fd 0 (default: STDIN)
      */
     public function __construct(
         private readonly array $args = [],
         private readonly array $env = [],
         array $preopenDirs = [],
+        $stdout = null,
+        $stderr = null,
+        $stdin  = null,
     ) {
+        $this->stdout = $stdout ?? STDOUT;
+        $this->stderr = $stderr ?? STDERR;
+        $this->stdin  = $stdin  ?? STDIN;
         foreach ($preopenDirs as $dir) {
             $this->preopens[$this->nextFd++] = $dir;
         }
@@ -138,8 +154,8 @@ final class Wasi
             $data = substr($mem->rawBytes(), $bufPtr, $bufLen);
 
             match ($fd) {
-                1 => fwrite(STDOUT, $data),
-                2 => fwrite(STDERR, $data),
+                1 => fwrite($this->stdout, $data),
+                2 => fwrite($this->stderr, $data),
                 default => isset($this->openFds[$fd]) ? fwrite($this->openFds[$fd], $data) : null,
             };
 
@@ -164,7 +180,7 @@ final class Wasi
         $totalRead = 0;
 
         $resource = match ($fd) {
-            0       => STDIN,
+            0       => $this->stdin,
             default => $this->openFds[$fd] ?? null,
         };
 

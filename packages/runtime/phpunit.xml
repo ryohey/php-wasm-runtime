@@ -5,17 +5,12 @@
          colors="true">
     <testsuites>
         <testsuite name="Runtime">
-            <directory>packages/runtime/tests</directory>
-        </testsuite>
-        <testsuite name="Wasi">
-            <directory>packages/wasi/tests</directory>
+            <directory>tests</directory>
         </testsuite>
     </testsuites>
     <source>
         <include>
-            <directory suffix=".php">packages/runtime/src</directory>
-            <directory suffix=".php">packages/wasi/src</directory>
-            <directory suffix=".php">packages/cli/src</directory>
+            <directory suffix=".php">src</directory>
         </include>
     </source>
 </phpunit>

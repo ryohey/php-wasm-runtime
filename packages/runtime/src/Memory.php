@@ -4,21 +4,28 @@ declare(strict_types=1);
 
 namespace WasmRuntime;
 
-/** WebAssembly linear memory (page = 65536 bytes) */
+/** WebAssembly linear memory (page = 65536 bytes). Allocated lazily. */
 final class Memory
 {
     public const PAGE_SIZE = 65536;
     public const MAX_PAGES = 65536;
 
-    private string $bytes;
+    /** Actually-allocated bytes (lazily grown on first access). */
+    private string $bytes = '';
     private int $pages;
     private ?int $maxPages;
 
     public function __construct(int $minPages, ?int $maxPages = null)
     {
+        if ($minPages > self::MAX_PAGES || ($maxPages !== null && $maxPages > self::MAX_PAGES)) {
+            throw new WasmError("memory size must be at most 65536 pages (4GiB)");
+        }
+        if ($maxPages !== null && $minPages > $maxPages) {
+            throw new WasmError("size minimum must not be greater than maximum");
+        }
         $this->pages    = $minPages;
         $this->maxPages = $maxPages;
-        $this->bytes    = str_repeat("\0", $minPages * self::PAGE_SIZE);
+        // Lazy: bytes are zero-initialized on demand in ensureAllocated()
     }
 
     public function size(): int
@@ -36,15 +43,24 @@ final class Memory
         if ($this->maxPages !== null && $new > $this->maxPages) {
             return -1;
         }
-        $this->bytes  .= str_repeat("\0", $delta * self::PAGE_SIZE);
-        $this->pages   = $new;
+        $this->pages = $new;
+        // Actual byte allocation happens lazily in ensureAllocated()
         return $old;
     }
 
-    private function check(int $addr, int $bytes): void
+    /**
+     * Ensure $this->bytes is at least $upTo bytes long (zero-padded).
+     * Also validates $addr + $len is within the logical page boundary.
+     */
+    private function check(int $addr, int $len): void
     {
-        if ($addr < 0 || $addr + $bytes > strlen($this->bytes)) {
+        $limit = $this->pages * self::PAGE_SIZE;
+        if ($addr < 0 || $addr + $len > $limit) {
             throw Trap::outOfBoundsMemoryAccess();
+        }
+        $needed = $addr + $len;
+        if ($needed > strlen($this->bytes)) {
+            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
         }
     }
 

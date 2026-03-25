@@ -20,7 +20,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "WasmRuntime\\Tests\\": "tests/"
+            "WasmRuntime\\Tests\\": "packages/runtime/tests/",
+            "WasmRuntime\\Tests\\Wasi\\": "packages/wasi/tests/"
         }
     }
 }

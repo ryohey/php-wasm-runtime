@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WasmRuntime\Wat;
 
-use WasmRuntime\{FuncType, Module, ValType, WasmError, WasmValue};
+use WasmRuntime\{FuncType, Memory, Module, ValType, WasmError, WasmValue};
 
 /**
  * WAT (WebAssembly Text Format) parser.
@@ -37,11 +37,15 @@ final class Parser
     /** Local variable name -> index map for the function currently being parsed */
     private array $localNames = [];
 
+    /** Set to true when any function body uses a memory-accessing instruction */
+    private bool $memoryUsed = false;
+
     public function parseModule(string $src): Module
     {
-        $this->tokens = (new Lexer($src))->tokenize();
-        $this->pos    = 0;
-        $this->mod    = new Module();
+        $this->tokens     = (new Lexer($src))->tokenize();
+        $this->pos        = 0;
+        $this->mod        = new Module();
+        $this->memoryUsed = false;
 
         // Pre-scan to register all func IDs so forward references work
         $this->preScanFuncIds();
@@ -49,9 +53,16 @@ final class Parser
         $this->expect(Token::LPAREN);
         $this->expectKeyword('module');
 
-        // optional module id
-        if ($this->peek()->type === Token::ID) {
-            $this->consume();
+        // optional module id ($name or bare keyword used as name)
+        if ($this->peek()->type === Token::ID || $this->peek()->type === Token::KEYWORD && $this->peek()->value !== '(') {
+            // only consume if it's not the start of a module field
+            $next = $this->peek();
+            if ($next->type === Token::ID) {
+                $this->consume();
+            } elseif ($next->type === Token::KEYWORD && !str_contains((string)$next->value, '.') &&
+                      !in_array($next->value, ['type','import','func','table','memory','global','export','start','elem','data'], true)) {
+                $this->consume();
+            }
         }
 
         while ($this->peek()->type !== Token::RPAREN && $this->peek()->type !== Token::EOF) {
@@ -60,6 +71,15 @@ final class Parser
         $this->expect(Token::RPAREN);
 
         $this->resolveImportCounts();
+
+        // Validate: memory instructions require a memory declaration or import
+        if ($this->memoryUsed) {
+            $totalMems = count($this->mod->memories) + $this->mod->importedMemoryCount;
+            if ($totalMems === 0) {
+                throw new WasmError("unknown memory 0");
+            }
+        }
+
         return $this->mod;
     }
 
@@ -322,7 +342,6 @@ final class Parser
             }
             $this->expect(Token::RPAREN);
             $pages = (int)ceil(strlen($data) / Memory::PAGE_SIZE);
-            $pages = max(1, $pages);
             $this->mod->memories[] = ['min' => $pages, 'max' => $pages];
             $this->mod->dataSegments[] = ['memIndex' => $memIdx, 'offset' => 0, 'bytes' => $data];
         } else {
@@ -611,8 +630,8 @@ final class Parser
         return match ($op) {
             'i32.const' => WasmValue::i32((int)$this->consumeNumeric()),
             'i64.const' => WasmValue::i64((int)$this->consumeNumeric()),
-            'f32.const' => WasmValue::f32((float)$this->consumeNumeric()),
-            'f64.const' => WasmValue::f64((float)$this->consumeNumeric()),
+            'f32.const' => WasmValue::f32($this->consumeF32Float()),
+            'f64.const' => WasmValue::f64($this->consumeF64Float()),
             default     => throw new WasmError("Not a const expr: $op"),
         };
     }
@@ -692,7 +711,7 @@ final class Parser
      * Build an instruction node from an opcode string.
      * For flat instructions: reads immediates only.
      */
-    private function buildInstr(string $op): array
+    private function buildInstr(string $op, bool $folded = false): array
     {
         $i = ['op' => $op, 'imm' => [], 'children' => []];
         switch ($op) {
@@ -705,6 +724,13 @@ final class Parser
                 $blockType = $this->parseBlockType();
                 $i['imm'][] = $blockType;
                 $i['label'] = $label;
+                // In folded if, (then ...) / (else ...) are handled by buildInstrFolded.
+                // Condition sub-exprs become children, so don't parse them here.
+                if ($op === 'if' && $folded) {
+                    $i['then'] = [];
+                    $i['else'] = [];
+                    break;
+                }
                 $thenInstrs = $this->parseInstrSeq();
                 $elseInstrs = [];
                 if ($op === 'if' && $this->peek()->type === Token::KEYWORD && $this->peek()->value === 'else') {
@@ -773,10 +799,10 @@ final class Parser
                 $i['imm'][] = (int)$this->consumeNumeric();
                 break;
             case 'f32.const':
-                $i['imm'][] = WasmValue::canonF32((float)$this->consumeNumeric());
+                $i['imm'][] = WasmValue::canonF32($this->consumeF32Float());
                 break;
             case 'f64.const':
-                $i['imm'][] = (float)$this->consumeNumeric();
+                $i['imm'][] = $this->consumeF64Float();
                 break;
             case 'select':
                 // optional type annotation
@@ -792,8 +818,12 @@ final class Parser
             default:
                 // Memory instructions: offset= align= immediates
                 if ($this->isMemInstr($op)) {
+                    $this->memoryUsed = true;
                     $memarg = $this->parseMemArg();
                     $i['imm'] = [$memarg['offset'], $memarg['align']];
+                }
+                if ($op === 'memory.size' || $op === 'memory.grow') {
+                    $this->memoryUsed = true;
                 }
                 // All others: no immediates
                 break;
@@ -807,7 +837,7 @@ final class Parser
      */
     private function buildInstrFolded(string $op): array
     {
-        $i = $this->buildInstr($op);
+        $i = $this->buildInstr($op, true);
         // After immediates, parse sub-expressions (operand folds)
         while ($this->peek()->type === Token::LPAREN && $this->isInstrKeyword((string)$this->peekAhead(1)->value)) {
             $child = $this->parseFoldedInstr();
@@ -847,6 +877,9 @@ final class Parser
             }
         }
         $flat = ['op' => $instr['op'], 'imm' => $instr['imm']];
+        if (isset($instr['label'])) {
+            $flat['label'] = $instr['label'];
+        }
         if (isset($instr['then'])) {
             $flat['then'] = $instr['then'];
             $flat['else'] = $instr['else'] ?? [];
@@ -973,25 +1006,36 @@ final class Parser
 
     private function parseBlockType(): ?int
     {
-        // Result type: (result T) or valtype or empty
-        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'result') {
-            $this->consume();
-            $this->consume();
-            $t = ValType::fromString($this->expectKeyword(null));
-            $this->expect(Token::RPAREN);
-            return $t;
+        $t = null;
+        // Consume all block type annotations: (type ...) (param ...) (result ...)
+        while ($this->peek()->type === Token::LPAREN) {
+            $kw = (string)$this->peekAhead(1)->value;
+            if ($kw === 'result') {
+                $this->consume(); $this->consume();
+                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+                    $t = ValType::fromString($this->consume()->value);
+                }
+                $this->expect(Token::RPAREN);
+            } elseif ($kw === 'param') {
+                $this->consume(); $this->consume();
+                if ($this->peek()->type === Token::ID) $this->consume(); // optional name
+                while ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+                    $this->consume();
+                }
+                $this->expect(Token::RPAREN);
+            } elseif ($kw === 'type') {
+                $this->consume(); $this->consume();
+                $this->resolveTypeIdx();
+                $this->expect(Token::RPAREN);
+            } else {
+                break;
+            }
         }
-        if ($this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
-            return ValType::fromString($this->consume()->value);
+        // Bare valtype (e.g. block i32 ...)
+        if ($t === null && $this->peek()->type === Token::KEYWORD && $this->isValType($this->peek()->value)) {
+            $t = ValType::fromString($this->consume()->value);
         }
-        if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'type') {
-            // multi-value: ignore for now, just return null
-            $this->consume();
-            $this->consume();
-            $this->resolveTypeIdx();
-            $this->expect(Token::RPAREN);
-        }
-        return null;
+        return $t;
     }
 
     private function parseMemArg(): array
@@ -1271,6 +1315,47 @@ final class Parser
         }
         // e.g. nan, inf already tokenised as FLOAT
         throw new WasmError("Expected number but got {$tok->type}({$tok->value}) at line {$tok->line}");
+    }
+
+    /**
+     * Consume a float constant in f32 context.
+     * Handles nan:0xN keywords by constructing the exact f32 bit pattern.
+     */
+    private function consumeF32Float(): float
+    {
+        $tok = $this->peek();
+        if ($tok->type === Token::KEYWORD) {
+            $kw = (string)$tok->value;
+            if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
+                $this->consume();
+                $payload = (int)(hexdec(str_replace('_', '', $m[2])) & 0x7FFFFF);
+                $sign    = ($m[1] === '-') ? 0x80000000 : 0;
+                $bits32  = $sign | 0x7F800000 | $payload;
+                return (float)unpack('f', pack('V', $bits32))[1];
+            }
+        }
+        return (float)$this->consumeNumeric();
+    }
+
+    /**
+     * Consume a float constant in f64 context.
+     * Handles nan:0xN keywords by constructing the exact f64 bit pattern.
+     */
+    private function consumeF64Float(): float
+    {
+        $tok = $this->peek();
+        if ($tok->type === Token::KEYWORD) {
+            $kw = (string)$tok->value;
+            if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
+                $this->consume();
+                $payload = hexdec(str_replace('_', '', $m[2])); // up to 52-bit mantissa payload
+                $hi32    = ($m[1] === '-' ? 0x80000000 : 0) | 0x7FF00000
+                         | (int)(($payload >> 32) & 0xFFFFF);
+                $lo32    = (int)($payload & 0xFFFFFFFF);
+                return (float)unpack('d', pack('VV', $lo32, (int)$hi32))[1];
+            }
+        }
+        return (float)$this->consumeNumeric();
     }
 
     private function skipSExpr(): void
