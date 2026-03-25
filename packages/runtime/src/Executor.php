@@ -327,9 +327,9 @@ final class Executor
                 case 'i32.ge_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case 'i64.add': { [$a,$b]=self::p2i($stack); $stack[]=$a+$b; break; }
-                case 'i64.sub': { [$a,$b]=self::p2i($stack); $stack[]=$a-$b; break; }
-                case 'i64.mul': { [$a,$b]=self::p2i($stack); $stack[]=intval($a)*intval($b); break; }
+                case 'i64.add': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Add($a,$b); break; }
+                case 'i64.sub': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Sub($a,$b); break; }
+                case 'i64.mul': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Mul($a,$b); break; }
                 case 'i64.div_s': {
                     [$a,$b]=self::p2i($stack);
                     if ($b===0) throw Trap::integerDivideByZero();
@@ -587,6 +587,37 @@ final class Executor
         return ($hi>>($shift-32))&((1<<(64-$shift))-1);
     }
 
+    private static function u64ToGmp(int $a): \GMP
+    {
+        return $a >= 0 ? gmp_init($a) : gmp_add(gmp_init($a), gmp_pow(2, 64));
+    }
+
+    private static function gmpToI64(\GMP $v): int
+    {
+        if (gmp_cmp($v, gmp_pow(2, 63)) >= 0) {
+            $v = gmp_sub($v, gmp_pow(2, 64));
+        }
+        return gmp_intval($v);
+    }
+
+    private static function int64Add(int $a, int $b): int
+    {
+        $r = gmp_add($a, $b);
+        return self::gmpToI64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
+    private static function int64Sub(int $a, int $b): int
+    {
+        $r = gmp_sub($a, $b);
+        return self::gmpToI64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
+    private static function int64Mul(int $a, int $b): int
+    {
+        $r = gmp_mul(self::u64ToGmp($a), self::u64ToGmp($b));
+        return self::gmpToI64(gmp_mod($r, gmp_pow(2, 64)));
+    }
+
     private static function u64cmp(int $a, int $b): int
     {
         if ($a===$b) return 0;
@@ -603,17 +634,16 @@ final class Executor
 
     private static function u64div(int $a, int $b): int
     {
-        if ($a>=0 && $b>0) return intdiv($a,$b);
-        $fa=self::u64toFloat($a); $fb=self::u64toFloat($b);
-        $q=(int)($fa/$fb);
-        while(self::u64cmp(intval($q)*intval($b),$a)>0) $q--;
-        while(self::u64cmp(intval($q+1)*intval($b),$a)<=0) $q++;
-        return $q;
+        $ga = self::u64ToGmp($a);
+        $gb = self::u64ToGmp($b);
+        return self::gmpToI64(gmp_div_q($ga, $gb, GMP_ROUND_ZERO));
     }
 
     private static function u64rem(int $a, int $b): int
     {
-        return $a-intval(self::u64div($a,$b))*intval($b);
+        $ga = self::u64ToGmp($a);
+        $gb = self::u64ToGmp($b);
+        return self::gmpToI64(gmp_mod($ga, $gb));
     }
 
     private static function fmin(float $a, float $b): float

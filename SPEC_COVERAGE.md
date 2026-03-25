@@ -42,7 +42,7 @@ Files marked ❌ are not yet covered.
 | Spec file | Status | Notes |
 |---|---|---|
 | `i32.wast` | ✅ | `tests/spec/i32.wast` passes |
-| `i64.wast` | ❌ | Not yet (inline i64 tests pass) |
+| `i64.wast` | ✅ | `tests/spec/i64.wast` passes (149/149) |
 | `int_exprs.wast` | ❌ | Not yet |
 | `int_literals.wast` | ❌ | Not yet |
 
@@ -164,7 +164,7 @@ Files marked ❌ are not yet covered.
 |---|---|---|
 | Control flow | 9 | 12 |
 | Calls | 3 | 7 |
-| Integers | 1 | 4 |
+| Integers | 2 | 4 |
 | Floats | 1 | 10 |
 | Memory | 1 | 14 |
 | Globals | 1 | 1 |
@@ -176,13 +176,12 @@ Files marked ❌ are not yet covered.
 | References | 0 | 3 |
 | Binary/Text | 0 | 8 |
 | Misc | 0 | 10 |
-| **Total** | **17** | **91** |
+| **Total** | **18** | **91** |
 
 ## Implemented Opcodes (not yet spec-tested)
 
 The following instructions are implemented in `Executor.php` but don't yet have dedicated spec test files:
 
-- **i64**: all arithmetic, bitwise, comparison ops
 - **f32**: all arithmetic, comparison ops, `f32.const`, loads/stores
 - **Conversions**: `i32.wrap_i64`, `i32.trunc_*`, `i64.extend_*`, `i64.trunc_*`, `f32.convert_*`, `f64.convert_*`, `*.reinterpret_*`, `i32.extend*_s`, `i64.extend*_s`
 - **Memory**: all load/store variants (8/16/32/64-bit, signed/unsigned), `memory.size`, `memory.grow`

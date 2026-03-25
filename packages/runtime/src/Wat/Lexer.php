@@ -173,8 +173,23 @@ final class Lexer
                 } elseif ($clean[0] === '+') {
                     $hex = substr($clean, 1);
                 }
-                $val = hexdec(substr($hex, 2));
-                return new Token(Token::INT, $sign * $val, $line);
+                $hexDigits = substr($hex, 2);
+                if (strlen($hexDigits) > 16) {
+                    // Too many hex digits for int64; convert via BCMath then to float
+                    $dec = '0';
+                    for ($i = 0, $n = strlen($hexDigits); $i < $n; $i++) {
+                        $dec = bcadd(bcmul($dec, '16'), (string)hexdec($hexDigits[$i]));
+                    }
+                    $fv = (float)$dec;
+                    return new Token(Token::FLOAT, $sign < 0 ? -$fv : $fv, $line);
+                }
+                // Split into two 32-bit halves to avoid float overflow from hexdec()
+                $digits = str_pad($hexDigits, 16, '0', STR_PAD_LEFT);
+                $hi  = (int)hexdec(substr($digits, 0, 8));
+                $lo  = (int)hexdec(substr($digits, 8));
+                $val = ($hi << 32) | $lo;
+                if ($sign < 0 && $val !== PHP_INT_MIN) $val = -$val;
+                return new Token(Token::INT, $val, $line);
             }
             return new Token(Token::INT, (int)$clean, $line);
         }
