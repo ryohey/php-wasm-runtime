@@ -128,7 +128,7 @@ final class Decoder
 
     private function decodeImportTable(string $module, string $name, BinaryReader $r): array
     {
-        $elemType = $r->readByte(); // 0x70=funcref, 0x6F=externref
+        $elemType = $this->readRefType($r);
         [$min, $max] = $this->decodeLimits($r);
         return [
             'kind'   => 'table',
@@ -173,7 +173,17 @@ final class Decoder
     private function decodeTableSection(BinaryReader $r): void
     {
         $this->mod->tables = $r->readVec(function () use ($r) {
-            $elemType = $r->readByte();
+            $byte = $r->peekByte();
+            // GC proposal: table with init expression (0x40 0x00 prefix)
+            if ($byte === 0x40) {
+                $r->readByte(); // 0x40
+                $r->readByte(); // 0x00
+                $elemType = $this->readRefType($r);
+                [$min, $max] = $this->decodeLimits($r);
+                $this->decodeConstExpr($r); // init expression (skip)
+                return ['type' => $elemType, 'min' => $min, 'max' => $max];
+            }
+            $elemType = $this->readRefType($r);
             [$min, $max] = $this->decodeLimits($r);
             return ['type' => $elemType, 'min' => $min, 'max' => $max];
         });
@@ -334,22 +344,71 @@ final class Decoder
         ];
     }
 
-    /** Decode an element expression (ref.func idx | ref.null) */
+    /**
+     * Decode an element expression (ref.func idx | ref.null | global.get idx).
+     * Returns a func index (int) or -1 for null.
+     */
     private function decodeElemExpr(BinaryReader $r): int
     {
         $opcode = $r->readByte();
         if ($opcode === 0xD2) {
             // ref.func
             $idx = $r->readU32();
-            $end = $r->readByte(); // 0x0B end
+            $r->readByte(); // 0x0B end
             return $idx;
         } elseif ($opcode === 0xD0) {
             // ref.null
-            $r->readByte(); // reftype
+            $this->readHeapType($r); // heap type (can be LEB128 for GC proposal)
             $r->readByte(); // 0x0B end
             return -1; // null reference
+        } elseif ($opcode === 0x23) {
+            // global.get — skip for now, return -1 as placeholder
+            $r->readU32(); // global index
+            $r->readByte(); // 0x0B end
+            return -1;
         }
-        throw new WasmError("unsupported elem expr opcode: 0x" . dechex($opcode));
+        // Unknown element expr: skip until end marker
+        while (!$r->eof()) {
+            if ($r->readByte() === 0x0B) break;
+        }
+        return -1;
+    }
+
+    /**
+     * Read a heap type (reftype for GC proposal).
+     * Can be a single byte (funcref=0x70, externref=0x6F, etc.) or a signed LEB128 type index.
+     */
+    private function readHeapType(BinaryReader $r): int
+    {
+        $byte = $r->peekByte();
+        // Standard ref types are single bytes >= 0x60
+        if ($byte >= 0x60) {
+            return $r->readByte();
+        }
+        // GC proposal: signed LEB128 type index
+        return $r->readS33();
+    }
+
+    /**
+     * Read a reference type. Can be a simple reftype (0x70, 0x6F) or
+     * a GC proposal encoded ref type (0x63/0x64 + heaptype).
+     */
+    private function readRefType(BinaryReader $r): int
+    {
+        $byte = $r->peekByte();
+        // Standard ref types
+        if ($byte === 0x70 || $byte === 0x6F) {
+            return $r->readByte();
+        }
+        // GC proposal: (ref null heaptype) = 0x63, (ref heaptype) = 0x64
+        if ($byte === 0x63 || $byte === 0x64) {
+            $r->readByte(); // 0x63 or 0x64
+            $heapType = $this->readHeapType($r);
+            // Map to ValType::FUNCREF for function types
+            return ValType::FUNCREF;
+        }
+        // Fallback: read as single byte
+        return $r->readByte();
     }
 
     private function decodeCodeSection(BinaryReader $r): void
@@ -408,25 +467,63 @@ final class Decoder
     /**
      * Decode a constant expression (init_expr).
      * Returns a WasmValue for simple cases.
+     * Handles extended const expressions (i32.add, i32.sub, i32.mul, i64.add, etc.)
      */
     private function decodeConstExpr(BinaryReader $r): WasmValue|array
     {
-        $opcode = $r->readByte();
-        $result = match ($opcode) {
-            0x41 => WasmValue::i32($r->readS32()),
-            0x42 => WasmValue::i64($r->readS64()),
-            0x43 => $this->decodeConstF32($r),
-            0x44 => WasmValue::f64($r->readF64()),
-            0x23 => $this->decodeConstGlobalGet($r),
-            0xD0 => $this->decodeConstRefNull($r),
-            0xD2 => $this->decodeConstRefFunc($r),
-            default => throw new WasmError("unsupported const expr opcode: 0x" . dechex($opcode)),
-        };
-        $end = $r->readByte();
-        if ($end !== 0x0B) {
-            throw new WasmError("expected end (0x0B) in const expr, got 0x" . dechex($end));
+        // Simple evaluation stack for extended const expressions
+        $stack = [];
+
+        while (true) {
+            $opcode = $r->readByte();
+
+            if ($opcode === 0x0B) {
+                // end of expression
+                break;
+            }
+
+            match ($opcode) {
+                0x41 => $stack[] = WasmValue::i32($r->readS32()),
+                0x42 => $stack[] = WasmValue::i64($r->readS64()),
+                0x43 => $stack[] = $this->decodeConstF32($r),
+                0x44 => $stack[] = WasmValue::f64($r->readF64()),
+                0x23 => $stack[] = $this->evalConstGlobalGet($r),
+                0xD0 => $stack[] = $this->decodeConstRefNull($r),
+                0xD2 => $stack[] = $this->decodeConstRefFunc($r),
+                // Extended const: i32 arithmetic
+                0x6A => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a + $b)),
+                0x6B => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a - $b)),
+                0x6C => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a * $b)),
+                // Extended const: i64 arithmetic
+                0x7C => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a + $b),
+                0x7D => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a - $b),
+                0x7E => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a * $b),
+                0x01 => null, // nop - skip
+                default => throw new WasmError("unsupported const expr opcode: 0x" . dechex($opcode)),
+            };
         }
-        return $result;
+
+        if (count($stack) === 1) {
+            return $stack[0];
+        }
+        if (empty($stack)) {
+            return WasmValue::i32(0); // empty init expr
+        }
+        return end($stack);
+    }
+
+    private function constBinOp(array &$stack, int $type, callable $op): void
+    {
+        $b = array_pop($stack);
+        $a = array_pop($stack);
+        $result = $op((int)$a->value, (int)$b->value);
+        $stack[] = $type === ValType::I32 ? WasmValue::i32($result) : WasmValue::i64($result);
+    }
+
+    private function evalConstGlobalGet(BinaryReader $r): WasmValue|array
+    {
+        $idx = $r->readU32();
+        return ['op' => 'global.get', 'index' => $idx];
     }
 
     private function decodeConstF32(BinaryReader $r): WasmValue
@@ -439,16 +536,16 @@ final class Decoder
         return WasmValue::f32($v);
     }
 
-    private function decodeConstGlobalGet(BinaryReader $r): array
-    {
-        $idx = $r->readU32();
-        return ['op' => 'global.get', 'index' => $idx];
-    }
-
     private function decodeConstRefNull(BinaryReader $r): WasmValue
     {
-        $refType = $r->readByte();
-        return new WasmValue($refType, 0);
+        $refType = $this->readHeapType($r);
+        // Map heap types to ValType constants
+        $valType = match ($refType) {
+            0x70, 0x63 => ValType::FUNCREF,    // funcref, func
+            0x6F, 0x6E => ValType::EXTERNREF,  // externref, extern
+            default => ValType::FUNCREF,         // default to funcref for GC types
+        };
+        return new WasmValue($valType, 0);
     }
 
     private function decodeConstRefFunc(BinaryReader $r): WasmValue
@@ -569,13 +666,21 @@ final class Decoder
             return null; // void → void
         }
 
-        // Single value type result
+        // Single value type result (i32=0x7F, i64=0x7E, f32=0x7D, f64=0x7C, funcref=0x70, externref=0x6F)
         if ($byte >= 0x6F && $byte <= 0x7F) {
             $r->readByte();
             return new FuncType([], [$byte]);
         }
 
-        // Type index (s33)
+        // GC proposal: reference type constructors as single-value block types
+        // (ref null ht) = 0x63, (ref ht) = 0x64, and other GC heap types 0x65-0x6E
+        if ($byte >= 0x63 && $byte <= 0x6E) {
+            // Read the full reference type but map to funcref/externref for our purposes
+            $refType = $this->readRefType($r);
+            return new FuncType([], [$refType]);
+        }
+
+        // Type index (s33) — positive indices reference the type section
         $idx = $r->readS33();
         if ($idx < 0 || $idx >= count($this->types)) {
             throw new WasmError("invalid block type index: $idx");
@@ -863,7 +968,7 @@ final class Decoder
 
             // ---- References ----
             case 0xD0: // ref.null
-                $r->readByte(); // reftype
+                $this->readHeapType($r); // heap type
                 $code[] = ['ref.null'];
                 break;
             case 0xD1: $code[] = ['ref.is_null']; break;
