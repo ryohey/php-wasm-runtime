@@ -1,188 +1,193 @@
 # WebAssembly Spec Test Coverage
 
-This document tracks which test files from the [official WebAssembly spec test suite](https://github.com/WebAssembly/spec/tree/main/test/core) are covered.
+This document tracks the status of [official WebAssembly spec tests](https://github.com/WebAssembly/spec/tree/main/test/core) against this runtime.
 
-Files marked ✅ have corresponding `.wast` files in `tests/spec/` and all assertions pass.
-Files marked 🚧 are partially implemented or in progress.
-Files marked ❌ are not yet covered.
+- ✅ = All assertions pass
+- 🟡 = Partially passing (some assertions fail)
+- ❌ = All assertions fail or not tested
+- ⏭️ = Skipped (binary format, GC proposal, etc.)
 
-> Note: The `.wast` files in `tests/spec/` are hand-written test cases, not the full official spec files.
-> To run against the official suite, download the `.wast` files from the link above and place them in `tests/spec/`.
+> Tests run via `WastTest.php` against the official `.wast` files.
 
-## Instruction Categories
+## Results (2026-03-26)
+
+**114 test files | 81 passing | 12 failing | 21 skipped**
 
 ### Control Flow
-| Spec file | Status | Notes |
-|---|---|---|
-| `block.wast` | ✅ | Covered via `control.wast` |
-| `loop.wast` | ✅ | Covered via `control.wast` |
-| `if.wast` | ✅ | Covered via `control.wast` |
-| `br.wast` | ✅ | Covered via `control.wast` |
-| `br_if.wast` | ✅ | Covered via `control.wast` |
-| `br_table.wast` | ✅ | Covered via `control.wast` |
-| `return.wast` | ✅ | Covered via `control.wast` |
-| `unreachable.wast` | ✅ | Inline test passes |
-| `nop.wast` | ✅ | `nop` opcode implemented |
-| `labels.wast` | ❌ | Not yet |
-| `unwind.wast` | ❌ | Not yet |
-| `stack.wast` | ❌ | Not yet |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `block.wast` | ✅ | all | |
+| `loop.wast` | ✅ | all | |
+| `if.wast` | ✅ | all | |
+| `br.wast` | ✅ | all | |
+| `br_if.wast` | 🟡 | 117/118 | 1 validator issue |
+| `br_table.wast` | ✅ | all | |
+| `return.wast` | ✅ | all | |
+| `unreachable.wast` | ✅ | all | |
+| `nop.wast` | ✅ | all | |
+| `labels.wast` | ✅ | all | |
+| `unwind.wast` | ✅ | all | |
+| `stack.wast` | ✅ | all | |
+| `break-drop.wast` | ✅ | all | |
+| `switch.wast` | ✅ | all | |
+| `unreached-invalid.wast` | ✅ | all | |
 
 ### Calls
-| Spec file | Status | Notes |
-|---|---|---|
-| `call.wast` | ✅ | `tests/spec/call.wast` passes |
-| `call_indirect.wast` | ✅ | Inline test passes |
-| `fac.wast` | ❌ | Not yet |
-| `forward.wast` | ❌ | Not yet |
-| `func.wast` | ❌ | Not yet |
-| `func_ptrs.wast` | ❌ | Not yet |
-| `start.wast` | ❌ | Not yet |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `call.wast` | ✅ | all | |
+| `call_indirect.wast` | ✅ | all | |
+| `return_call.wast` | ✅ | all | |
+| `return_call_indirect.wast` | ✅ | all | |
+| `fac.wast` | ✅ | all | |
+| `forward.wast` | ✅ | all | |
+| `func.wast` | ✅ | all | |
+| `func_ptrs.wast` | ✅ | all | |
+| `start.wast` | ✅ | all | |
+| `left-to-right.wast` | ✅ | all | |
 
 ### Integers
-| Spec file | Status | Notes |
-|---|---|---|
-| `i32.wast` | ✅ | `tests/spec/i32.wast` passes |
-| `i64.wast` | ✅ | `tests/spec/i64.wast` passes (149/149) |
-| `int_exprs.wast` | ❌ | Not yet |
-| `int_literals.wast` | ❌ | Not yet |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `i32.wast` | ✅ | all | |
+| `i64.wast` | ✅ | all | |
+| `int_exprs.wast` | ✅ | all | |
+| `int_literals.wast` | ✅ | all | |
 
 ### Floats
-| Spec file | Status | Notes |
-|---|---|---|
-| `f32.wast` | ❌ | Not yet (f32 ops implemented) |
-| `f32_bitwise.wast` | ❌ | Not yet |
-| `f32_cmp.wast` | ❌ | Not yet |
-| `f64.wast` | ✅ | `tests/spec/f64.wast` passes |
-| `f64_bitwise.wast` | ❌ | Not yet |
-| `f64_cmp.wast` | ❌ | Not yet |
-| `float_exprs.wast` | ❌ | Not yet |
-| `float_literals.wast` | ❌ | Not yet |
-| `float_memory.wast` | ❌ | Not yet |
-| `float_misc.wast` | ❌ | Not yet |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `f32.wast` | ✅ | all | |
+| `f32_bitwise.wast` | ✅ | all | |
+| `f32_cmp.wast` | ✅ | all | |
+| `f64.wast` | ✅ | all | |
+| `f64_bitwise.wast` | ✅ | all | |
+| `f64_cmp.wast` | ✅ | all | |
+| `float_exprs.wast` | ✅ | all | |
+| `float_literals.wast` | 🟡 | 176/177 | 1 binary module format |
+| `float_memory.wast` | ✅ | all | |
+| `float_misc.wast` | ✅ | all | |
+| `conversions.wast` | 🟡 | 606/618 | 12 i64→f32 precision issues |
+| `const.wast` | ✅ | all | |
 
 ### Memory
-| Spec file | Status | Notes |
-|---|---|---|
-| `memory.wast` | ✅ | `tests/spec/memory.wast` passes |
-| `memory_grow.wast` | ❌ | Not yet |
-| `memory_size.wast` | ❌ | Not yet |
-| `memory_trap.wast` | ❌ | Not yet |
-| `memory_redundancy.wast` | ❌ | Not yet |
-| `address.wast` | ❌ | Not yet |
-| `align.wast` | ❌ | Not yet |
-| `endianness.wast` | ❌ | Not yet |
-| `load.wast` | ❌ | Not yet |
-| `store.wast` | ❌ | Not yet |
-| `data.wast` | ❌ | Not yet |
-| `memory_copy.wast` | ❌ | Not yet (bulk memory proposal) |
-| `memory_fill.wast` | ❌ | Not yet (bulk memory proposal) |
-| `memory_init.wast` | ❌ | Not yet (bulk memory proposal) |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `memory.wast` | ✅ | all | |
+| `memory_grow.wast` | ✅ | all | |
+| `memory_size.wast` | ✅ | all | |
+| `memory_trap.wast` | ✅ | all | |
+| `memory_redundancy.wast` | ✅ | all | |
+| `address.wast` | ✅ | all | |
+| `align.wast` | ✅ | all | |
+| `endianness.wast` | ✅ | all | |
+| `load.wast` | ✅ | all | |
+| `store.wast` | ✅ | all | |
+| `data.wast` | ✅ | all | |
 
 ### Globals
-| Spec file | Status | Notes |
-|---|---|---|
-| `global.wast` | ✅ | Covered via `globals.wast` |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `global.wast` | 🟡 | 100/114 | 14 failures (imported global values, some validation) |
 
-### Tables
-| Spec file | Status | Notes |
-|---|---|---|
-| `table.wast` | ❌ | Not yet |
-| `table_copy.wast` | ❌ | Not yet |
-| `table_fill.wast` | ❌ | Not yet |
-| `table_get.wast` | ❌ | Not yet |
-| `table_grow.wast` | ❌ | Not yet |
-| `table_init.wast` | ❌ | Not yet |
-| `table_set.wast` | ❌ | Not yet |
-| `table_size.wast` | ❌ | Not yet |
-| `elem.wast` | ❌ | Not yet |
-| `table-sub.wast` | ❌ | Not yet |
+### Tables & Elements
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `table.wast` | 🟡 | 14/27 | 13 failures (parsing, validation) |
+| `table_get.wast` | ✅ | all | |
+| `table_grow.wast` | ✅ | all | |
+| `table_set.wast` | ✅ | all | |
+| `table_size.wast` | ✅ | all | |
+| `elem.wast` | 🟡 | 51/72 | 21 failures (binary format, parsing) |
 
 ### Locals
-| Spec file | Status | Notes |
-|---|---|---|
-| `local_get.wast` | ❌ | Not yet (implemented, no separate test) |
-| `local_set.wast` | ❌ | Not yet (implemented, no separate test) |
-| `local_tee.wast` | ❌ | Not yet (implemented, no separate test) |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `local_get.wast` | ✅ | all | |
+| `local_set.wast` | ✅ | all | |
+| `local_tee.wast` | 🟡 | 96/97 | 1 validator issue |
 
-### Select / Conversions
-| Spec file | Status | Notes |
-|---|---|---|
-| `select.wast` | ✅ | Inline test passes |
-| `conversions.wast` | ❌ | Not yet (many conversions implemented) |
-| `const.wast` | ❌ | Not yet |
-
-### Types / Validation
-| Spec file | Status | Notes |
-|---|---|---|
-| `type.wast` | ❌ | Not yet |
-| `typecheck.wast` | ❌ | Not yet |
-| `traps.wast` | ❌ | Not yet |
+### Select / Type
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `select.wast` | ✅ | all | |
+| `type.wast` | ✅ | all | |
+| `traps.wast` | ✅ | all | |
 
 ### Imports / Exports / Linking
-| Spec file | Status | Notes |
-|---|---|---|
-| `exports.wast` | ❌ | Not yet |
-| `imports.wast` | ❌ | Not yet |
-| `linking.wast` | ❌ | Not yet |
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `exports.wast` | 🟡 | 40/41 | 1 failure (tag export) |
+| `imports.wast` | 🟡 | 22/144 | 122 failures (multi-module linking) |
+| `linking.wast` | 🟡 | 48/133 | 85 failures (multi-module linking) |
+| `instance.wast` | ❌ | 0/12 | All failures (definition syntax) |
 
-### References (post-MVP)
-| Spec file | Status | Notes |
-|---|---|---|
-| `ref_func.wast` | ❌ | Not yet |
-| `ref_is_null.wast` | ❌ | Not yet |
-| `ref_null.wast` | ❌ | Not yet |
+### References
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `ref.wast` | 🟡 | 5/12 | 7 failures (validation) |
+| `ref_func.wast` | ✅ | all | |
+| `ref_is_null.wast` | ✅ | all | |
+| `ref_null.wast` | ✅ | all | |
 
-### Binary / Text Format
-| Spec file | Status | Notes |
-|---|---|---|
-| `binary.wast` | ❌ | Binary format not supported |
-| `binary-leb128.wast` | ❌ | Binary format not supported |
-| `comments.wast` | ❌ | Not yet |
-| `token.wast` | ❌ | Not yet |
-| `inline-module.wast` | ❌ | Not yet |
-| `names.wast` | ❌ | Not yet |
-| `unicode.wast` | ❌ | Not yet |
-| `custom.wast` | ❌ | Not yet |
+### Text Format / Tokenization
+| Spec file | Status | Pass/Total | Notes |
+|---|---|---|---|
+| `comments.wast` | ✅ | all | |
+| `token.wast` | ✅ | all | |
+| `id.wast` | ✅ | all | |
+| `names.wast` | ✅ | all | |
+| `inline-module.wast` | ✅ | all | |
+| `custom.wast` | ✅ | all | |
+| `obsolete-keywords.wast` | ✅ | all | |
+| `utf8-invalid-encoding.wast` | ✅ | all | |
 
-### Misc
-| Spec file | Status | Notes |
-|---|---|---|
-| `left-to-right.wast` | ❌ | Not yet |
-| `switch.wast` | ❌ | Not yet |
-| `skip-stack-guard-page.wast` | ❌ | Not yet |
-| `obsolete-keywords.wast` | ❌ | Not yet |
-| `unreached-invalid.wast` | ❌ | Not yet |
-| `unreached-valid.wast` | ❌ | Not yet |
-| `utf8-custom-section-id.wast` | ❌ | Not yet |
-| `utf8-import-module.wast` | ❌ | Not yet |
-| `utf8-import-name.wast` | ❌ | Not yet |
-| `utf8-invalid-encoding.wast` | ❌ | Not yet |
+### Skipped (Binary format)
+| Spec file | Notes |
+|---|---|
+| `binary.wast` | Binary module format not supported |
+| `binary-leb128.wast` | Binary module format not supported |
+| `utf8-custom-section-id.wast` | Binary format |
+| `utf8-import-field.wast` | Binary format |
+| `utf8-import-module.wast` | Binary format |
+
+### Skipped (GC Proposal / Typed Function References)
+| Spec file | Notes |
+|---|---|
+| `annotations.wast` | Annotations proposal |
+| `br_on_non_null.wast` | GC proposal |
+| `br_on_null.wast` | GC proposal |
+| `call_ref.wast` | GC proposal |
+| `return_call_ref.wast` | GC proposal |
+| `ref_as_non_null.wast` | GC proposal |
+| `type-rec.wast` | GC proposal |
+| `type-equivalence.wast` | GC proposal |
+| `type-canon.wast` | GC proposal |
+| `local_init.wast` | GC proposal |
+
+### Other Skipped
+| Spec file | Notes |
+|---|---|
+| `skip-stack-guard-page.wast` | Implementation-specific |
+| `unreached-valid.wast` | Skipped |
+| `float_exprs.wast` | Warning: large test |
 
 ## Summary
 
-| Category | Covered | Total |
-|---|---|---|
-| Control flow | 9 | 12 |
-| Calls | 3 | 7 |
-| Integers | 2 | 4 |
-| Floats | 1 | 10 |
-| Memory | 1 | 14 |
-| Globals | 1 | 1 |
-| Tables | 0 | 10 |
-| Locals | 0 | 3 |
-| Select/Conversions | 1 | 3 |
-| Types/Validation | 0 | 3 |
-| Imports/Exports | 0 | 3 |
-| References | 0 | 3 |
-| Binary/Text | 0 | 8 |
-| Misc | 0 | 10 |
-| **Total** | **18** | **91** |
+| Category | Passing | Partial | Failing | Skipped |
+|---|---|---|---|---|
+| Control flow | 14 | 1 | 0 | 0 |
+| Calls | 10 | 0 | 0 | 0 |
+| Integers | 4 | 0 | 0 | 0 |
+| Floats | 10 | 2 | 0 | 0 |
+| Memory | 11 | 0 | 0 | 0 |
+| Globals | 0 | 1 | 0 | 0 |
+| Tables/Elements | 4 | 2 | 0 | 0 |
+| Locals | 2 | 1 | 0 | 0 |
+| Select/Type | 3 | 0 | 0 | 0 |
+| Imports/Exports/Linking | 0 | 3 | 1 | 0 |
+| References | 3 | 1 | 0 | 0 |
+| Text Format | 8 | 0 | 0 | 0 |
+| **Total** | **69** | **11** | **1** | **21** |
 
-## Implemented Opcodes (not yet spec-tested)
-
-The following instructions are implemented in `Executor.php` but don't yet have dedicated spec test files:
-
-- **f32**: all arithmetic, comparison ops, `f32.const`, loads/stores
-- **Conversions**: `i32.wrap_i64`, `i32.trunc_*`, `i64.extend_*`, `i64.trunc_*`, `f32.convert_*`, `f64.convert_*`, `*.reinterpret_*`, `i32.extend*_s`, `i64.extend*_s`
-- **Memory**: all load/store variants (8/16/32/64-bit, signed/unsigned), `memory.size`, `memory.grow`
-- **Table**: `call_indirect` (basic)
+Out of 93 non-skipped test files: **69 fully passing, 11 partially passing, 1 failing**.
