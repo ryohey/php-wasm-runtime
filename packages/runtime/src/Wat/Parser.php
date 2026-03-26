@@ -47,9 +47,9 @@ final class Parser
         $this->mod        = new Module();
         $this->memoryUsed = false;
 
-        // Pre-scan to register all func IDs so forward references work.
-        // Type IDs are registered in the first pass of module field parsing.
+        // Pre-scan to register all IDs so forward references work.
         $this->preScanFuncIds();
+        $this->preScanOtherIds();
 
         $this->expect(Token::LPAREN);
         $this->expectKeyword('module');
@@ -216,7 +216,7 @@ final class Parser
                 if ($this->peek()->type === Token::ID) {
                     $tName = $this->consume()->value;
                     $tIdx = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'table'));
-                    if (isset($this->tableIds[$tName])) {
+                    if (isset($this->tableIds[$tName]) && $this->tableIds[$tName] !== $tIdx) {
                         throw new WasmError("duplicate table: $tName");
                     }
                     $this->tableIds[$tName] = $tIdx;
@@ -236,7 +236,7 @@ final class Parser
                 if ($this->peek()->type === Token::ID) {
                     $gName = $this->consume()->value;
                     $importedGlobals = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'global'));
-                    if (isset($this->globalIds[$gName])) {
+                    if (isset($this->globalIds[$gName]) && $this->globalIds[$gName] !== $importedGlobals) {
                         throw new WasmError("duplicate global: $gName");
                     }
                     $this->globalIds[$gName] = $importedGlobals;
@@ -347,7 +347,7 @@ final class Parser
         $tableId  = null;
         if ($this->peek()->type === Token::ID) {
             $tableId = (string)$this->consume()->value;
-            if (isset($this->tableIds[$tableId])) {
+            if (isset($this->tableIds[$tableId]) && $this->tableIds[$tableId] !== $tableIdx) {
                 throw new WasmError("duplicate table: $tableId");
             }
             $this->tableIds[$tableId] = $tableIdx;
@@ -531,7 +531,7 @@ final class Parser
         $gIdx = $importedGlobals + count($this->mod->globals);
         if ($this->peek()->type === Token::ID) {
             $gName = $this->consume()->value;
-            if (isset($this->globalIds[$gName])) {
+            if (isset($this->globalIds[$gName]) && $this->globalIds[$gName] !== $gIdx) {
                 throw new WasmError("duplicate global: $gName");
             }
             $this->globalIds[$gName] = $gIdx;
@@ -1822,6 +1822,106 @@ final class Parser
                     $this->typeIds[(string)$idTok->value] = $typeCount;
                 }
                 $typeCount++;
+            }
+
+            $i = $j;
+        }
+    }
+
+    /**
+     * Pre-scan the token stream to register all global/table/memory IDs.
+     * This enables forward references from exports.
+     */
+    private function preScanOtherIds(): void
+    {
+        $n = count($this->tokens);
+        $i = 0;
+        while ($i < $n && !($this->tokens[$i]->type === Token::KEYWORD && $this->tokens[$i]->value === 'module')) {
+            $i++;
+        }
+        $i++; // skip 'module'
+        if ($i < $n && $this->tokens[$i]->type === Token::ID) {
+            $i++; // skip optional module id
+        }
+
+        $importedGlobals = 0;
+        $importedTables  = 0;
+        $importedMems    = 0;
+        $localGlobals    = 0;
+        $localTables     = 0;
+        $localMems       = 0;
+
+        while ($i < $n && $this->tokens[$i]->type === Token::LPAREN) {
+            $kw = $this->tokens[$i + 1] ?? null;
+            if (!$kw || $kw->type !== Token::KEYWORD) break;
+
+            // Find end of S-expr
+            $j = $i + 1;
+            $depth = 1;
+            while ($j < $n && $depth > 0) {
+                if ($this->tokens[$j]->type === Token::LPAREN) $depth++;
+                elseif ($this->tokens[$j]->type === Token::RPAREN) $depth--;
+                $j++;
+            }
+
+            if ($kw->value === 'import') {
+                // Check for (global/table/memory ...) inside import
+                for ($k = $i + 2; $k < $j; $k++) {
+                    if ($this->tokens[$k]->type === Token::LPAREN && isset($this->tokens[$k + 1])
+                        && $this->tokens[$k + 1]->type === Token::KEYWORD) {
+                        $kind = $this->tokens[$k + 1]->value;
+                        if (in_array($kind, ['global', 'table', 'memory'], true)) {
+                            $idTok = $this->tokens[$k + 2] ?? null;
+                            if ($idTok && $idTok->type === Token::ID) {
+                                $idStr = (string)$idTok->value;
+                                match ($kind) {
+                                    'global' => $this->globalIds[$idStr] = $importedGlobals + $localGlobals,
+                                    'table'  => $this->tableIds[$idStr] = $importedTables + $localTables,
+                                    'memory' => $this->memIds[$idStr] = $importedMems + $localMems,
+                                };
+                            }
+                            match ($kind) {
+                                'global' => $importedGlobals++,
+                                'table'  => $importedTables++,
+                                'memory' => $importedMems++,
+                            };
+                            break;
+                        }
+                    }
+                }
+            } elseif (in_array($kw->value, ['global', 'table', 'memory'], true)) {
+                $p = $i + 2;
+                $idTok = $this->tokens[$p] ?? null;
+                if ($idTok && $idTok->type === Token::ID) {
+                    $idStr = (string)$idTok->value;
+                    match ($kw->value) {
+                        'global' => $this->globalIds[$idStr] = $importedGlobals + $localGlobals,
+                        'table'  => $this->tableIds[$idStr] = $importedTables + $localTables,
+                        'memory' => $this->memIds[$idStr] = $importedMems + $localMems,
+                    };
+                }
+                // Check if inline import
+                $isInlineImport = false;
+                for ($k = $p; $k < $j; $k++) {
+                    if ($this->tokens[$k]->type === Token::LPAREN && isset($this->tokens[$k + 1])
+                        && $this->tokens[$k + 1]->value === 'import') {
+                        $isInlineImport = true;
+                        break;
+                    }
+                }
+                if ($isInlineImport) {
+                    match ($kw->value) {
+                        'global' => $importedGlobals++,
+                        'table'  => $importedTables++,
+                        'memory' => $importedMems++,
+                    };
+                } else {
+                    match ($kw->value) {
+                        'global' => $localGlobals++,
+                        'table'  => $localTables++,
+                        'memory' => $localMems++,
+                    };
+                }
             }
 
             $i = $j;
