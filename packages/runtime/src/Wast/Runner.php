@@ -435,6 +435,15 @@ final class Runner
             $fv = $this->tokToFloat($tok, $op === 'f64.const');
             return $op === 'f32.const' ? WasmValue::f32($fv) : WasmValue::f64($fv);
         }
+        if ($op === 'ref.null') {
+            return match ((string)$raw) {
+                'extern', 'externref' => new WasmValue(ValType::EXTERNREF, -1),
+                default               => new WasmValue(ValType::FUNCREF, -1),
+            };
+        }
+        if ($op === 'ref.extern') {
+            return new WasmValue(ValType::EXTERNREF, (int)$raw);
+        }
         return match ($op) {
             'i32.const' => WasmValue::i32((int)$raw),
             'i64.const' => WasmValue::i64((int)$raw),
@@ -554,12 +563,12 @@ final class Runner
                 str_starts_with($op, 'i64.const') => WasmValue::i64((int)$valTok->value),
                 str_starts_with($op, 'f32.const') => WasmValue::f32($this->tokToFloat($valTok, false)),
                 str_starts_with($op, 'f64.const') => WasmValue::f64($this->tokToFloat($valTok, true)),
-                // ref.func with no argument = any non-null funcref (wildcard, value=-1)
-                $op === 'ref.func'   => new WasmValue(ValType::FUNCREF, -1),
-                // ref.null [type] = null reference
+                // ref.func with no argument = any non-null funcref (wildcard, value=-2)
+                $op === 'ref.func'   => new WasmValue(ValType::FUNCREF, -2),
+                // ref.null [type] = null reference (value=-1)
                 $op === 'ref.null'   => match ((string)$valTok->value) {
-                    'extern', 'externref' => new WasmValue(ValType::EXTERNREF, 0),
-                    default               => new WasmValue(ValType::FUNCREF, 0),
+                    'extern', 'externref' => new WasmValue(ValType::EXTERNREF, -1),
+                    default               => new WasmValue(ValType::FUNCREF, -1),
                 },
                 // ref.extern N = specific external reference with integer id N
                 $op === 'ref.extern' => new WasmValue(ValType::EXTERNREF, (int)$valTok->value),
@@ -777,21 +786,24 @@ final class Runner
     /**
      * Match an actual WasmValue against a ref pattern expected value.
      * Expected value semantics:
-     *   value = -1 → wildcard "any non-null ref" (matches any non-zero actual)
-     *   value =  0 → null ref (matches zero/null actual)
+     *   value = -2 → wildcard "any non-null ref" (matches any non-null actual)
+     *   value = -1 → null ref (matches null actual, represented as -1)
+     *   value =  0 → null ref (legacy, matches null actual)
      *   value =  N → specific ref id N (matches exact actual value N)
+     *
+     * Null refs use -1 internally; func index 0 is a valid non-null ref.
      */
     private function refMatches(WasmValue $actual, WasmValue $expected): bool
     {
         $ev = $expected->value;
         $av = $actual->value;
-        if ($ev === -1) {
-            // Wildcard: any non-null funcref (actual must be non-zero)
-            return $av !== 0 && $av !== null;
+        if ($ev === -2) {
+            // Wildcard: any non-null funcref (actual must not be null = not -1)
+            return $av !== -1 && $av !== null;
         }
-        if ($ev === 0) {
-            // Null ref: actual must be zero or null
-            return $av === 0 || $av === null;
+        if ($ev === -1 || $ev === 0) {
+            // Null ref: actual must be null (-1 or PHP null)
+            return $av === -1 || $av === null;
         }
         // Specific externref or funcref: exact match
         return $av === $ev;

@@ -80,12 +80,18 @@ final class Executor
 
             $locals = [];
             foreach ($args as $a) {
-                $locals[] = $a->value;
+                // Convert -1 sentinel back to PHP null for reference types
+                if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
+                    $locals[] = null;
+                } else {
+                    $locals[] = $a->value;
+                }
             }
             foreach ($body['locals'] as $lt) {
                 $locals[] = match ($lt) {
                     ValType::I32, ValType::I64 => 0,
                     ValType::F32, ValType::F64 => 0.0,
+                    ValType::FUNCREF, ValType::EXTERNREF => null,
                     default => 0,
                 };
             }
@@ -101,12 +107,14 @@ final class Executor
 
             $out = [];
             foreach ($ft->results as $i => $rtype) {
-                $v     = $rawResults[$i] ?? 0;
+                $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
                 $out[] = match ($rtype) {
                     ValType::I32 => WasmValue::i32((int)$v),
                     ValType::I64 => WasmValue::i64((int)$v),
                     ValType::F32 => WasmValue::f32(self::asF32($v)),
                     ValType::F64 => WasmValue::f64((float)$v),
+                    ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
+                    ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
                     default      => WasmValue::i32((int)$v),
                 };
             }
