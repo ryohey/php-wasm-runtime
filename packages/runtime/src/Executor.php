@@ -105,7 +105,7 @@ final class Executor
                 $out[] = match ($rtype) {
                     ValType::I32 => WasmValue::i32((int)$v),
                     ValType::I64 => WasmValue::i64((int)$v),
-                    ValType::F32 => WasmValue::f32((float)$v),
+                    ValType::F32 => WasmValue::f32(self::asF32($v)),
                     ValType::F64 => WasmValue::f64((float)$v),
                     default      => WasmValue::i32((int)$v),
                 };
@@ -317,7 +317,7 @@ final class Executor
                 // ---- Constants ----
                 case 'i32.const': $stack[] = (int)$instr[1]; break;
                 case 'i64.const': $stack[] = (int)$instr[1]; break;
-                case 'f32.const': $stack[] = (float)$instr[1]; break;
+                case 'f32.const': $stack[] = $instr[1]; break; // int for NaN bits, float otherwise
                 case 'f64.const': $stack[] = (float)$instr[1]; break;
 
                 // ---- i32 arithmetic ----
@@ -420,14 +420,36 @@ final class Executor
                 case 'f32.div':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
                 case 'f32.min':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmin($a,$b)); break; }
                 case 'f32.max':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmax($a,$b)); break; }
-                case 'f32.abs':     { $stack[]=WasmValue::canonF32(abs((float)array_pop($stack))); break; }
-                case 'f32.neg':     { $stack[]=WasmValue::canonF32(-(float)array_pop($stack)); break; }
-                case 'f32.sqrt':    { $stack[]=WasmValue::canonF32(sqrt((float)array_pop($stack))); break; }
-                case 'f32.ceil':    { $stack[]=WasmValue::canonF32(ceil((float)array_pop($stack))); break; }
-                case 'f32.floor':   { $stack[]=WasmValue::canonF32(floor((float)array_pop($stack))); break; }
-                case 'f32.trunc':   { $a=(float)array_pop($stack); $stack[]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
-                case 'f32.nearest': { $stack[]=WasmValue::canonF32(self::nearest((float)array_pop($stack))); break; }
-                case 'f32.copysign':{ [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::copysign($a,$b)); break; }
+                case 'f32.abs': {
+                    $v=array_pop($stack);
+                    // Preserve NaN payload: clear sign bit (bit 31)
+                    if (is_int($v)) { $stack[]=$v&0x7FFFFFFF; }
+                    else { $stack[]=WasmValue::canonF32(abs((float)$v)); }
+                    break;
+                }
+                case 'f32.neg': {
+                    $v=array_pop($stack);
+                    // Preserve NaN payload: flip sign bit (bit 31)
+                    if (is_int($v)) { $stack[]=$v^(int)0x80000000; }
+                    else { $stack[]=WasmValue::canonF32(-(float)$v); }
+                    break;
+                }
+                case 'f32.sqrt':    { $stack[]=WasmValue::canonF32(sqrt(self::asF32(array_pop($stack)))); break; }
+                case 'f32.ceil':    { $stack[]=WasmValue::canonF32(ceil(self::asF32(array_pop($stack)))); break; }
+                case 'f32.floor':   { $stack[]=WasmValue::canonF32(floor(self::asF32(array_pop($stack)))); break; }
+                case 'f32.trunc':   { $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
+                case 'f32.nearest': { $stack[]=WasmValue::canonF32(self::nearest(self::asF32(array_pop($stack)))); break; }
+                case 'f32.copysign':{
+                    $bv=array_pop($stack); $av=array_pop($stack);
+                    // copysign must preserve NaN payload, only changing sign bit
+                    $aBits=is_int($av)?$av:WasmValue::f32Bits((float)$av);
+                    $bBits=is_int($bv)?$bv:WasmValue::f32Bits((float)$bv);
+                    $result=($aBits&0x7FFFFFFF)|($bBits&(int)0x80000000);
+                    // Store as int if NaN, float otherwise
+                    if (($result&0x7FFFFFFF)>0x7F800000) { $stack[]=$result; }
+                    else { $stack[]=(float)unpack('f',pack('V',$result))[1]; }
+                    break;
+                }
                 case 'f32.eq':  { [$a,$b]=self::p2f($stack); $stack[]=($a===$b)?1:0; break; }
                 case 'f32.ne':  { [$a,$b]=self::p2f($stack); $stack[]=($a!==$b)?1:0; break; }
                 case 'f32.lt':  { [$a,$b]=self::p2f($stack); $stack[]=($a<$b)?1:0; break; }
@@ -459,24 +481,24 @@ final class Executor
 
                 // ---- Conversions ----
                 case 'i32.wrap_i64':       { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
-                case 'i32.trunc_f32_s':    { $stack[]=self::truncF2I32s((float)array_pop($stack)); break; }
-                case 'i32.trunc_f32_u':    { $stack[]=self::truncF2I32u((float)array_pop($stack)); break; }
+                case 'i32.trunc_f32_s':    { $stack[]=self::truncF2I32s(self::asF32(array_pop($stack))); break; }
+                case 'i32.trunc_f32_u':    { $stack[]=self::truncF2I32u(self::asF32(array_pop($stack))); break; }
                 case 'i32.trunc_f64_s':    { $stack[]=self::truncF2I32s((float)array_pop($stack)); break; }
                 case 'i32.trunc_f64_u':    { $stack[]=self::truncF2I32u((float)array_pop($stack)); break; }
-                case 'i32.trunc_sat_f32_s':{ $stack[]=self::truncSatI32s((float)array_pop($stack)); break; }
-                case 'i32.trunc_sat_f32_u':{ $stack[]=self::truncSatI32u((float)array_pop($stack)); break; }
+                case 'i32.trunc_sat_f32_s':{ $stack[]=self::truncSatI32s(self::asF32(array_pop($stack))); break; }
+                case 'i32.trunc_sat_f32_u':{ $stack[]=self::truncSatI32u(self::asF32(array_pop($stack))); break; }
                 case 'i32.trunc_sat_f64_s':{ $stack[]=self::truncSatI32s((float)array_pop($stack)); break; }
                 case 'i32.trunc_sat_f64_u':{ $stack[]=self::truncSatI32u((float)array_pop($stack)); break; }
                 case 'i64.extend_i32_s':   { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
                 case 'i64.extend_i32_u':   { $stack[]=WasmValue::u32((int)array_pop($stack)); break; }
-                case 'i64.trunc_f32_s':    { $stack[]=self::truncF2I64s((float)array_pop($stack)); break; }
-                case 'i64.trunc_f32_u':    { $stack[]=self::truncF2I64u((float)array_pop($stack)); break; }
+                case 'i64.trunc_f32_s':    { $stack[]=self::truncF2I64s(self::asF32(array_pop($stack))); break; }
+                case 'i64.trunc_f32_u':    { $stack[]=self::truncF2I64u(self::asF32(array_pop($stack))); break; }
                 case 'i64.trunc_f64_s':    { $stack[]=self::truncF2I64s((float)array_pop($stack)); break; }
                 case 'i64.trunc_f64_u':    { $stack[]=self::truncF2I64u((float)array_pop($stack)); break; }
                 case 'i64.trunc_sat_f64_s':{ $stack[]=self::truncSatI64s((float)array_pop($stack)); break; }
                 case 'i64.trunc_sat_f64_u':{ $stack[]=self::truncSatI64u((float)array_pop($stack)); break; }
-                case 'i64.trunc_sat_f32_s':{ $stack[]=self::truncSatI64s((float)array_pop($stack)); break; }
-                case 'i64.trunc_sat_f32_u':{ $stack[]=self::truncSatI64u((float)array_pop($stack)); break; }
+                case 'i64.trunc_sat_f32_s':{ $stack[]=self::truncSatI64s(self::asF32(array_pop($stack))); break; }
+                case 'i64.trunc_sat_f32_u':{ $stack[]=self::truncSatI64u(self::asF32(array_pop($stack))); break; }
                 case 'f32.convert_i32_s':  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
                 case 'f32.convert_i32_u':  { $stack[]=WasmValue::canonF32((float)WasmValue::u32((int)array_pop($stack))); break; }
                 case 'f32.convert_i64_s':  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
@@ -486,10 +508,12 @@ final class Executor
                 case 'f64.convert_i32_u':  { $stack[]=(float)WasmValue::u32((int)array_pop($stack)); break; }
                 case 'f64.convert_i64_s':  { $stack[]=(float)(int)array_pop($stack); break; }
                 case 'f64.convert_i64_u':  { $stack[]=self::u64toFloat((int)array_pop($stack)); break; }
-                case 'f64.promote_f32':    { $stack[]=(float)array_pop($stack); break; }
+                case 'f64.promote_f32':    { $stack[]=self::asF32(array_pop($stack)); break; }
                 case 'i32.reinterpret_f32': {
-                    $v=(float)array_pop($stack);
-                    $stack[]=WasmValue::mask32(unpack('V',pack('f',$v))[1]); break;
+                    $v=array_pop($stack);
+                    // f32 NaN values are stored as int (bit pattern); use directly
+                    $stack[]=is_int($v) ? WasmValue::mask32($v) : WasmValue::mask32(WasmValue::f32Bits((float)$v));
+                    break;
                 }
                 case 'i64.reinterpret_f64': {
                     $v=(float)array_pop($stack); $p=pack('d',$v);
@@ -498,7 +522,14 @@ final class Executor
                 }
                 case 'f32.reinterpret_i32': {
                     $v=(int)array_pop($stack);
-                    $stack[]=WasmValue::canonF32(unpack('f',pack('V',$v&0xFFFFFFFF))[1]); break;
+                    $bits = $v & 0xFFFFFFFF;
+                    // If the bit pattern is NaN, store as int to preserve payload
+                    if (($bits & 0x7FFFFFFF) > 0x7F800000) {
+                        $stack[] = WasmValue::mask32($bits);
+                    } else {
+                        $stack[] = (float)unpack('f', pack('V', $bits))[1];
+                    }
+                    break;
                 }
                 case 'f64.reinterpret_i64': {
                     $v=(int)array_pop($stack);
@@ -530,7 +561,7 @@ final class Executor
                 case 'i64.load32_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadU32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
                 case 'i32.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
                 case 'i64.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'f32.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case 'f32.store':   { $v=array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
                 case 'f64.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
                 case 'i32.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
                 case 'i32.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
@@ -737,7 +768,9 @@ final class Executor
     }
 
     private static function p2i(array &$s): array { $b=(int)array_pop($s); $a=(int)array_pop($s); return [$a,$b]; }
-    private static function p2f(array &$s): array { $b=(float)array_pop($s); $a=(float)array_pop($s); return [$a,$b]; }
+    private static function p2f(array &$s): array { $b=array_pop($s); $a=array_pop($s); return [self::asF32($a),self::asF32($b)]; }
+    /** Convert a stack value to float, handling int-encoded f32 NaN bit patterns. */
+    private static function asF32(mixed $v): float { return is_int($v) ? (float)unpack('f',pack('V',$v&0xFFFFFFFF))[1] : (float)$v; }
 
     private static function clz32(int $a): int { return 31-(int)floor(log($a,2)); }
     private static function clz64(int $a): int

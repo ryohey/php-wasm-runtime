@@ -86,9 +86,14 @@ final class Memory
         return ($hi << 32) | $lo;
     }
 
-    public function loadF32(int $addr): float
+    public function loadF32(int $addr): int|float
     {
         $this->check($addr, 4);
+        $bits = unpack('V', substr($this->bytes, $addr, 4))[1];
+        // Return NaN as int bit pattern to preserve payload
+        if (($bits & 0x7FFFFFFF) > 0x7F800000) {
+            return \WasmRuntime\WasmValue::mask32($bits);
+        }
         return unpack('f', substr($this->bytes, $addr, 4))[1];
     }
 
@@ -145,10 +150,15 @@ final class Memory
         $this->bytes = substr_replace($this->bytes, pack('VV', $lo, $hi), $addr, 8);
     }
 
-    public function storeF32(int $addr, float $v): void
+    public function storeF32(int $addr, int|float $v): void
     {
         $this->check($addr, 4);
-        $this->bytes = substr_replace($this->bytes, pack('f', $v), $addr, 4);
+        // f32 NaN values are stored as int (bit pattern); use directly
+        if (is_int($v)) {
+            $this->bytes = substr_replace($this->bytes, pack('V', $v), $addr, 4);
+        } else {
+            $this->bytes = substr_replace($this->bytes, pack('V', \WasmRuntime\WasmValue::f32Bits($v)), $addr, 4);
+        }
     }
 
     public function storeF64(int $addr, float $v): void

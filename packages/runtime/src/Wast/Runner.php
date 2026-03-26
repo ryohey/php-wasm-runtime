@@ -384,6 +384,15 @@ final class Runner
     private function tokToFloat(Token $tok, bool $isF64 = false): float
     {
         if ($tok->type === Token::FLOAT) {
+            // For f32 context, use exact single-round conversion when rawString is available
+            // to avoid double-rounding through f64 intermediate.
+            if (!$isF64 && $tok->rawString !== null) {
+                $raw = $tok->rawString;
+                if (preg_match('/^[+-]?0x/i', $raw)) {
+                    return Lexer::parseHexFloatAsF32($raw);
+                }
+                return Lexer::parseDecFloatAsF32($raw);
+            }
             return (float)$tok->value;
         }
         if ($tok->type === Token::KEYWORD) {
@@ -524,6 +533,35 @@ final class Runner
             $pos++;
         }
         $end = $this->findMatchingRParen($tokens, $pos);
+
+        // Handle (module quote "str1" "str2" ...) — concatenate strings as WAT source
+        // pos points to '(', pos+1 is 'module', check if pos+2 is 'quote'
+        if (isset($tokens[$pos + 2])
+            && $tokens[$pos + 2]->type === Token::KEYWORD
+            && (string)$tokens[$pos + 2]->value === 'quote'
+        ) {
+            $body = '';
+            for ($i = $pos + 3; $i < $end; $i++) {
+                if ($tokens[$i]->type === Token::STRING) {
+                    $body .= (string)$tokens[$i]->value;
+                }
+            }
+            // If the concatenated text already starts with (module, don't wrap
+            $trimmed = ltrim($body);
+            if (str_starts_with($trimmed, '(module')) {
+                return $body;
+            }
+            return '(module ' . $body . ')';
+        }
+
+        // Handle (module binary "str1" "str2" ...) — binary format
+        if (isset($tokens[$pos + 2])
+            && $tokens[$pos + 2]->type === Token::KEYWORD
+            && (string)$tokens[$pos + 2]->value === 'binary'
+        ) {
+            throw new WasmError('binary module format not supported');
+        }
+
         return $this->tokensToSrc($tokens, $pos, $end);
     }
 
@@ -548,6 +586,57 @@ final class Runner
         if ((string)($tokens[$pos]->value ?? '') === $kw) {
             $pos++;
         }
+    }
+
+    /**
+     * Convert an ID token value to valid WAT source.
+     * If the ID (after $) contains characters that aren't valid idchars,
+     * output it in quoted form: $"escaped_string"
+     */
+    private static function idToWat(string $id): string
+    {
+        // $id starts with '$'
+        $body = substr($id, 1);
+        // Check if all characters are valid idchars (printable ASCII except reserved)
+        $needsQuoting = false;
+        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
+            $o = ord($body[$i]);
+            if ($o < 0x21 || $o > 0x7E || in_array($body[$i], ['(', ')', '"', ';'], true)) {
+                $needsQuoting = true;
+                break;
+            }
+        }
+        if (!$needsQuoting) {
+            return $id;
+        }
+        // Output as $"escaped_string"
+        $escaped = '';
+        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
+            $o = ord($body[$i]);
+            if ($o >= 0x20 && $o <= 0x7E && $body[$i] !== '"' && $body[$i] !== '\\') {
+                $escaped .= $body[$i];
+            } else {
+                $escaped .= '\\' . sprintf('%02x', $o);
+            }
+        }
+        return '$"' . $escaped . '"';
+    }
+
+    /**
+     * Escape a raw string value for WAT source (bytes < 0x20 and 0x7F+ as \xx hex escapes).
+     */
+    private static function escapeWatString(string $s): string
+    {
+        $out = '';
+        for ($i = 0, $n = strlen($s); $i < $n; $i++) {
+            $o = ord($s[$i]);
+            if ($o >= 0x20 && $o < 0x7F && $s[$i] !== '"' && $s[$i] !== '\\') {
+                $out .= $s[$i];
+            } else {
+                $out .= '\\' . sprintf('%02x', $o);
+            }
+        }
+        return $out;
     }
 
     private static function floatToWat(float $v): string
@@ -590,10 +679,10 @@ final class Runner
             $parts[] = match ($tok->type) {
                 Token::LPAREN  => '(',
                 Token::RPAREN  => ')',
-                Token::STRING  => '"' . addcslashes((string)$tok->value, '"\\') . '"',
-                Token::ID      => (string)$tok->value,
+                Token::STRING  => '"' . self::escapeWatString((string)$tok->value) . '"',
+                Token::ID      => self::idToWat((string)$tok->value),
                 Token::INT     => (string)$tok->value,
-                Token::FLOAT   => self::floatToWat((float)$tok->value),
+                Token::FLOAT   => $tok->rawString !== null ? $tok->rawString : self::floatToWat((float)$tok->value),
                 Token::KEYWORD => (string)$tok->value,
                 default        => '',
             };

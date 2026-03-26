@@ -175,8 +175,8 @@ final class Parser
 
     private function parseImport(): void
     {
-        $modName  = $this->expect(Token::STRING)->value;
-        $itemName = $this->expect(Token::STRING)->value;
+        $modName  = $this->expectName();
+        $itemName = $this->expectName();
 
         $this->expect(Token::LPAREN);
         $kw = $this->expectKeyword(null);
@@ -196,7 +196,12 @@ final class Parser
                 break;
             case 'memory':
                 if ($this->peek()->type === Token::ID) {
-                    $this->consume();
+                    $memImportId = (string)$this->consume()->value;
+                    if (isset($this->memIds[$memImportId])) {
+                        throw new WasmError('duplicate memory');
+                    }
+                    $importedMemIdx = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'memory'));
+                    $this->memIds[$memImportId] = $importedMemIdx;
                 }
                 [$min, $max] = $this->parseLimits();
                 $this->mod->imports[] = [
@@ -257,14 +262,14 @@ final class Parser
             $kw = $this->peek()->value ?? '';
             if ($kw === 'export') {
                 $this->consume(); // export
-                $exportName = $this->expect(Token::STRING)->value;
+                $exportName = $this->expectName();
                 $this->expect(Token::RPAREN);
-                $this->mod->exports[$exportName] = ['kind' => 'func', 'index' => $absFuncIdx];
+                $this->addExport($exportName, 'func', $absFuncIdx);
             } elseif ($kw === 'import') {
                 // inline import
                 $this->consume();
-                $imod  = $this->expect(Token::STRING)->value;
-                $iname = $this->expect(Token::STRING)->value;
+                $imod  = $this->expectName();
+                $iname = $this->expectName();
                 $this->expect(Token::RPAREN);
                 $typeIdx = $this->resolveTypeUse();
                 $this->mod->imports[] = [
@@ -302,6 +307,9 @@ final class Parser
             }
             $added = count($locals) - $prevCount;
             if ($localName !== null) {
+                if (isset($this->localNames[$localName])) {
+                    throw new WasmError('duplicate local');
+                }
                 $this->localNames[$localName] = $localOffset;
             }
             $localOffset += $added;
@@ -336,10 +344,10 @@ final class Parser
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'export') {
             $this->consume();
             $this->consume();
-            $ename = $this->expect(Token::STRING)->value;
+            $ename = $this->expectName();
             $this->expect(Token::RPAREN);
             $inlineExports[] = $ename;
-            $this->mod->exports[$ename] = ['kind' => 'table', 'index' => $tableIdx];
+            $this->addExport($ename, 'table', $tableIdx);
         }
 
         // Inline import: (table [$id] [(export ...)] (import "mod" "name") limits reftype)
@@ -356,8 +364,8 @@ final class Parser
             }
             $this->consume(); // (
             $this->consume(); // import
-            $modName  = (string)$this->expect(Token::STRING)->value;
-            $itemName = (string)$this->expect(Token::STRING)->value;
+            $modName  = $this->expectName();
+            $itemName = $this->expectName();
             $this->expect(Token::RPAREN); // )
             [$min, $max] = $this->parseLimits();
             if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'ref') {
@@ -444,15 +452,19 @@ final class Parser
     {
         $memIdx = count($this->mod->memories);
         if ($this->peek()->type === Token::ID) {
-            $this->memIds[$this->consume()->value] = $memIdx;
+            $memId = (string)$this->consume()->value;
+            if (isset($this->memIds[$memId])) {
+                throw new WasmError('duplicate memory');
+            }
+            $this->memIds[$memId] = $memIdx;
         }
         // optional inline export
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'export') {
             $this->consume();
             $this->consume();
-            $ename = $this->expect(Token::STRING)->value;
+            $ename = $this->expectName();
             $this->expect(Token::RPAREN);
-            $this->mod->exports[$ename] = ['kind' => 'memory', 'index' => $memIdx];
+            $this->addExport($ename, 'memory', $memIdx);
         }
         // inline import: (memory (export "n") (import "mod" "name") limits)
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'import') {
@@ -467,8 +479,8 @@ final class Parser
             unset($exp);
             $this->consume(); // (
             $this->consume(); // import
-            $modName  = (string)$this->expect(Token::STRING)->value;
-            $itemName = (string)$this->expect(Token::STRING)->value;
+            $modName  = $this->expectName();
+            $itemName = $this->expectName();
             $this->expect(Token::RPAREN);
             [$min, $max] = $this->parseLimits();
             $this->mod->imports[] = [
@@ -511,16 +523,16 @@ final class Parser
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'export') {
             $this->consume();
             $this->consume();
-            $ename = $this->expect(Token::STRING)->value;
+            $ename = $this->expectName();
             $this->expect(Token::RPAREN);
-            $this->mod->exports[$ename] = ['kind' => 'global', 'index' => $gIdx];
+            $this->addExport($ename, 'global', $gIdx);
         }
         // optional inline import: (global [$id] (import "mod" "name") type)
         if ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'import') {
             $this->consume(); // (
             $this->consume(); // import
-            $imod  = $this->expect(Token::STRING)->value;
-            $iname = $this->expect(Token::STRING)->value;
+            $imod  = $this->expectName();
+            $iname = $this->expectName();
             $this->expect(Token::RPAREN);
             [$gtype, $mutable] = $this->parseGlobalType();
             $this->mod->imports[] = [
@@ -541,7 +553,7 @@ final class Parser
 
     private function parseExport(): void
     {
-        $name = $this->expect(Token::STRING)->value;
+        $name = $this->expectName();
         $this->expect(Token::LPAREN);
         $kw  = $this->expectKeyword(null);
         $idx = match ($kw) {
@@ -553,11 +565,25 @@ final class Parser
         };
         $this->expect(Token::RPAREN);
         $this->expect(Token::RPAREN);
-        $this->mod->exports[$name] = ['kind' => $kw, 'index' => $idx];
+        $this->addExport((string)$name, $kw, $idx);
+    }
+
+    /**
+     * Register an export, throwing on duplicate export names.
+     */
+    private function addExport(string $name, string $kind, int $index): void
+    {
+        if (array_key_exists($name, $this->mod->exports)) {
+            throw new WasmError("duplicate export name \"$name\"");
+        }
+        $this->mod->exports[$name] = ['kind' => $kind, 'index' => $index];
     }
 
     private function parseStart(): void
     {
+        if ($this->mod->startFunc !== -1) {
+            throw new WasmError('multiple start sections');
+        }
         $this->mod->startFunc = $this->resolveFuncIdx();
         $this->expect(Token::RPAREN);
     }
@@ -666,14 +692,35 @@ final class Parser
 
     private function parseData(): void
     {
-        $memIdx = 0;
-        $offset = 0;
-        if ($this->peek()->type === Token::INT || $this->peek()->type === Token::ID) {
-            $memIdx = $this->resolveMemIdx();
+        $memIdx  = -1; // -1 = passive (no memory), set to 0+ when active
+        $offset  = 0;
+        $passive = true;
+
+        // Optional ID (ignored for data segments)
+        if ($this->peek()->type === Token::ID) {
+            $this->consume();
+        }
+
+        if ($this->peek()->type === Token::INT) {
+            $memIdx  = $this->resolveMemIdx();
+            $passive = false;
+        }
+        if ($this->peek()->type === Token::LPAREN) {
+            $kw = $this->peekAhead(1)->value;
+            if ($kw === 'memory') {
+                // (memory idx) explicit memory ref
+                $this->consume();
+                $this->consume();
+                $memIdx  = $this->resolveMemIdx();
+                $passive = false;
+                $this->expect(Token::RPAREN);
+            }
         }
         if ($this->peek()->type === Token::LPAREN) {
             $kw = $this->peekAhead(1)->value;
             if ($kw === 'offset') {
+                $passive = false;
+                $memIdx  = ($memIdx === -1) ? 0 : $memIdx;
                 $this->consume();
                 $this->consume();
                 $offsetVal = $this->parseConstExpr();
@@ -683,6 +730,8 @@ final class Parser
                 $offset = $offsetVal->value;
                 $this->expect(Token::RPAREN);
             } elseif ($this->isInstrKeyword($kw)) {
+                $passive = false;
+                $memIdx  = ($memIdx === -1) ? 0 : $memIdx;
                 $offsetVal = $this->parseConstExpr();
                 if ($offsetVal->type !== ValType::I32) {
                     throw new WasmError('type mismatch');
@@ -695,7 +744,12 @@ final class Parser
             $data .= $this->consume()->value;
         }
         $this->expect(Token::RPAREN);
-        $this->mod->dataSegments[] = ['memIndex' => $memIdx, 'offset' => $offset, 'bytes' => $data];
+        $this->mod->dataSegments[] = [
+            'memIndex' => $memIdx,
+            'offset'   => $offset,
+            'bytes'    => $data,
+            'passive'  => $passive,
+        ];
     }
 
     // -------------------------------------------------------------------------
@@ -706,9 +760,13 @@ final class Parser
     {
         $params  = [];
         $results = [];
+        $seenResult = false;
         while ($this->peek()->type === Token::LPAREN) {
             $kw = $this->peekAhead(1)->value;
             if ($kw === 'param') {
+                if ($seenResult) {
+                    throw new WasmError('unexpected token');
+                }
                 $this->consume(); // (
                 $this->consume(); // param
                 if ($this->peek()->type === Token::ID) {
@@ -717,6 +775,7 @@ final class Parser
                 $this->consumeValTypesInto($params);
                 $this->expect(Token::RPAREN);
             } elseif ($kw === 'result') {
+                $seenResult = true;
                 $this->consume();
                 $this->consume();
                 $this->consumeValTypesInto($results);
@@ -769,6 +828,9 @@ final class Parser
                 $this->consumeValTypesInto($params);
                 $added = count($params) - $prevCount;
                 if ($captureParamNames && $paramName !== null) {
+                    if (isset($this->localNames[$paramName])) {
+                        throw new WasmError('duplicate local');
+                    }
                     $this->localNames[$paramName] = $paramIdx;
                 }
                 $paramIdx += $added;
@@ -863,7 +925,7 @@ final class Parser
         return match ($op) {
             'i32.const'  => WasmValue::i32((int)$this->consumeNumeric()),
             'i64.const'  => WasmValue::i64((int)$this->consumeNumeric()),
-            'f32.const'  => WasmValue::f32($this->consumeF32Float()),
+            'f32.const'  => WasmValue::f32((float)$this->consumeF32Float()),
             'f64.const'  => WasmValue::f64($this->consumeF64Float()),
             'global.get' => $this->parseConstGlobalGet(),
             'ref.null'   => $this->parseConstRefNull(),
@@ -1113,18 +1175,61 @@ final class Parser
             case 'global.get': case 'global.set':
                 $i['imm'][] = $this->resolveGlobalIdx();
                 break;
-            case 'i32.const':
-                $i['imm'][] = WasmValue::mask32((int)$this->consumeNumeric());
+            case 'i32.const': {
+                $raw32 = $this->consumeNumeric();
+                // i32.const valid range: unsigned 0..4294967295 or signed -2147483648..-1
+                if (is_float($raw32) || $raw32 > 4294967295 || $raw32 < -2147483648) {
+                    throw new WasmError('constant out of range');
+                }
+                $i['imm'][] = WasmValue::mask32((int)$raw32);
                 break;
-            case 'i64.const':
-                $i['imm'][] = (int)$this->consumeNumeric();
+            }
+            case 'i64.const': {
+                $raw64 = $this->consumeNumeric();
+                // i64.const valid range: unsigned 0..2^64-1 or signed -2^63..-1
+                // If lexer produced a float, it's out of range (exceeds uint64)
+                if (is_float($raw64)) {
+                    throw new WasmError('constant out of range');
+                }
+                $i['imm'][] = (int)$raw64;
                 break;
-            case 'f32.const':
-                $i['imm'][] = WasmValue::canonF32($this->consumeF32Float());
+            }
+            case 'f32.const': {
+                $fv32 = $this->consumeF32Float();
+                if (is_int($fv32)) {
+                    // NaN with specific payload — already stored as f32 bit pattern
+                    $i['imm'][] = $fv32;
+                } elseif (is_nan($fv32)) {
+                    // Canonical NaN — store as f32 bit pattern (0x7FC00000)
+                    $i['imm'][] = WasmValue::f32Bits($fv32);
+                } else {
+                    // Reject finite values that overflow to ±INF when cast to f32
+                    if (!is_infinite($fv32)) {
+                        $f32bits = unpack('V', pack('f', $fv32))[1];
+                        if (($f32bits & 0x7FFFFFFF) === 0x7F800000) {
+                            throw new WasmError('constant out of range');
+                        }
+                    }
+                    $i['imm'][] = WasmValue::canonF32($fv32);
+                }
                 break;
-            case 'f64.const':
-                $i['imm'][] = $this->consumeF64Float();
+            }
+            case 'f64.const': {
+                // Peek at the token to detect literal inf/-inf (which are valid).
+                // Hex/decimal floats that overflow to INF have rawString set; literal inf does not.
+                $peeked = $this->peek();
+                $isLiteralInf = $peeked->type === Token::FLOAT
+                    && is_infinite((float)$peeked->value)
+                    && $peeked->rawString === null;
+                $fv64 = $this->consumeF64Float();
+                // Reject finite values that overflow to ±INF (constant out of range),
+                // but allow literal inf/-inf.
+                if (is_infinite($fv64) && !$isLiteralInf) {
+                    throw new WasmError('constant out of range');
+                }
+                $i['imm'][] = $fv64;
                 break;
+            }
             case 'select':
                 // optional type annotation(s): (result ...) may contain ref types
                 while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'result') {
@@ -1167,9 +1272,19 @@ final class Parser
                     $this->memoryUsed = true;
                     $memarg = $this->parseMemArg();
                     $i['imm'] = [$memarg['offset'], $memarg['align']];
+                } elseif (preg_match('/^(?:i32|i64|f32|f64)\.(?:load|store)/', $op)) {
+                    // Looks like a memory instruction but isn't a valid one (e.g. i32.load32, f32.store64)
+                    throw new WasmError('unknown operator');
+                } elseif (preg_match('/^(?:i32|i64|f32|f64)\.const\S/', $op)) {
+                    // e.g. i32.const0 (missing space between const and the argument)
+                    throw new WasmError('unknown operator');
                 }
                 if ($op === 'memory.size' || $op === 'memory.grow') {
                     $this->memoryUsed = true;
+                }
+                // Reject obsolete naming conventions (e.g. i32.wrap/i64, i32.trunc_s:sat/f32)
+                if (str_contains($op, '/') || str_contains($op, ':')) {
+                    throw new WasmError("unknown operator: $op");
                 }
                 // All others: no immediates
                 break;
@@ -1594,6 +1709,15 @@ final class Parser
                         && $this->tokens[$k + 1]->type === Token::KEYWORD
                         && $this->tokens[$k + 1]->value === 'func'
                     ) {
+                        // Also check for an ID on the imported func
+                        $funcIdTok = $this->tokens[$k + 2] ?? null;
+                        if ($funcIdTok && $funcIdTok->type === Token::ID) {
+                            $funcIdStr = (string)$funcIdTok->value;
+                            if (isset($this->funcIds[$funcIdStr])) {
+                                throw new WasmError('duplicate func');
+                            }
+                            $this->funcIds[$funcIdStr] = $importedFuncCount + $localFuncCount;
+                        }
                         $importedFuncCount++;
                         break;
                     }
@@ -1624,7 +1748,11 @@ final class Parser
 
                 $idTok = $this->tokens[$p] ?? null;
                 if ($idTok && $idTok->type === Token::ID) {
-                    $this->funcIds[(string)$idTok->value] = $importedFuncCount + $localFuncCount;
+                    $idStr = (string)$idTok->value;
+                    if (isset($this->funcIds[$idStr])) {
+                        throw new WasmError('duplicate func');
+                    }
+                    $this->funcIds[$idStr] = $importedFuncCount + $localFuncCount;
                 }
 
                 if ($isInlineImport) {
@@ -1728,6 +1856,20 @@ final class Parser
         return $tok;
     }
 
+    /**
+     * Consume a STRING token and validate it as a valid UTF-8 name.
+     * Per the WebAssembly spec, names (import/export names) must be valid UTF-8.
+     */
+    private function expectName(): string
+    {
+        $tok = $this->expect(Token::STRING);
+        $name = (string)$tok->value;
+        if (!mb_check_encoding($name, 'UTF-8')) {
+            throw new WasmError("malformed UTF-8 encoding at line {$tok->line}");
+        }
+        return $name;
+    }
+
     private function expectKeyword(?string $kw): string
     {
         $tok = $this->consume();
@@ -1753,19 +1895,39 @@ final class Parser
     /**
      * Consume a float constant in f32 context.
      * Handles nan:0xN keywords by constructing the exact f32 bit pattern.
+     * Returns int for NaN values (f32 bit pattern), float for all others.
+     * For hex floats with >13 fractional hex digits, uses exact single-round
+     * f32 conversion via BCMath to avoid double-rounding through f64.
      */
-    private function consumeF32Float(): float
+    private function consumeF32Float(): int|float
     {
         $tok = $this->peek();
         if ($tok->type === Token::KEYWORD) {
             $kw = (string)$tok->value;
             if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
                 $this->consume();
-                $payload = (int)(hexdec(str_replace('_', '', $m[2])) & 0x7FFFFF);
+                $rawPayload = hexdec(str_replace('_', '', $m[2]));
+                // f32 NaN payload must be in 1..0x7FFFFF (23 bits, non-zero)
+                if ($rawPayload === 0.0 || $rawPayload === 0 || $rawPayload >= 0x800000) {
+                    throw new WasmError('constant out of range');
+                }
+                $payload = (int)($rawPayload & 0x7FFFFF);
                 $sign    = ($m[1] === '-') ? 0x80000000 : 0;
-                $bits32  = $sign | 0x7F800000 | $payload;
-                return (float)unpack('f', pack('V', $bits32))[1];
+                // Return as int (f32 bit pattern) to preserve NaN payload
+                return $sign | 0x7F800000 | $payload;
             }
+        }
+        // For floats with precision that exceeds f64 (~17 sig digits for decimal,
+        // >13 hex fractional digits for hex), the Lexer stores the original string
+        // in rawString so we can do a single-round f32 conversion via BCMath,
+        // avoiding double-rounding errors from the f64 intermediate value.
+        if ($tok->type === Token::FLOAT && $tok->rawString !== null) {
+            $this->consume();
+            $raw = $tok->rawString;
+            if (preg_match('/^[+-]?0x/i', $raw)) {
+                return Lexer::parseHexFloatAsF32($raw);
+            }
+            return Lexer::parseDecFloatAsF32($raw);
         }
         return (float)$this->consumeNumeric();
     }
@@ -1781,10 +1943,14 @@ final class Parser
             $kw = (string)$tok->value;
             if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
                 $this->consume();
-                $payload = hexdec(str_replace('_', '', $m[2])); // up to 52-bit mantissa payload
+                $rawPayload = hexdec(str_replace('_', '', $m[2])); // up to 52-bit mantissa payload
+                // f64 NaN payload must be in 1..0xFFFFFFFFFFFFF (52 bits, non-zero)
+                if ($rawPayload === 0.0 || $rawPayload === 0 || $rawPayload >= (float)0x10000000000000) {
+                    throw new WasmError('constant out of range');
+                }
                 $hi32    = ($m[1] === '-' ? 0x80000000 : 0) | 0x7FF00000
-                         | (int)(($payload >> 32) & 0xFFFFF);
-                $lo32    = (int)($payload & 0xFFFFFFFF);
+                         | (int)(($rawPayload >> 32) & 0xFFFFF);
+                $lo32    = (int)($rawPayload & 0xFFFFFFFF);
                 return (float)unpack('d', pack('VV', $lo32, (int)$hi32))[1];
             }
         }
@@ -1854,7 +2020,20 @@ final class Parser
 
     private function isMemInstr(string $op): bool
     {
-        return (bool)preg_match('/^(?:i32|i64|f32|f64)\.(?:load|store)/', $op);
+        static $memInstrs = null;
+        if ($memInstrs === null) {
+            $memInstrs = array_flip([
+                'i32.load', 'i32.load8_s', 'i32.load8_u', 'i32.load16_s', 'i32.load16_u',
+                'i64.load', 'i64.load8_s', 'i64.load8_u', 'i64.load16_s', 'i64.load16_u',
+                'i64.load32_s', 'i64.load32_u',
+                'f32.load', 'f64.load',
+                'i32.store', 'i32.store8', 'i32.store16',
+                'i64.store', 'i64.store8', 'i64.store16', 'i64.store32',
+                'f32.store', 'f64.store',
+                'memory.init', 'memory.copy', 'memory.fill',
+            ]);
+        }
+        return isset($memInstrs[$op]);
     }
 
     private function isInstrKeyword(string $kw): bool
