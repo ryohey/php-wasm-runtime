@@ -60,6 +60,15 @@ final class WastTest extends TestCase
         'utf8-import-module.wast',
         'utf8-import-field.wast',
         'utf8-custom-section-id.wast',
+        // GC proposal (typed function references, rec types — not implemented)
+        'br_on_non_null.wast',
+        'br_on_null.wast',
+        'call_ref.wast',
+        'return_call_ref.wast',
+        'ref_as_non_null.wast',
+        'type-rec.wast',
+        'type-equivalence.wast',
+        'local_init.wast',
     ];
 
     // -------------------------------------------------------------------------

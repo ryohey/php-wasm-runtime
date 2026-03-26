@@ -19,6 +19,8 @@ final class Token
         public readonly string $type,
         public readonly string|int|float $value,
         public readonly int $line,
+        /** Original hex-float string for tokens that may lose precision via f64 */
+        public readonly ?string $rawString = null,
     ) {}
 
     public function __toString(): string

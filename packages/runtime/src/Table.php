@@ -13,7 +13,11 @@ final class Table
 
     public function __construct(int $minSize, ?int $maxSize = null)
     {
-        $this->elements = array_fill(0, $minSize, null);
+        // Guard against unreasonably large table sizes that would exhaust memory
+        if ($minSize > 10_000_000 || $minSize < 0) {
+            throw new Trap('table size exceeds implementation limit');
+        }
+        $this->elements = $minSize > 0 ? array_fill(0, $minSize, null) : [];
         $this->maxSize  = $maxSize;
     }
 

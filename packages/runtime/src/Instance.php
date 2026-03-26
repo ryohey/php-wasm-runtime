@@ -95,6 +95,10 @@ final class Instance
 
         // ---- Data segments ----
         foreach ($mod->dataSegments as $ds) {
+            // Passive data segments have no memory index; they are initialized via memory.init
+            if (!empty($ds['passive'])) {
+                continue;
+            }
             $memIdx = $ds['memIndex'];
             $offset = (int)(($ds['offset'] instanceof WasmValue) ? $ds['offset']->value : $ds['offset']);
             if (!isset($inst->memories[$memIdx])) {
