@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace WasmRuntime\Wast;
 
 use WasmRuntime\{Instance, Module, Trap, WasmError, WasmValue, ValType, Validator};
-use WasmRuntime\Wat\{Lexer, Parser, Token};
+use WasmRuntime\Binary\Decoder;
+use WasmRuntime\Wat\{Lexer, Token};
 
 /**
  * WAST (WebAssembly Script) test runner.
@@ -302,7 +303,48 @@ final class Runner
 
     private function parseModule(string $src): Module
     {
-        return (new Parser())->parseModule($src);
+        $wasmBytes = $this->wat2wasm($src);
+        return (new Decoder())->decode($wasmBytes);
+    }
+
+    /**
+     * Convert WAT text to WASM binary using WABT's wat2wasm.
+     */
+    private function wat2wasm(string $watSrc): string
+    {
+        $tmpWat  = tempnam(sys_get_temp_dir(), 'wat_') . '.wat';
+        $tmpWasm = tempnam(sys_get_temp_dir(), 'wasm_') . '.wasm';
+        try {
+            file_put_contents($tmpWat, $watSrc);
+            // Try to find wat2wasm
+            $wat2wasm = 'wat2wasm';
+            foreach (['/opt/homebrew/bin/wat2wasm', '/usr/local/bin/wat2wasm'] as $path) {
+                if (file_exists($path)) {
+                    $wat2wasm = $path;
+                    break;
+                }
+            }
+            $cmd = sprintf(
+                '%s %s -o %s 2>&1',
+                escapeshellarg($wat2wasm),
+                escapeshellarg($tmpWat),
+                escapeshellarg($tmpWasm)
+            );
+            $output = [];
+            $exitCode = 0;
+            exec($cmd, $output, $exitCode);
+            if ($exitCode !== 0) {
+                throw new WasmError('wat2wasm failed: ' . implode("\n", $output));
+            }
+            $bytes = file_get_contents($tmpWasm);
+            if ($bytes === false) {
+                throw new WasmError('Failed to read wasm output');
+            }
+            return $bytes;
+        } finally {
+            @unlink($tmpWat);
+            @unlink($tmpWasm);
+        }
     }
 
     /** Build import table from registered named modules */
