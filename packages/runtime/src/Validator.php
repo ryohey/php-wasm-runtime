@@ -93,6 +93,19 @@ final class Validator
             }
         }
 
+        // Validate export indices
+        $globalCount = count(array_filter($mod->imports, fn($i) => $i['kind'] === 'global')) + count($mod->globals);
+        foreach ($mod->exports as $name => $exp) {
+            $idx = $exp['index'];
+            match ($exp['kind']) {
+                'func'   => $idx >= $funcCount ? throw new WasmError('unknown function') : null,
+                'table'  => $idx >= $tableCount ? throw new WasmError('unknown table') : null,
+                'memory' => $idx >= $memCount ? throw new WasmError('unknown memory') : null,
+                'global' => $idx >= $globalCount ? throw new WasmError('unknown global') : null,
+                default  => null,
+            };
+        }
+
         foreach ($mod->funcBodies as $i => $body) {
             $absIdx = $mod->importedFuncCount + $i;
             $ft     = $mod->funcType($absIdx);
