@@ -40,7 +40,7 @@
 (assert_return (invoke "trunc" (f64.const -1.9)) (f64.const -1.0))
 (assert_return (invoke "nearest" (f64.const 0.5)) (f64.const 0.0))
 (assert_return (invoke "nearest" (f64.const 1.5)) (f64.const 2.0))
-(assert_return (invoke "nearest" (f64.const -0.5)) (f64.const 0.0))
+(assert_return (invoke "nearest" (f64.const -0.5)) (f64.const -0.0))
 (assert_return (invoke "abs" (f64.const -3.14)) (f64.const 3.14))
 (assert_return (invoke "abs" (f64.const 3.14)) (f64.const 3.14))
 (assert_return (invoke "neg" (f64.const 1.0)) (f64.const -1.0))

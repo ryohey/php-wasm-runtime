@@ -577,7 +577,12 @@ final class Runner
     {
         if ($actual->type !== $expectedType) return false;
         if ($value === 'null') return $actual->value === -1;
-        if ($value === 'any') return $actual->value !== -1;
+        // In assert_return, funcref values are either null or "any non-null".
+        // wast2json encodes (ref.func) as "0" but it means any non-null funcref.
+        if ($expectedType === ValType::FUNCREF) {
+            return $actual->value !== -1; // any non-null funcref
+        }
+        // externref can have specific values
         return $actual->value === (int)$value;
     }
 
