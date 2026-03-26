@@ -1,13 +1,13 @@
 # php-wasm-runtime
 
-A WebAssembly runtime implemented in pure PHP. No C extensions or external libraries required — just PHP parsing and executing WAT (WebAssembly Text Format) from scratch.
+A WebAssembly runtime implemented in pure PHP. No C extensions required — PHP decoding and executing Wasm binary (`.wasm`) format directly.
 
 ## Features
 
 - **Pure PHP** — runs on PHP 8.1+ with no extensions
-- **WAT/WAST parser** — full S-expression text format support
+- **Binary format** — reads `.wasm` files directly via a custom binary decoder
 - **Iterative interpreter** — label-stack based execution (no recursion per block level)
-- **Spec test compatible** — runs `.wast` files directly via PHPUnit
+- **Spec test compatible** — runs official `.wast` test suite via WABT's `wast2json` and PHPUnit
 
 ## Supported
 
@@ -15,14 +15,15 @@ A WebAssembly runtime implemented in pure PHP. No C extensions or external libra
 |---|---|
 | Value types | `i32`, `i64`, `f32`, `f64` |
 | Instructions | Arithmetic, comparison, bitwise, conversion, memory, control flow |
-| Control flow | `block`, `loop`, `if/else`, `br`, `br_if`, `br_table`, `return` |
-| Labels | Named labels: `block $l`, `loop $l`, `br $label` |
-| Calls | Direct `call`, indirect `call_indirect` |
-| Memory | Linear memory, `memory.grow/size`, all load/store widths |
-| Tables | `funcref` tables, element segments |
+| Control flow | `block`, `loop`, `if/else`, `br`, `br_if`, `br_table`, `return`, `return_call` |
+| Calls | Direct `call`, indirect `call_indirect`, tail calls `return_call`/`return_call_indirect` |
+| Memory | Linear memory, `memory.grow/size/fill/copy/init`, all load/store widths |
+| Tables | `funcref`/`externref` tables, `table.get/set/grow/size/fill/copy/init` |
 | Globals | Mutable and immutable globals |
 | Imports | Host functions, memory, tables, and globals |
 | Exports | Functions, memory, tables, and globals |
+| Bulk memory | `memory.fill`, `memory.copy`, `memory.init`, `data.drop` |
+| Bulk table | `table.fill`, `table.copy`, `table.init`, `elem.drop` |
 
 ## Architecture
 
@@ -33,40 +34,35 @@ src/WasmRuntime/
 ├── FuncType.php         Function signature (params[], results[])
 ├── Trap.php             Runtime trap exception
 ├── WasmError.php        Validation/parse error
-├── Module.php           Module definition (parse output)
+├── Module.php           Module definition (decoded from .wasm binary)
 ├── Memory.php           Linear memory backed by a PHP string buffer
 ├── Table.php            Function reference table
 ├── Instance.php         Module instantiation and export dispatch
 ├── Executor.php         Iterative Wasm interpreter
-├── WasmRuntimeCLI.php   CLI wrapper (bin/wasm entry point)
-├── Wat/
-│   ├── Lexer.php        WAT tokenizer
-│   ├── Token.php        Token type definitions
-│   └── Parser.php       WAT/WAST parser (two-pass compilation)
+├── Validator.php        Module validation
+├── Binary/
+│   ├── Decoder.php      Wasm binary decoder (.wasm → Module)
+│   └── BinaryReader.php Low-level binary format reader (LEB128, etc.)
 └── Wast/
-    └── Runner.php       .wast spec test runner
+    └── Runner.php       .wast spec test runner (uses WABT wast2json)
 ```
 
 ### Execution pipeline
 
 ```
-WAT source
+.wasm binary
     │
-    ▼  Wat\Lexer → token stream
+    ▼  Binary\Decoder → Module (types, functions, memories, tables, globals, …)
+    │   decodes sections, resolves indices, pre-computes branch target IPs
     │
-    ▼  Wat\Parser  pass 1 → instruction tree (S-expressions)
-    │
-    ▼  Wat\Parser  pass 2 → flat bytecode
-    │   pre-computes branch target IPs for block/loop/if
-    │
-    ▼  Instance::instantiate() → resolve imports, run data/element segments
+    ▼  Instance::instantiate() → resolve imports, init memories/tables/globals
     │
     ▼  Executor::run() → label-stack iterative interpreter
 ```
 
-### Two-pass compilation
+### Pre-computed branch targets
 
-The WAT parser pre-computes branch target IPs for `block`/`loop`/`if` during compilation, eliminating runtime nesting analysis and enabling a tight iterative dispatch loop.
+The binary decoder pre-computes branch target IPs for `block`/`loop`/`if` during decoding, eliminating runtime nesting analysis and enabling a tight iterative dispatch loop.
 
 ```
 block $b (result i32)   →   IP 0: ['block', i32, endIp=3]
@@ -87,54 +83,7 @@ composer install
 
 **Requirements:** PHP 8.1+, Composer
 
-## CLI
-
-Run a WAT file directly from the command line:
-
-```bash
-php bin/wasm <file.wat> [function] [arg1 arg2 ...]
-```
-
-```bash
-# Call a specific exported function with arguments
-php bin/wasm example.wat add 10 32
-# => 42
-
-# Run _start or main automatically (if exported)
-php bin/wasm example.wat
-
-# Specify argument types with a prefix (default: i32)
-php bin/wasm example.wat mul f64:3.14 f64:2.0
-
-# Show help
-php bin/wasm --help
-```
-
-Supported argument type prefixes: `i64:`, `f32:`, `f64:` (default is `i32`).
-
-## Running tests
-
-```bash
-# Run all tests
-./vendor/bin/phpunit
-
-# Filter to a specific spec file
-./vendor/bin/phpunit --filter "testWastFile.*i32"
-
-# Run a specific inline test
-./vendor/bin/phpunit --filter testI32BasicArithmetic
-```
-
-Spec test files:
-
-| File | Coverage |
-|---|---|
-| `tests/spec/i32.wast` | Arithmetic, comparison, bitwise, sign extension |
-| `tests/spec/f64.wast` | Floating-point arithmetic and math functions |
-| `tests/spec/control.wast` | block/loop/if/br/br_if/br_table/select |
-| `tests/spec/memory.wast` | Load/store, grow/size, out-of-bounds traps |
-| `tests/spec/call.wast` | Recursion, mutual recursion |
-| `tests/spec/globals.wast` | Mutable and immutable globals |
+**For running spec tests:** [WABT](https://github.com/WebAssembly/wabt) (provides `wat2wasm` and `wast2json`)
 
 ## Usage examples
 
@@ -144,18 +93,12 @@ Spec test files:
 <?php
 require 'vendor/autoload.php';
 
-use WasmRuntime\Wat\Parser;
+use WasmRuntime\Binary\Decoder;
 use WasmRuntime\Instance;
 use WasmRuntime\WasmValue;
 
-$module = (new Parser())->parseModule('
-    (module
-        (func (export "add") (param i32 i32) (result i32)
-            local.get 0
-            local.get 1
-            i32.add)
-    )
-');
+// Decode a .wasm binary file
+$module = Decoder::decodeFile('example.wasm');
 
 $instance = Instance::instantiate($module);
 
@@ -167,70 +110,10 @@ $results = $instance->callExport('add', [
 echo $results[0]->value; // 42
 ```
 
-### Recursive function (Fibonacci)
-
-```php
-$module = (new Parser())->parseModule('
-    (module
-        (func $fib (export "fib") (param i64) (result i64)
-            local.get 0
-            i64.const 2
-            i64.lt_s
-            if (result i64)
-                local.get 0
-            else
-                local.get 0
-                i64.const 1
-                i64.sub
-                call $fib
-                local.get 0
-                i64.const 2
-                i64.sub
-                call $fib
-                i64.add
-            end)
-    )
-');
-
-$instance = Instance::instantiate($module);
-$result = $instance->callExport('fib', [WasmValue::i64(10)]);
-echo $result[0]->value; // 55
-```
-
-### Linear memory
-
-```php
-$module = (new Parser())->parseModule('
-    (module
-        (memory (export "mem") 1)
-        (func (export "store") (param i32 i32)
-            local.get 0
-            local.get 1
-            i32.store)
-        (func (export "load") (param i32) (result i32)
-            local.get 0
-            i32.load)
-    )
-');
-
-$instance = Instance::instantiate($module);
-
-$instance->callExport('store', [WasmValue::i32(0), WasmValue::i32(12345)]);
-$result = $instance->callExport('load', [WasmValue::i32(0)]);
-echo $result[0]->value; // 12345
-```
-
 ### Importing host functions
 
 ```php
-$module = (new Parser())->parseModule('
-    (module
-        (import "env" "log" (func $log (param i32)))
-        (func (export "run") (param i32)
-            local.get 0
-            call $log)
-    )
-');
+$module = Decoder::decodeFile('module_with_imports.wasm');
 
 $imports = [
     'env' => [
@@ -247,20 +130,62 @@ $instance->callExport('run', [WasmValue::i32(42)]);
 
 ### Running a .wast spec file
 
+The WAST runner uses WABT's `wast2json` tool to convert `.wast` files into JSON + `.wasm` binaries, then executes the test commands.
+
 ```php
 use WasmRuntime\Wast\Runner;
 
 $runner = new Runner();
-$result = $runner->run(file_get_contents('tests/spec/i32.wast'));
+$result = $runner->runFile('tests/spec/i32.wast');
 
 echo "passed: {$result['passed']}\n";
 echo "failed: {$result['failed']}\n";
 echo "total:  {$result['total']}\n";
 ```
 
+## Running tests
+
+```bash
+# Run all tests
+./vendor/bin/phpunit
+
+# Filter to a specific spec file
+./vendor/bin/phpunit --filter "testOfficialSpec.*i32"
+
+# Run local spec tests only
+./vendor/bin/phpunit --filter testLocalSpec
+
+# Run a specific inline test
+./vendor/bin/phpunit --filter testI32BasicArithmetic
+```
+
+### Test architecture
+
+Tests use WABT's `wast2json` to convert `.wast` (WebAssembly Script Test) files into:
+- A JSON file describing test commands (module loads, assertions, traps, etc.)
+- One or more `.wasm` binary files for each module defined in the `.wast`
+
+The `Wast\Runner` then parses the JSON and executes each command against the PHP runtime.
+
+### Spec test files
+
+Local tests (hand-written, under `tests/spec/`):
+
+| File | Coverage |
+|---|---|
+| `tests/spec/i32.wast` | Arithmetic, comparison, bitwise, sign extension |
+| `tests/spec/i64.wast` | 64-bit integer operations |
+| `tests/spec/f64.wast` | Floating-point arithmetic and math functions |
+| `tests/spec/control.wast` | block/loop/if/br/br_if/br_table/select |
+| `tests/spec/memory.wast` | Load/store, grow/size, out-of-bounds traps |
+| `tests/spec/call.wast` | Recursion, mutual recursion |
+| `tests/spec/globals.wast` | Mutable and immutable globals |
+
+Official WebAssembly spec tests are also run from the `spec/test/core/` submodule (see `SPEC_COVERAGE.md` for details).
+
 ## Limitations
 
-- Covers the Wasm MVP (version 1.0) core instruction set
-- Proposals (SIMD, threads, exceptions, GC) are not supported
-- Binary format (`.wasm`) is not supported — text format (`.wat`/`.wast`) only
-- NaN bit-pattern propagation is simplified
+- Covers the Wasm MVP + bulk memory/table operations
+- Proposals (SIMD, threads, exceptions, GC, typed function references) are not supported
+- NaN bit-pattern propagation is simplified (PHP float limitation)
+- Multi-module linking has partial support (some imports.wast/linking.wast cases fail)

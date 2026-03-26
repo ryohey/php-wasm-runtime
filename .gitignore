@@ -1,3 +1,7 @@
 vendor/
 .phpunit.result.cache
 .claude
+# WASI test build artifacts
+scripts/wasi-testsuite/tests/rust/wasm32-wasip1/target/
+scripts/wasi-testsuite/tests/rust/testsuite/
+scripts/wasi-testsuite/tests/c/testsuite/

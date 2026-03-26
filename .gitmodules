@@ -1,3 +1,6 @@
 [submodule "packages/runtime/spec"]
 	path = packages/runtime/spec
 	url = https://github.com/WebAssembly/spec.git
+[submodule "scripts/wasi-testsuite"]
+	path = scripts/wasi-testsuite
+	url = https://github.com/WebAssembly/wasi-testsuite.git
