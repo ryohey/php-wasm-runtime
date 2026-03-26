@@ -629,14 +629,19 @@ final class Executor
                     $n    = (int)array_pop($stack);
                     $s    = (int)array_pop($stack);
                     $d    = (int)array_pop($stack);
+                    $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
                     $dTable = $this->instance->tables[$dIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $sTable = $this->instance->tables[$sIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    if ($s + $n > $sTable->size() || $d + $n > $dTable->size()) {
+                    if ($su + $nu > $sTable->size() || $du + $nu > $dTable->size()) {
                         throw Trap::outOfBoundsTableAccess();
                     }
-                    $vals = [];
-                    for ($k = 0; $k < $n; $k++) $vals[] = $sTable->get($s + $k);
-                    for ($k = 0; $k < $n; $k++) $dTable->set($d + $k, $vals[$k]);
+                    if ($nu === 0) break;
+                    // Copy in correct direction to handle overlap
+                    if ($du <= $su) {
+                        for ($k = 0; $k < $nu; $k++) $dTable->set($du + $k, $sTable->get($su + $k));
+                    } else {
+                        for ($k = $nu - 1; $k >= 0; $k--) $dTable->set($du + $k, $sTable->get($su + $k));
+                    }
                     break;
                 }
                 case 'table.init': {
@@ -645,18 +650,24 @@ final class Executor
                     $n    = (int)array_pop($stack);
                     $s    = (int)array_pop($stack);
                     $d    = (int)array_pop($stack);
+                    $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $elem  = $this->instance->module->elements[$eIdx] ?? null;
-                    $funcIndices = $elem ? $elem['funcIndices'] : [];
-                    if ($s + $n > count($funcIndices) || $d + $n > $table->size()) {
+                    $funcIndices = ($elem && !empty($elem['funcIndices'])) ? $elem['funcIndices'] : [];
+                    if ($su + $nu > count($funcIndices) || $du + $nu > $table->size()) {
                         throw Trap::outOfBoundsTableAccess();
                     }
-                    for ($k = 0; $k < $n; $k++) $table->set($d + $k, $funcIndices[$s + $k] ?? null);
+                    for ($k = 0; $k < $nu; $k++) $table->set($du + $k, $funcIndices[$su + $k] ?? null);
                     break;
                 }
-                case 'elem.drop':
-                    // Drop elem segment (passive) - no-op for now
+                case 'elem.drop': {
+                    $eIdx = $instr[1] ?? 0;
+                    // Clear the element segment's function indices
+                    if (isset($this->instance->module->elements[$eIdx])) {
+                        $this->instance->module->elements[$eIdx]['funcIndices'] = [];
+                    }
                     break;
+                }
                 // ---- References ----
                 case 'ref.null':
                     $stack[] = null;
@@ -702,9 +713,14 @@ final class Executor
                     $mem->initFromData($d, $data, $s, $n);
                     break;
                 }
-                case 'data.drop':
-                    // Drop data segment - no-op for now
+                case 'data.drop': {
+                    $dIdx = $instr[1] ?? 0;
+                    // Clear the data segment bytes
+                    if (isset($this->instance->module->dataSegments[$dIdx])) {
+                        $this->instance->module->dataSegments[$dIdx]['bytes'] = '';
+                    }
                     break;
+                }
 
                 default:
                     break; // unknown/future instructions silently skipped
