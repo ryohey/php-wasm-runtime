@@ -7,7 +7,7 @@ namespace WasmRuntime;
 /**
  * Iterative WebAssembly interpreter with a label stack.
  *
- * Instruction format (flat array produced by Wat\Parser):
+ * Instruction format (flat array produced by Binary\Decoder):
  *   ['opcode', ...immediates]
  *
  * Control instructions carry pre-computed IP targets:
@@ -243,7 +243,9 @@ final class Executor
                     }
                     $cargs = array_reverse($reversed);
                     foreach ($this->invoke($fIdx, $cargs) as $r) {
-                        $stack[] = $r->value;
+                        $stack[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
+                            ? ($r->value === -1 ? null : $r->value)
+                            : $r->value;
                     }
                     break;
                 }
@@ -279,7 +281,9 @@ final class Executor
                     if (!$cft->equals($this->instance->module->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
                     foreach ($this->invoke($fIdx, $cargs) as $r) {
-                        $stack[] = $r->value;
+                        $stack[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
+                            ? ($r->value === -1 ? null : $r->value)
+                            : $r->value;
                     }
                     break;
                 }
@@ -764,14 +768,16 @@ final class Executor
     // Numeric helpers
     // -------------------------------------------------------------------------
 
-    private function makeVal(int $type, int|float $raw): WasmValue
+    private function makeVal(int $type, int|float|null $raw): WasmValue
     {
         return match ($type) {
             ValType::I32 => WasmValue::i32((int)$raw),
             ValType::I64 => WasmValue::i64((int)$raw),
             ValType::F32 => WasmValue::f32((float)$raw),
             ValType::F64 => WasmValue::f64((float)$raw),
-            default      => WasmValue::i32((int)$raw),
+            ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $raw === null ? -1 : (int)$raw),
+            ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+            default      => WasmValue::i32((int)($raw ?? 0)),
         };
     }
 

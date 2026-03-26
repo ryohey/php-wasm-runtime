@@ -37,29 +37,18 @@ final class WastTest extends TestCase
     private const SKIP_OFFICIAL = [
         // annotations extension (uses @ syntax, not standard WAT)
         'annotations.wast',
-        // binary-format
+        // binary-format (tests binary encoding details, not runtime semantics)
         'binary.wast',
         'binary-leb128.wast',
         // stack-crash
         'skip-stack-guard-page.wast',
-        // bulk-memory
-        'memory_copy.wast',
-        'memory_fill.wast',
-        'memory_init.wast',
-        'bulk-memory-operations.wast',
-        // reference-types
-        'ref_null.wast',
-        'ref_func.wast',
-        'ref_is_null.wast',
-        // table-bulk
-        'table_copy.wast',
-        'table_fill.wast',
-        'table_init.wast',
         // performance (>2 000 lines; run separately when optimizing float support)
         'float_exprs.wast',
         'utf8-import-module.wast',
         'utf8-import-field.wast',
         'utf8-custom-section-id.wast',
+        // reference type: uses anyref which WABT 1.0.39 doesn't support
+        'ref_null.wast',
         // GC proposal (typed function references, rec types — not implemented)
         'br_on_non_null.wast',
         'br_on_null.wast',
@@ -69,6 +58,8 @@ final class WastTest extends TestCase
         'type-rec.wast',
         'type-equivalence.wast',
         'local_init.wast',
+        // table-sub uses GC proposal typed references
+        'table-sub.wast',
     ];
 
     // -------------------------------------------------------------------------
@@ -113,7 +104,13 @@ final class WastTest extends TestCase
             return [];
         }
 
-        return self::globProvider($dir);
+        $cases = self::globProvider($dir);
+        // Also include bulk-memory subdirectory
+        $bulkDir = $dir . '/bulk-memory';
+        if (is_dir($bulkDir)) {
+            $cases = array_merge($cases, self::globProvider($bulkDir));
+        }
+        return $cases;
     }
 
     // -------------------------------------------------------------------------

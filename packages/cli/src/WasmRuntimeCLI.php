@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace WasmRuntime;
 
+use WasmRuntime\Binary\Decoder;
 use WasmRuntime\Wasi\Wasi;
 use WasmRuntime\Wasi\WasiExitException;
-use WasmRuntime\Wat\Parser;
 
 /**
  * CLI wrapper for WasmRuntime.
@@ -184,12 +184,40 @@ final class WasmRuntimeCLI
     {
         $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
 
-        if ($ext === 'wat') {
-            $source = file_get_contents($file);
-            return (new Parser())->parseModule($source);
+        if ($ext === 'wasm') {
+            $bytes = file_get_contents($file);
+            if ($bytes === false) throw new WasmError("Failed to read file: $file");
+            return (new Decoder())->decode($bytes);
         }
 
-        throw new WasmError("Unsupported file format: .$ext (only .wat is supported)");
+        if ($ext === 'wat') {
+            $source = file_get_contents($file);
+            if ($source === false) throw new WasmError("Failed to read file: $file");
+            // Convert WAT to WASM binary using wat2wasm
+            $wat2wasm = 'wat2wasm';
+            foreach (['/opt/homebrew/bin/wat2wasm', '/usr/local/bin/wat2wasm'] as $p) {
+                if (file_exists($p)) { $wat2wasm = $p; break; }
+            }
+            $tmpWat  = tempnam(sys_get_temp_dir(), 'wat_') . '.wat';
+            $tmpWasm = tempnam(sys_get_temp_dir(), 'wasm_') . '.wasm';
+            try {
+                file_put_contents($tmpWat, $source);
+                $cmd = sprintf('%s %s -o %s 2>&1', escapeshellarg($wat2wasm), escapeshellarg($tmpWat), escapeshellarg($tmpWasm));
+                $output = []; $exitCode = 0;
+                exec($cmd, $output, $exitCode);
+                if ($exitCode !== 0) {
+                    throw new WasmError('wat2wasm failed: ' . implode("\n", $output));
+                }
+                $bytes = file_get_contents($tmpWasm);
+                if ($bytes === false) throw new WasmError('Failed to read wasm output');
+                return (new Decoder())->decode($bytes);
+            } finally {
+                @unlink($tmpWat);
+                @unlink($tmpWasm);
+            }
+        }
+
+        throw new WasmError("Unsupported file format: .$ext (use .wasm or .wat)");
     }
 
     /**

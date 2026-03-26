@@ -6,9 +6,10 @@ namespace WasmRuntime\Tests\Wasi;
 
 use PHPUnit\Framework\TestCase;
 use WasmRuntime\Instance;
+use WasmRuntime\Binary\Decoder;
 use WasmRuntime\Wasi\Wasi;
 use WasmRuntime\Wasi\WasiExitException;
-use WasmRuntime\Wat\Parser;
+use WasmRuntime\WasmError;
 
 /**
  * Integration tests for the WASI (wasi_snapshot_preview1) implementation.
@@ -51,7 +52,8 @@ final class WasiTest extends TestCase
             stderr: $stderr,
         );
 
-        $module   = (new Parser())->parseModule((string)file_get_contents($path));
+        $wasmBytes = $this->wat2wasm((string)file_get_contents($path));
+        $module   = (new Decoder())->decode($wasmBytes);
         $instance = Instance::instantiate($module, $wasi->getImports());
         $wasi->bindInstance($instance);
 
@@ -70,6 +72,29 @@ final class WasiTest extends TestCase
             'stderr'   => (string)stream_get_contents($stderr),
             'exitCode' => $exitCode,
         ];
+    }
+
+    private function wat2wasm(string $watSrc): string
+    {
+        $wat2wasm = 'wat2wasm';
+        foreach (['/opt/homebrew/bin/wat2wasm', '/usr/local/bin/wat2wasm'] as $p) {
+            if (file_exists($p)) { $wat2wasm = $p; break; }
+        }
+        $tmpWat  = tempnam(sys_get_temp_dir(), 'wat_') . '.wat';
+        $tmpWasm = tempnam(sys_get_temp_dir(), 'wasm_') . '.wasm';
+        try {
+            file_put_contents($tmpWat, $watSrc);
+            $cmd = sprintf('%s %s -o %s 2>&1', escapeshellarg($wat2wasm), escapeshellarg($tmpWat), escapeshellarg($tmpWasm));
+            $output = []; $exitCode = 0;
+            exec($cmd, $output, $exitCode);
+            if ($exitCode !== 0) {
+                throw new WasmError('wat2wasm failed: ' . implode("\n", $output));
+            }
+            return (string)file_get_contents($tmpWasm);
+        } finally {
+            @unlink($tmpWat);
+            @unlink($tmpWasm);
+        }
     }
 
     // -------------------------------------------------------------------------
