@@ -480,52 +480,92 @@ final class Decoder
     /**
      * Decode a constant expression (init_expr).
      * Returns a WasmValue for simple cases.
+     * For expressions containing global.get, returns an array of operations
+     * that must be evaluated at instantiation time (when global values are known).
      * Handles extended const expressions (i32.add, i32.sub, i32.mul, i64.add, etc.)
      */
     private function decodeConstExpr(BinaryReader $r): WasmValue|array
     {
-        // Simple evaluation stack for extended const expressions
-        $stack = [];
+        $ops = [];
+        $hasGlobalGet = false;
 
         while (true) {
             $opcode = $r->readByte();
 
             if ($opcode === 0x0B) {
-                // end of expression
                 break;
             }
 
             match ($opcode) {
-                0x41 => $stack[] = WasmValue::i32($r->readS32()),
-                0x42 => $stack[] = WasmValue::i64($r->readS64()),
-                0x43 => $stack[] = $this->decodeConstF32($r),
-                0x44 => $stack[] = WasmValue::f64($r->readF64()),
-                0x23 => $stack[] = $this->evalConstGlobalGet($r),
-                0xD0 => $stack[] = $this->decodeConstRefNull($r),
-                0xD2 => $stack[] = $this->decodeConstRefFunc($r),
-                // Extended const: i32 arithmetic
-                0x6A => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a + $b)),
-                0x6B => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a - $b)),
-                0x6C => $this->constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a * $b)),
-                // Extended const: i64 arithmetic
-                0x7C => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a + $b),
-                0x7D => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a - $b),
-                0x7E => $this->constBinOp($stack, ValType::I64, fn($a, $b) => $a * $b),
-                0x01 => null, // nop - skip
+                0x41 => $ops[] = ['i32.const', $r->readS32()],
+                0x42 => $ops[] = ['i64.const', $r->readS64()],
+                0x43 => $ops[] = ['f32.const', $this->decodeConstF32($r)],
+                0x44 => $ops[] = ['f64.const', WasmValue::f64($r->readF64())],
+                0x23 => (function() use ($r, &$ops, &$hasGlobalGet) {
+                    $ops[] = ['global.get', $r->readU32()];
+                    $hasGlobalGet = true;
+                })(),
+                0xD0 => $ops[] = ['ref.null', $this->decodeConstRefNull($r)],
+                0xD2 => $ops[] = ['ref.func', $this->decodeConstRefFunc($r)],
+                0x6A => $ops[] = ['i32.add'],
+                0x6B => $ops[] = ['i32.sub'],
+                0x6C => $ops[] = ['i32.mul'],
+                0x7C => $ops[] = ['i64.add'],
+                0x7D => $ops[] = ['i64.sub'],
+                0x7E => $ops[] = ['i64.mul'],
+                0x01 => null, // nop
                 default => throw new WasmError("unsupported const expr opcode: 0x" . dechex($opcode)),
             };
         }
 
-        if (count($stack) === 1) {
-            return $stack[0];
+        // Simple case: no global.get, evaluate immediately
+        if (!$hasGlobalGet) {
+            return $this->evalConstOps($ops, []);
         }
-        if (empty($stack)) {
-            return WasmValue::i32(0); // empty init expr
-        }
-        return end($stack);
+
+        // Contains global.get: return deferred expression for instantiation-time eval
+        return ['__constExpr' => true, 'ops' => $ops];
     }
 
-    private function constBinOp(array &$stack, int $type, callable $op): void
+    /**
+     * Evaluate a list of constant expression operations.
+     * $globals is the array of already-resolved global values (used for global.get).
+     */
+    public static function evalConstOps(array $ops, array $globals): WasmValue
+    {
+        $stack = [];
+        foreach ($ops as $op) {
+            match ($op[0]) {
+                'i32.const' => $stack[] = WasmValue::i32($op[1]),
+                'i64.const' => $stack[] = WasmValue::i64($op[1]),
+                'f32.const' => $stack[] = $op[1],
+                'f64.const' => $stack[] = $op[1],
+                'global.get' => $stack[] = self::resolveGlobalGetForConst($op[1], $globals),
+                'ref.null'  => $stack[] = $op[1],
+                'ref.func'  => $stack[] = $op[1],
+                'i32.add' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a + $b)),
+                'i32.sub' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a - $b)),
+                'i32.mul' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a * $b)),
+                'i64.add' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a + $b),
+                'i64.sub' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a - $b),
+                'i64.mul' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a * $b),
+                default => null,
+            };
+        }
+        return $stack[0] ?? WasmValue::i32(0);
+    }
+
+    private static function resolveGlobalGetForConst(int $idx, array $globals): WasmValue
+    {
+        $val = $globals[$idx] ?? 0;
+        // Wrap raw value in WasmValue (assume i32 if we don't know the type)
+        if ($val instanceof WasmValue) {
+            return $val;
+        }
+        return is_float($val) ? WasmValue::f64($val) : WasmValue::i32((int)$val);
+    }
+
+    private static function constBinOp(array &$stack, int $type, callable $op): void
     {
         $b = array_pop($stack);
         $a = array_pop($stack);

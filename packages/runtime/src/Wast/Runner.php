@@ -367,6 +367,31 @@ final class Runner
         }
     }
 
+    /** Standard spectest module values per WebAssembly spec */
+    private static function spectestValue(string $name, string $kind): mixed
+    {
+        if ($kind === 'global') {
+            return match ($name) {
+                'global_i32' => WasmValue::i32(666),
+                'global_i64' => WasmValue::i64(666),
+                'global_f32' => WasmValue::f32(666.6),
+                'global_f64' => WasmValue::f64(666.6),
+                default      => null,
+            };
+        }
+        if ($kind === 'func') {
+            // All spectest functions are no-ops (print, print_i32, etc.)
+            return function (array $args): array { return []; };
+        }
+        if ($kind === 'memory') {
+            return new \WasmRuntime\Memory(1, 2);
+        }
+        if ($kind === 'table') {
+            return new \WasmRuntime\Table(10, 20);
+        }
+        return null;
+    }
+
     /** Build import table from registered named modules */
     private function buildImports(Module $mod): array
     {
@@ -374,6 +399,16 @@ final class Runner
         foreach ($mod->imports as $imp) {
             $mname = $imp['module'];
             $fname = $imp['name'];
+
+            // Handle spectest module
+            if ($mname === 'spectest') {
+                $val = self::spectestValue($fname, $imp['kind']);
+                if ($val !== null) {
+                    $imports[$mname][$fname] = $val;
+                }
+                continue;
+            }
+
             if (!isset($this->namedModules[$mname])) {
                 continue;
             }

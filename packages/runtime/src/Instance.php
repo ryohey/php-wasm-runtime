@@ -84,13 +84,19 @@ final class Instance
 
         // ---- Tables ----
         foreach ($mod->tables as $tblDef) {
-            $inst->tables[] = new Table($tblDef['min'], $tblDef['max'] ?? null);
+            $initVal = null;
+            if (isset($tblDef['init'])) {
+                $resolved = self::resolveConstInit($tblDef['init'], $inst->globals);
+                // -1 sentinel = null ref (from ref.null), otherwise it's a func index
+                $initVal = ($resolved === -1 || $resolved === null) ? null : $resolved;
+            }
+            $inst->tables[] = new Table($tblDef['min'], $tblDef['max'] ?? null, $initVal);
         }
 
         // ---- Globals ----
         foreach ($mod->globals as $gDef) {
             $init = $gDef['init'];
-            $inst->globals[] = ($init instanceof WasmValue) ? $init->value : $init;
+            $inst->globals[] = self::resolveConstInit($init, $inst->globals);
         }
 
         // ---- Data segments ----
@@ -100,7 +106,7 @@ final class Instance
                 continue;
             }
             $memIdx = $ds['memIndex'];
-            $offset = (int)(($ds['offset'] instanceof WasmValue) ? $ds['offset']->value : $ds['offset']);
+            $offset = (int)self::resolveConstInit($ds['offset'], $inst->globals);
             if (!isset($inst->memories[$memIdx])) {
                 throw new WasmError("unknown memory $memIdx");
             }
@@ -109,11 +115,17 @@ final class Instance
 
         // ---- Element segments ----
         foreach ($mod->elements as $es) {
+            // Passive/declarative element segments are not applied during instantiation
+            if (!empty($es['passive'])) {
+                continue;
+            }
             $tableIdx = $es['tableIndex'];
-            $offset   = (int)(($es['offset'] instanceof WasmValue) ? $es['offset']->value : $es['offset']);
+            $offset   = (int)self::resolveConstInit($es['offset'], $inst->globals);
             if (isset($inst->tables[$tableIdx])) {
                 foreach ($es['funcIndices'] as $i => $fi) {
-                    $inst->tables[$tableIdx]->set($offset + $i, $fi);
+                    if ($fi >= 0) { // skip null references (-1)
+                        $inst->tables[$tableIdx]->set($offset + $i, $fi);
+                    }
                 }
             }
         }
@@ -139,6 +151,29 @@ final class Instance
             throw new WasmError("Export '$name' is not a function");
         }
         return $this->executor->invoke($exp['index'], $args);
+    }
+
+    /**
+     * Resolve a constant initializer value.
+     * Handles WasmValue, deferred const expressions (with global.get), and raw values.
+     */
+    private static function resolveConstInit(mixed $init, array $globals): int|float|null
+    {
+        if ($init instanceof WasmValue) {
+            return $init->value;
+        }
+        if (is_array($init) && !empty($init['__constExpr'])) {
+            // Deferred const expression — evaluate now with known globals
+            $result = \WasmRuntime\Binary\Decoder::evalConstOps($init['ops'], $globals);
+            return $result->value;
+        }
+        if (is_array($init) && ($init['op'] ?? '') === 'global.get') {
+            return $globals[$init['index']] ?? 0;
+        }
+        if (is_int($init) || is_float($init)) {
+            return $init;
+        }
+        return 0;
     }
 
     /** Get an exported global value */
