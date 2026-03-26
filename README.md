@@ -6,6 +6,7 @@ A WebAssembly runtime implemented in pure PHP. No C extensions required — PHP 
 
 - **Pure PHP** — runs on PHP 8.1+ with no extensions
 - **Binary format** — reads `.wasm` files directly via a custom binary decoder
+- **WASI support** — `wasi_snapshot_preview1` (stdio, filesystem, clock, random, args, env)
 - **Iterative interpreter** — label-stack based execution (no recursion per block level)
 - **Spec test compatible** — runs official `.wast` test suite via WABT's `wast2json` and PHPUnit
 
@@ -24,27 +25,36 @@ A WebAssembly runtime implemented in pure PHP. No C extensions required — PHP 
 | Exports | Functions, memory, tables, and globals |
 | Bulk memory | `memory.fill`, `memory.copy`, `memory.init`, `data.drop` |
 | Bulk table | `table.fill`, `table.copy`, `table.init`, `elem.drop` |
+| WASI | `fd_read/write`, `path_open`, `args_get`, `environ_get`, `clock_time_get`, `random_get`, `proc_exit`, … |
 
 ## Architecture
 
 ```
-src/WasmRuntime/
-├── ValType.php          Value type constants (I32, I64, F32, F64, FUNCREF, EXTERNREF)
-├── WasmValue.php        Runtime value (type + value pair)
-├── FuncType.php         Function signature (params[], results[])
-├── Trap.php             Runtime trap exception
-├── WasmError.php        Validation/parse error
-├── Module.php           Module definition (decoded from .wasm binary)
-├── Memory.php           Linear memory backed by a PHP string buffer
-├── Table.php            Function reference table
-├── Instance.php         Module instantiation and export dispatch
-├── Executor.php         Iterative Wasm interpreter
-├── Validator.php        Module validation
-├── Binary/
-│   ├── Decoder.php      Wasm binary decoder (.wasm → Module)
-│   └── BinaryReader.php Low-level binary format reader (LEB128, etc.)
-└── Wast/
-    └── Runner.php       .wast spec test runner (uses WABT wast2json)
+packages/
+├── runtime/src/           Core Wasm runtime
+│   ├── ValType.php          Value type constants (I32, I64, F32, F64, FUNCREF, EXTERNREF)
+│   ├── WasmValue.php        Runtime value (type + value pair)
+│   ├── FuncType.php         Function signature (params[], results[])
+│   ├── Trap.php             Runtime trap exception
+│   ├── WasmError.php        Validation/parse error
+│   ├── Module.php           Module definition (decoded from .wasm binary)
+│   ├── Memory.php           Linear memory backed by a PHP string buffer
+│   ├── Table.php            Function reference table
+│   ├── Instance.php         Module instantiation and export dispatch
+│   ├── Executor.php         Iterative Wasm interpreter
+│   ├── Validator.php        Module validation
+│   ├── Binary/
+│   │   ├── Decoder.php      Wasm binary decoder (.wasm → Module)
+│   │   └── BinaryReader.php Low-level binary format reader (LEB128, etc.)
+│   └── Wast/
+│       └── Runner.php       .wast spec test runner (uses WABT wast2json)
+├── wasi/src/              WASI implementation
+│   ├── Wasi.php             wasi_snapshot_preview1 syscalls
+│   ├── Errno.php            POSIX error code constants
+│   └── WasiExitException.php  proc_exit exception
+└── cli/                   Command-line interface
+    ├── bin/wasm             CLI entry point
+    └── src/WasmRuntimeCLI.php  Standard & WASI execution modes
 ```
 
 ### Execution pipeline
@@ -128,6 +138,32 @@ $instance->callExport('run', [WasmValue::i32(42)]);
 // Wasm says: 42
 ```
 
+### WASI module execution
+
+```php
+use WasmRuntime\Binary\Decoder;
+use WasmRuntime\Instance;
+use WasmRuntime\Wasi\Wasi;
+use WasmRuntime\Wasi\WasiExitException;
+
+$module = Decoder::decodeFile('hello.wasm');
+
+$wasi = new Wasi(
+    args: ['hello.wasm', '--verbose'],
+    env:  ['HOME' => '/home/user'],
+    preopenDirs: ['/tmp'],
+);
+
+$instance = Instance::instantiate($module, $wasi->getImports());
+$wasi->bindInstance($instance);
+
+try {
+    $instance->callExport('_start', []);
+} catch (WasiExitException $e) {
+    echo "Exit code: {$e->exitCode}\n";
+}
+```
+
 ### Running a .wast spec file
 
 The WAST runner uses WABT's `wast2json` tool to convert `.wast` files into JSON + `.wasm` binaries, then executes the test commands.
@@ -141,6 +177,23 @@ $result = $runner->runFile('tests/spec/i32.wast');
 echo "passed: {$result['passed']}\n";
 echo "failed: {$result['failed']}\n";
 echo "total:  {$result['total']}\n";
+```
+
+## CLI
+
+```bash
+# Standard mode: run an exported function
+php packages/cli/bin/wasm example.wasm add 10 32
+# => 42
+
+# WASI mode: run a WASI program
+php packages/cli/bin/wasm --wasi hello.wasm
+
+# WASI with pre-opened directory and arguments
+php packages/cli/bin/wasm --wasi --dir=. app.wasm arg1 arg2
+
+# Argument type prefixes (default is i32)
+php packages/cli/bin/wasm example.wasm mul f64:3.14 f64:2.0
 ```
 
 ## Running tests
@@ -183,9 +236,51 @@ Local tests (hand-written, under `tests/spec/`):
 
 Official WebAssembly spec tests are also run from the `spec/test/core/` submodule (see `SPEC_COVERAGE.md` for details).
 
+### WASI tests
+
+The official [wasi-testsuite](https://github.com/WebAssembly/wasi-testsuite) is included as a submodule:
+
+```bash
+# Build test binaries (requires Rust with wasm32-wasip1 target)
+rustup target add wasm32-wasip1
+cd scripts/wasi-testsuite
+cargo build --manifest-path=tests/rust/wasm32-wasip1/Cargo.toml --target=wasm32-wasip1
+
+# Run WASI tests
+php scripts/wasi-tests/run.php
+```
+
+See `WASI_COVERAGE.md` for detailed results (9/46 passing).
+
+## WASI support
+
+Implements `wasi_snapshot_preview1` with the following syscalls:
+
+| Syscall | Status |
+|---|---|
+| `args_get` / `args_sizes_get` | ✅ |
+| `environ_get` / `environ_sizes_get` | ✅ |
+| `clock_time_get` | ✅ |
+| `random_get` | ✅ |
+| `proc_exit` | ✅ |
+| `fd_read` / `fd_write` | ✅ |
+| `fd_close` / `fd_seek` | ✅ |
+| `fd_fdstat_get` | ✅ Basic |
+| `fd_prestat_get` / `fd_prestat_dir_name` | ✅ |
+| `path_open` | ✅ Basic |
+| `fd_filestat_get` / `path_filestat_get` | ❌ Not yet |
+| `fd_readdir` | ❌ Not yet |
+| `path_create_directory` / `path_remove_directory` | ❌ Not yet |
+| `path_symlink` / `path_readlink` / `path_link` | ❌ Not yet |
+| `path_rename` / `path_unlink_file` | ❌ Not yet |
+| `poll_oneoff` | ❌ Not yet |
+
+See `WASI_COVERAGE.md` for full test results and implementation details.
+
 ## Limitations
 
 - Covers the Wasm MVP + bulk memory/table operations
 - Proposals (SIMD, threads, exceptions, GC, typed function references) are not supported
 - NaN bit-pattern propagation is simplified (PHP float limitation)
 - Multi-module linking has partial support (some imports.wast/linking.wast cases fail)
+- WASI filesystem operations are partially implemented (basic read/write/open; no stat, readdir, symlinks)
