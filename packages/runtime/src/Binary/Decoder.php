@@ -80,8 +80,8 @@ final class Decoder
             if ($form !== 0x60) {
                 throw new WasmError("expected functype (0x60), got 0x" . dechex($form));
             }
-            $params  = $r->readVec(fn() => $r->readByte());
-            $results = $r->readVec(fn() => $r->readByte());
+            $params  = $r->readVec(fn() => $this->readValType($r));
+            $results = $r->readVec(fn() => $this->readValType($r));
             return new FuncType($params, $results);
         });
         $this->mod->types = $this->types;
@@ -154,7 +154,7 @@ final class Decoder
 
     private function decodeImportGlobal(string $module, string $name, BinaryReader $r): array
     {
-        $valType = $r->readByte();
+        $valType = $this->readValType($r);
         $mutable = $r->readByte() === 1;
         return [
             'kind'       => 'global',
@@ -180,8 +180,8 @@ final class Decoder
                 $r->readByte(); // 0x00
                 $elemType = $this->readRefType($r);
                 [$min, $max] = $this->decodeLimits($r);
-                $this->decodeConstExpr($r); // init expression (skip)
-                return ['type' => $elemType, 'min' => $min, 'max' => $max];
+                $init = $this->decodeConstExpr($r);
+                return ['type' => $elemType, 'min' => $min, 'max' => $max, 'init' => $init];
             }
             $elemType = $this->readRefType($r);
             [$min, $max] = $this->decodeLimits($r);
@@ -200,7 +200,7 @@ final class Decoder
     private function decodeGlobalSection(BinaryReader $r): void
     {
         $this->mod->globals = $r->readVec(function () use ($r) {
-            $valType = $r->readByte();
+            $valType = $this->readValType($r);
             $mutable = $r->readByte() === 1;
             $init    = $this->decodeConstExpr($r);
             return ['type' => $valType, 'mutable' => $mutable, 'init' => $init];
@@ -305,7 +305,7 @@ final class Decoder
     /** Flags=5: passive, reftype, vec(expr) */
     private function decodeElemPassive5(BinaryReader $r): array
     {
-        $r->readByte(); // reftype
+        $this->readRefType($r); // reftype (may be multi-byte for GC)
         $funcIndices = $r->readVec(function () use ($r) {
             return $this->decodeElemExpr($r);
         });
@@ -322,7 +322,7 @@ final class Decoder
     {
         $tableIdx = $r->readU32();
         $offset   = $this->decodeConstExpr($r);
-        $r->readByte(); // reftype
+        $this->readRefType($r); // reftype (may be multi-byte for GC)
         $funcIndices = $r->readVec(function () use ($r) {
             return $this->decodeElemExpr($r);
         });
@@ -332,7 +332,7 @@ final class Decoder
     /** Flags=7: passive/declarative, reftype, vec(expr) */
     private function decodeElemPassive7(BinaryReader $r): array
     {
-        $r->readByte(); // reftype
+        $this->readRefType($r); // reftype (may be multi-byte for GC)
         $funcIndices = $r->readVec(function () use ($r) {
             return $this->decodeElemExpr($r);
         });
@@ -387,6 +387,19 @@ final class Decoder
         }
         // GC proposal: signed LEB128 type index
         return $r->readS33();
+    }
+
+    /**
+     * Read a value type. Handles standard types (i32..f64, funcref, externref)
+     * and GC proposal encoded ref types (0x63/0x64 + heaptype).
+     */
+    private function readValType(BinaryReader $r): int
+    {
+        $byte = $r->peekByte();
+        if ($byte === 0x63 || $byte === 0x64) {
+            return $this->readRefType($r);
+        }
+        return $r->readByte();
     }
 
     /**
@@ -545,7 +558,8 @@ final class Decoder
             0x6F, 0x6E => ValType::EXTERNREF,  // externref, extern
             default => ValType::FUNCREF,         // default to funcref for GC types
         };
-        return new WasmValue($valType, 0);
+        // Use -1 as sentinel for "null ref" to distinguish from ref.func 0
+        return new WasmValue($valType, -1);
     }
 
     private function decodeConstRefFunc(BinaryReader $r): WasmValue
@@ -565,7 +579,7 @@ final class Decoder
         $localDeclCount = $r->readU32();
         for ($i = 0; $i < $localDeclCount; $i++) {
             $count   = $r->readU32();
-            $valType = $r->readByte();
+            $valType = $this->readValType($r);
             for ($j = 0; $j < $count; $j++) {
                 $locals[] = $valType;
             }
@@ -755,7 +769,7 @@ final class Decoder
             case 0x1B: $code[] = ['select']; break;
 
             case 0x1C: // select (typed)
-                $r->readVec(fn() => $r->readByte()); // value types (ignored)
+                $r->readVec(fn() => $this->readValType($r)); // value types (ignored)
                 $code[] = ['select'];
                 break;
 
