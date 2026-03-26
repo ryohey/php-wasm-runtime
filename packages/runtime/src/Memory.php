@@ -188,18 +188,26 @@ final class Memory
 
     public function fill(int $addr, int $byte, int $n): void
     {
+        $limit = $this->pages * self::PAGE_SIZE;
+        if ($n < 0 || $addr < 0 || $addr + $n > $limit) {
+            throw Trap::outOfBoundsMemoryAccess();
+        }
         if ($n === 0) return;
-        $this->check($addr, $n);
+        // Ensure buffer covers the target range (lazy allocation)
+        $needed = $addr + $n;
+        if ($needed > strlen($this->bytes)) {
+            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
+        }
         $this->bytes = substr_replace($this->bytes, str_repeat(chr($byte & 0xFF), $n), $addr, $n);
     }
 
     public function copy(int $dst, int $src, int $n): void
     {
-        if ($n === 0) return;
         $limit = $this->pages * self::PAGE_SIZE;
-        if ($dst < 0 || $src < 0 || $dst + $n > $limit || $src + $n > $limit) {
+        if ($n < 0 || $dst < 0 || $src < 0 || $dst + $n > $limit || $src + $n > $limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
+        if ($n === 0) return;
         // Ensure bytes are allocated
         $needed = max($dst + $n, $src + $n);
         if ($needed > strlen($this->bytes)) {
@@ -211,12 +219,12 @@ final class Memory
 
     public function initFromData(int $dst, string $data, int $src, int $n): void
     {
-        if ($n === 0) return;
         $dataLen = strlen($data);
-        if ($src < 0 || $src + $n > $dataLen) {
+        $limit = $this->pages * self::PAGE_SIZE;
+        if ($n < 0 || $src < 0 || $src + $n > $dataLen || $dst < 0 || $dst + $n > $limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
-        $this->check($dst, $n);
+        if ($n === 0) return;
         $chunk = substr($data, $src, $n);
         $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
     }

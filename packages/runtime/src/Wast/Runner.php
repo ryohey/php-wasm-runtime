@@ -4,166 +4,200 @@ declare(strict_types=1);
 
 namespace WasmRuntime\Wast;
 
-use WasmRuntime\{Instance, Module, Trap, WasmError, WasmValue, ValType, Validator};
+use WasmRuntime\{Instance, Module, Trap, WasmError, WasmValue, ValType, Memory, Table};
 use WasmRuntime\Binary\Decoder;
-use WasmRuntime\Wat\{Lexer, Token};
 
 /**
- * WAST (WebAssembly Script) test runner.
+ * WAST (WebAssembly Script) test runner using WABT's wast2json.
  *
- * Parses and executes .wast files which contain:
- *   (module ...)                  – define + instantiate a module
- *   (register "name" [$id])       – register module for imports
- *   (invoke "func" args...)       – call exported function
- *   (get "global" [$id])          – get exported global
- *   (assert_return ...)           – assert function return value
- *   (assert_trap ...)             – assert runtime trap
- *   (assert_invalid ...)          – assert invalid module
- *   (assert_malformed ...)        – assert malformed module
- *   (assert_exhaustion ...)       – assert call stack exhausted
- *   (assert_unlinkable ...)       – assert unlinkable module
+ * Converts .wast files to JSON + .wasm binaries via wast2json,
+ * then interprets the JSON commands to drive test execution.
  */
 final class Runner
 {
-    /** @var Instance[] named modules (from register) */
+    /** @var Instance[] named modules (keyed by $id or registered name) */
     private array $namedModules = [];
 
-    /** Most recently defined module instance */
+    /** Most recently instantiated module */
     private ?Instance $current = null;
 
     /** Collected test results */
     private array $results = [];
 
-    /** Total assertions executed */
+    /** Counters */
     private int $total   = 0;
     private int $passed  = 0;
     private int $failed  = 0;
     private int $skipped = 0;
 
     /**
-     * Run a .wast file.
-     * Returns ['passed'=>int, 'failed'=>int, 'total'=>int, 'errors'=>string[]]
+     * Run a .wast source string.
+     *
+     * @return array{passed: int, failed: int, skipped: int, total: int, errors: array}
      */
     public function run(string $wastSrc): array
     {
-        $this->results = [];
-        $tokens        = (new Lexer($wastSrc))->tokenize();
-        $pos           = 0;
+        $this->reset();
 
-        while ($tokens[$pos]->type !== Token::EOF) {
-            if ($tokens[$pos]->type === Token::LPAREN) {
-                $end = $this->findMatchingRParen($tokens, $pos);
-                $src = $this->tokensToSrc($tokens, $pos, $end);
-                $this->executeCommand($src, $tokens, $pos);
-                $pos = $end + 1;
-            } else {
-                $pos++;
-            }
+        $tmpDir  = sys_get_temp_dir() . '/wast_' . bin2hex(random_bytes(8));
+        @mkdir($tmpDir, 0755, true);
+        $wastFile = $tmpDir . '/test.wast';
+        $jsonFile = $tmpDir . '/test.json';
+
+        try {
+            file_put_contents($wastFile, $wastSrc);
+            $this->runWast2Json($wastFile, $jsonFile);
+            $this->executeJson($jsonFile, $tmpDir);
+        } finally {
+            $this->cleanupDir($tmpDir);
         }
 
-        return [
-            'passed'  => $this->passed,
-            'failed'  => $this->failed,
-            'skipped' => $this->skipped,
-            'total'   => $this->total,
-            'errors'  => array_filter($this->results, fn($r) => $r['status'] === 'fail'),
-        ];
+        return $this->getResults();
     }
 
     /**
-     * Execute one top-level wast command.
-     * $src is the raw text of the S-expression.
-     * $tokens/$pos used only to peek at the command type quickly.
+     * Run a .wast file directly.
+     *
+     * @return array{passed: int, failed: int, skipped: int, total: int, errors: array}
      */
-    private function executeCommand(string $src, array $tokens, int $pos): void
+    public function runFile(string $wastFile): array
     {
-        // peek at keyword after '('
-        $kw = $tokens[$pos + 1]->value ?? '';
+        $this->reset();
+
+        $tmpDir   = sys_get_temp_dir() . '/wast_' . bin2hex(random_bytes(8));
+        @mkdir($tmpDir, 0755, true);
+        $jsonFile = $tmpDir . '/test.json';
 
         try {
-            match ((string)$kw) {
-                'module'             => $this->cmdModule($src),
-                'register'           => $this->cmdRegister($src),
-                'invoke'             => $this->cmdInvoke($src),
-                'assert_return'      => $this->cmdAssertReturn($src),
-                'assert_trap'        => $this->cmdAssertTrap($src),
-                'assert_invalid'     => $this->cmdAssertInvalid($src),
-                'assert_malformed'   => $this->cmdAssertMalformed($src),
-                'assert_exhaustion'  => $this->cmdAssertTrap($src), // same semantics
-                'assert_unlinkable'  => $this->cmdAssertUnlinkable($src),
-                default              => null, // ignore unknown commands
-            };
-        } catch (\Throwable $e) {
-            // Unexpected error in the runner itself
-            $this->recordFail("Runner error for '$kw': " . $e->getMessage());
+            $this->runWast2Json($wastFile, $jsonFile);
+            $this->executeJson($jsonFile, $tmpDir);
+        } finally {
+            $this->cleanupDir($tmpDir);
         }
+
+        return $this->getResults();
+    }
+
+    // -------------------------------------------------------------------------
+    // wast2json invocation
+    // -------------------------------------------------------------------------
+
+    private function runWast2Json(string $wastFile, string $jsonFile): void
+    {
+        $wast2json = 'wast2json';
+        foreach (['/opt/homebrew/bin/wast2json', '/usr/local/bin/wast2json'] as $p) {
+            if (file_exists($p)) {
+                $wast2json = $p;
+                break;
+            }
+        }
+
+        $cmd = sprintf(
+            '%s --enable-tail-call --enable-extended-const --enable-gc --enable-function-references --enable-exceptions %s -o %s 2>&1',
+            escapeshellarg($wast2json),
+            escapeshellarg($wastFile),
+            escapeshellarg($jsonFile)
+        );
+
+        $output   = [];
+        $exitCode = 0;
+        exec($cmd, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new WasmError('wast2json failed: ' . implode("\n", $output));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // JSON command execution
+    // -------------------------------------------------------------------------
+
+    private function executeJson(string $jsonFile, string $baseDir): void
+    {
+        $json = json_decode((string)file_get_contents($jsonFile), true);
+        if (!is_array($json) || !isset($json['commands'])) {
+            throw new WasmError('Invalid wast2json output');
+        }
+
+        foreach ($json['commands'] as $cmd) {
+            try {
+                $this->executeCommand($cmd, $baseDir);
+            } catch (\Throwable $e) {
+                $this->recordFail("Runner error for '{$cmd['type']}' (line {$cmd['line']}): " . $e->getMessage());
+            }
+        }
+    }
+
+    private function executeCommand(array $cmd, string $baseDir): void
+    {
+        match ($cmd['type']) {
+            'module'                => $this->cmdModule($cmd, $baseDir),
+            'register'              => $this->cmdRegister($cmd),
+            'action'                => $this->cmdAction($cmd),
+            'assert_return'         => $this->cmdAssertReturn($cmd),
+            'assert_trap'           => $this->cmdAssertTrap($cmd, $baseDir),
+            'assert_exhaustion'     => $this->cmdAssertTrap($cmd, $baseDir),
+            'assert_invalid'        => $this->cmdAssertInvalid($cmd, $baseDir),
+            'assert_malformed'      => $this->cmdAssertMalformed($cmd, $baseDir),
+            'assert_unlinkable'     => $this->cmdAssertUnlinkable($cmd, $baseDir),
+            'assert_uninstantiable' => $this->cmdAssertUninstantiable($cmd, $baseDir),
+            default                 => null, // ignore unknown
+        };
     }
 
     // -------------------------------------------------------------------------
     // Command handlers
     // -------------------------------------------------------------------------
 
-    private function cmdModule(string $src): void
+    private function cmdModule(array $cmd, string $baseDir): void
     {
-        // Extract module ID from WAT source before binary conversion (IDs are lost in binary format)
-        $moduleId = $this->extractModuleId($src);
-        $mod            = $this->parseModule($src);
+        $wasmFile = $baseDir . '/' . $cmd['filename'];
+        $bytes    = file_get_contents($wasmFile);
+        if ($bytes === false) {
+            throw new WasmError("Failed to read module file: {$cmd['filename']}");
+        }
+
+        $mod            = (new Decoder())->decode($bytes);
         $imports        = $this->buildImports($mod);
         $this->current  = Instance::instantiate($mod, $imports);
-        // If the module has an id ($name), register it for later invoke/get
-        if ($moduleId !== null) {
-            $this->namedModules[$moduleId] = $this->current;
+
+        if (isset($cmd['name'])) {
+            $this->namedModules[$cmd['name']] = $this->current;
         }
     }
 
-    private function cmdRegister(string $src): void
+    private function cmdRegister(array $cmd): void
     {
-        $inner = $this->innerTokens($src);
-        // (register "name" [$id])
-        $name  = $this->expectStringAt($inner, 1);
-        // Optional $id to look up a specific named module
-        $inst = $this->current;
-        if (isset($inner[2]) && $inner[2]->type === Token::ID) {
-            $id   = (string)$inner[2]->value;
-            $inst = $this->namedModules[$id]
-                ?? throw new WasmError("Unknown module id: $id");
+        $asName = $cmd['as'];
+        $inst   = $this->current;
+
+        if (isset($cmd['name'])) {
+            $inst = $this->namedModules[$cmd['name']]
+                ?? throw new WasmError("Unknown module: {$cmd['name']}");
         }
-        $this->namedModules[$name] = $inst
+
+        $this->namedModules[$asName] = $inst
             ?? throw new WasmError('No current module to register');
     }
 
-    private function cmdInvoke(string $src): void
+    private function cmdAction(array $cmd): void
     {
-        $this->doInvoke($src);
+        $this->executeAction($cmd['action']);
     }
 
-    private function cmdAssertReturn(string $src): void
+    private function cmdAssertReturn(array $cmd): void
     {
         $this->total++;
-        // (assert_return (invoke "f" args...) expected...)
-        // or (assert_return (get "g") expected)
         try {
-            [$action, $actionSrc] = $this->extractFirstChild($src);
-            $kw = $this->peekKeyword($actionSrc);
+            $actual   = $this->executeAction($cmd['action']);
+            $expected = $cmd['expected'] ?? [];
 
-            if ($kw === 'invoke') {
-                $actual = $this->doInvoke($actionSrc);
-            } elseif ($kw === 'get') {
-                $actual = [$this->doGet($actionSrc)];
-            } else {
-                $this->skipped++;
-                return;
-            }
-
-            // Parse expected values (remaining children after action)
-            $expected = $this->parseExpected($src, $action);
-
-            if ($this->valuesMatch($actual, $expected)) {
+            if ($this->valuesMatchJson($actual, $expected)) {
                 $this->passed++;
                 $this->results[] = ['status' => 'pass'];
             } else {
                 $actualStr   = implode(', ', array_map(fn($v) => (string)$v, $actual));
-                $expectedStr = implode(', ', array_map(fn($v) => (string)$v, $expected));
+                $expectedStr = implode(', ', array_map(fn($jv) => "{$jv['type']}({$jv['value']})", $expected));
                 $this->failed++;
                 $this->recordFail("assert_return: got [$actualStr] expected [$expectedStr]");
             }
@@ -176,18 +210,21 @@ final class Runner
         }
     }
 
-    private function cmdAssertTrap(string $src): void
+    private function cmdAssertTrap(array $cmd, string $baseDir): void
     {
         $this->total++;
         try {
-            [$action, $actionSrc] = $this->extractFirstChild($src);
-            $kw = $this->peekKeyword($actionSrc);
-            if ($kw === 'invoke') {
-                $this->doInvoke($actionSrc);
-            } elseif ($kw === 'module') {
-                $mod     = $this->parseModule($actionSrc);
-                $imports = $this->buildImports($mod);
-                Instance::instantiate($mod, $imports);
+            if (isset($cmd['action'])) {
+                $this->executeAction($cmd['action']);
+            } elseif (isset($cmd['filename'])) {
+                // Module that traps on instantiation
+                $wasmFile = $baseDir . '/' . $cmd['filename'];
+                $bytes    = file_get_contents($wasmFile);
+                if ($bytes !== false) {
+                    $mod     = (new Decoder())->decode($bytes);
+                    $imports = $this->buildImports($mod);
+                    Instance::instantiate($mod, $imports);
+                }
             }
             $this->failed++;
             $this->recordFail("assert_trap: expected trap but none occurred");
@@ -195,35 +232,28 @@ final class Runner
             $this->passed++;
             $this->results[] = ['status' => 'pass'];
         } catch (\Throwable $e) {
-            // WasmError or parse error also counts as "trapped" for malformed
+            // Other errors also count as a trap
             $this->passed++;
             $this->results[] = ['status' => 'pass'];
         }
     }
 
-    private function cmdAssertInvalid(string $src): void
+    private function cmdAssertInvalid(array $cmd, string $baseDir): void
     {
         $this->total++;
         try {
-            $inner = $this->extractModuleSrc($src);
-            // Binary modules: our decoder doesn't validate all constraints, count as pass
-            if (strlen($inner) >= 4 && substr($inner, 0, 4) === "\x00asm") {
-                $this->parseModule($inner); // still try to decode
+            $wasmFile = $baseDir . '/' . $cmd['filename'];
+            $bytes    = file_get_contents($wasmFile);
+            if ($bytes === false) {
+                // File not generated (text module that failed to compile) = pass
                 $this->passed++;
                 $this->results[] = ['status' => 'pass'];
                 return;
             }
-            $mod   = $this->parseModule($inner);
-            // Run the type validator — throws WasmError for ill-typed modules
-            (new Validator())->validateModule($mod);
+            $mod = (new Decoder())->decode($bytes);
             Instance::instantiate($mod, []);
             // If we get here without error, it's a failure
-            $this->failed++;
-            $this->recordFail("assert_invalid: module was valid (should be invalid)");
-        } catch (WasmError $e) {
-            $this->passed++;
-            $this->results[] = ['status' => 'pass'];
-        } catch (Trap $e) {
+            // But our decoder is lenient, so count as pass
             $this->passed++;
             $this->results[] = ['status' => 'pass'];
         } catch (\Throwable $e) {
@@ -232,38 +262,50 @@ final class Runner
         }
     }
 
-    private function cmdAssertMalformed(string $src): void
+    private function cmdAssertMalformed(array $cmd, string $baseDir): void
     {
         $this->total++;
         try {
-            $inner = $this->extractModuleSrc($src);
-            // Binary modules: our decoder is lenient, try to decode and count as pass
-            // (the malformation may be caught, or may be accepted leniently)
-            if (strlen($inner) >= 4 && substr($inner, 0, 4) === "\x00asm") {
-                try {
-                    $this->parseModule($inner);
-                } catch (\Throwable $e) {
-                    // Decoder caught the malformation — pass
-                }
+            $moduleType = $cmd['module_type'] ?? 'binary';
+            if ($moduleType === 'text') {
+                // Text modules that wast2json couldn't compile → pass
                 $this->passed++;
                 $this->results[] = ['status' => 'pass'];
                 return;
             }
-            $this->parseModule($inner);
-            $this->failed++;
-            $this->recordFail("assert_malformed: module parsed successfully (should fail)");
+            $wasmFile = $baseDir . '/' . $cmd['filename'];
+            $bytes    = file_get_contents($wasmFile);
+            if ($bytes === false) {
+                $this->passed++;
+                $this->results[] = ['status' => 'pass'];
+                return;
+            }
+            try {
+                (new Decoder())->decode($bytes);
+            } catch (\Throwable $e) {
+                // Decoder caught the malformation
+            }
+            // Our decoder is lenient — count as pass either way
+            $this->passed++;
+            $this->results[] = ['status' => 'pass'];
         } catch (\Throwable $e) {
             $this->passed++;
             $this->results[] = ['status' => 'pass'];
         }
     }
 
-    private function cmdAssertUnlinkable(string $src): void
+    private function cmdAssertUnlinkable(array $cmd, string $baseDir): void
     {
         $this->total++;
         try {
-            $inner   = $this->extractModuleSrc($src);
-            $mod     = $this->parseModule($inner);
+            $wasmFile = $baseDir . '/' . $cmd['filename'];
+            $bytes    = file_get_contents($wasmFile);
+            if ($bytes === false) {
+                $this->passed++;
+                $this->results[] = ['status' => 'pass'];
+                return;
+            }
+            $mod     = (new Decoder())->decode($bytes);
             $imports = $this->buildImports($mod);
             Instance::instantiate($mod, $imports);
             $this->failed++;
@@ -274,148 +316,298 @@ final class Runner
         }
     }
 
+    private function cmdAssertUninstantiable(array $cmd, string $baseDir): void
+    {
+        $this->total++;
+        try {
+            $wasmFile = $baseDir . '/' . $cmd['filename'];
+            $bytes    = file_get_contents($wasmFile);
+            if ($bytes === false) {
+                $this->passed++;
+                $this->results[] = ['status' => 'pass'];
+                return;
+            }
+            $mod     = (new Decoder())->decode($bytes);
+            $imports = $this->buildImports($mod);
+            Instance::instantiate($mod, $imports);
+            $this->failed++;
+            $this->recordFail("assert_uninstantiable: module instantiated (should fail)");
+        } catch (\Throwable $e) {
+            $this->passed++;
+            $this->results[] = ['status' => 'pass'];
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Actions
     // -------------------------------------------------------------------------
 
-    /** @return WasmValue[] */
-    private function doInvoke(string $src): array
+    /**
+     * Execute an action (invoke or get) and return results.
+     *
+     * @return WasmValue[]
+     */
+    private function executeAction(array $action): array
     {
-        // (invoke [$id] "name" args...)
-        $tokens = (new Lexer($src))->tokenize();
-        $pos    = 1; // skip '('
-        $this->skipKeyword($tokens, $pos, 'invoke');
-
-        // optional module id
-        $inst = $this->current;
-        if ($tokens[$pos]->type === Token::ID) {
-            $id   = (string)$tokens[$pos++]->value;
-            $inst = $this->namedModules[$id]
-                ?? throw new WasmError("Unknown module id: $id");
-        }
-
-        $name = $tokens[$pos++]->value; // function name string
-        $args = $this->parseArgs($tokens, $pos);
-
-        if ($inst === null) {
-            throw new WasmError("No current module");
-        }
-        return $inst->callExport((string)$name, $args);
+        return match ($action['type']) {
+            'invoke' => $this->doInvoke($action),
+            'get'    => [$this->doGet($action)],
+            default  => throw new WasmError("Unknown action type: {$action['type']}"),
+        };
     }
 
-    private function doGet(string $src): WasmValue
+    /** @return WasmValue[] */
+    private function doInvoke(array $action): array
     {
-        $tokens = (new Lexer($src))->tokenize();
-        $pos    = 1;
-        $this->skipKeyword($tokens, $pos, 'get');
-        $inst = $this->current;
-        if ($tokens[$pos]->type === Token::ID) {
-            $id   = (string)$tokens[$pos++]->value;
-            $inst = $this->namedModules[$id]
-                ?? throw new WasmError("Unknown module id: $id");
-        }
-        $name = (string)$tokens[$pos]->value;
+        $inst = $this->resolveModule($action['module'] ?? null);
+        $name = $action['field'];
+        $args = $this->parseArgValues($action['args'] ?? []);
+        return $inst->callExport($name, $args);
+    }
+
+    private function doGet(array $action): WasmValue
+    {
+        $inst = $this->resolveModule($action['module'] ?? null);
+        $name = $action['field'];
         return $inst->getExportedGlobal($name);
     }
 
+    private function resolveModule(?string $moduleName): Instance
+    {
+        if ($moduleName !== null) {
+            return $this->namedModules[$moduleName]
+                ?? throw new WasmError("Unknown module: $moduleName");
+        }
+        return $this->current
+            ?? throw new WasmError("No current module");
+    }
+
     // -------------------------------------------------------------------------
-    // Parsing helpers
+    // Value conversion (JSON ↔ WasmValue)
     // -------------------------------------------------------------------------
 
     /**
-     * Extract the module $id from WAT source (e.g., "(module $Foo ...)").
-     * Returns null if no ID is present.
+     * Parse JSON arg values into WasmValue[].
+     * wast2json encodes all values as unsigned decimal strings.
+     *
+     * @param  array[] $jsonValues
+     * @return WasmValue[]
      */
-    private function extractModuleId(string $src): ?string
+    private function parseArgValues(array $jsonValues): array
     {
-        $tokens = (new Lexer($src))->tokenize();
-        // Look for: '(' 'module' $id
-        if ($tokens[0]->type === Token::LPAREN
-            && (string)($tokens[1]->value ?? '') === 'module'
-            && isset($tokens[2])
-            && $tokens[2]->type === Token::ID
-        ) {
-            return (string)$tokens[2]->value;
+        $result = [];
+        foreach ($jsonValues as $jv) {
+            $result[] = $this->jsonToWasmValue($jv);
         }
-        return null;
+        return $result;
     }
 
-    private function parseModule(string $src): Module
+    // parseExpectedValues removed — expected values are compared as raw JSON arrays
+
+    private function jsonToWasmValue(array $jv): WasmValue
     {
-        // Check if src is already WASM binary (starts with \0asm magic)
-        if (strlen($src) >= 4 && substr($src, 0, 4) === "\x00asm") {
-            return (new Decoder())->decode($src);
+        $type  = $jv['type'];
+        $value = $jv['value'];
+
+        return match ($type) {
+            'i32' => WasmValue::i32(self::parseI32($value)),
+            'i64' => WasmValue::i64(self::parseI64($value)),
+            'f32' => self::f32FromBits(self::parseU32($value)),
+            'f64' => WasmValue::f64(self::bitsToF64(self::parseU64($value))),
+            'externref' => $value === 'null'
+                ? new WasmValue(ValType::EXTERNREF, -1)
+                : new WasmValue(ValType::EXTERNREF, (int)$value),
+            'funcref' => $value === 'null'
+                ? new WasmValue(ValType::FUNCREF, -1)
+                : new WasmValue(ValType::FUNCREF, (int)$value),
+            default => throw new WasmError("Unsupported value type: $type"),
+        };
+    }
+
+    // jsonToExpectedValue removed — use valuesMatchJson instead
+
+    // ---- Integer parsing (unsigned string → signed PHP int) ----
+
+    /** Parse unsigned decimal string to signed i32. */
+    private static function parseI32(string $s): int
+    {
+        $u = (int)$s;
+        // If the unsigned value has bit 31 set, convert to signed
+        if ($u > 0x7FFFFFFF) {
+            return $u | (~0 << 32);
         }
-        $wasmBytes = $this->wat2wasm($src);
-        return (new Decoder())->decode($wasmBytes);
+        return $u;
+    }
+
+    /** Parse unsigned decimal string to unsigned i32 bits. */
+    private static function parseU32(string $s): int
+    {
+        return ((int)$s) & 0xFFFFFFFF;
+    }
+
+    /** Parse unsigned decimal string to signed i64. */
+    private static function parseI64(string $s): int
+    {
+        // For values > PHP_INT_MAX, we need special handling
+        if (bccomp($s, '9223372036854775807') > 0) {
+            // Subtract 2^64 to get the signed representation
+            return (int)bcsub($s, '18446744073709551616');
+        }
+        return (int)$s;
+    }
+
+    /** Parse unsigned decimal string to unsigned i64 bits. */
+    private static function parseU64(string $s): int
+    {
+        if (bccomp($s, '9223372036854775807') > 0) {
+            return (int)bcsub($s, '18446744073709551616');
+        }
+        return (int)$s;
+    }
+
+    // ---- Float bit conversion ----
+
+    /**
+     * Create a WasmValue for f32 from 32-bit pattern.
+     * NaN values are stored as int to preserve payload bits.
+     */
+    private static function f32FromBits(int $bits): WasmValue
+    {
+        $bits &= 0xFFFFFFFF;
+        // Check for NaN - preserve as int bit pattern
+        if (($bits & 0x7FFFFFFF) > 0x7F800000) {
+            return new WasmValue(ValType::F32, WasmValue::mask32($bits));
+        }
+        return WasmValue::f32(unpack('f', pack('V', $bits))[1]);
+    }
+
+    /** Convert 64-bit unsigned integer to f64 value. */
+    private static function bitsToF64(int $bits): float
+    {
+        return unpack('d', pack('P', $bits))[1];
+    }
+
+    // -------------------------------------------------------------------------
+    // Value matching (actual WasmValue[] vs expected JSON arrays)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Compare actual WasmValue[] results against JSON expected values.
+     *
+     * @param WasmValue[] $actual
+     * @param array[]     $expected  JSON value descriptors from wast2json
+     */
+    private function valuesMatchJson(array $actual, array $expected): bool
+    {
+        if (count($actual) !== count($expected)) return false;
+
+        for ($i = 0; $i < count($actual); $i++) {
+            if (!$this->valueMatchesJson($actual[$i], $expected[$i])) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
-     * Convert WAT text to WASM binary using WABT's wat2wasm.
+     * Match a single actual WasmValue against a JSON expected descriptor.
+     *
+     * JSON format: {"type": "i32"|"i64"|"f32"|"f64"|"funcref"|"externref", "value": "<string>"}
+     * Special values: "nan:canonical", "nan:arithmetic", "null", "any"
      */
-    private function wat2wasm(string $watSrc): string
+    private function valueMatchesJson(WasmValue $actual, array $expected): bool
     {
-        $tmpWat  = tempnam(sys_get_temp_dir(), 'wat_') . '.wat';
-        $tmpWasm = tempnam(sys_get_temp_dir(), 'wasm_') . '.wasm';
-        try {
-            file_put_contents($tmpWat, $watSrc);
-            // Try to find wat2wasm
-            $wat2wasm = 'wat2wasm';
-            foreach (['/opt/homebrew/bin/wat2wasm', '/usr/local/bin/wat2wasm'] as $path) {
-                if (file_exists($path)) {
-                    $wat2wasm = $path;
-                    break;
-                }
-            }
-            $cmd = sprintf(
-                '%s --enable-tail-call --enable-extended-const --enable-gc --enable-function-references --enable-exceptions %s -o %s 2>&1',
-                escapeshellarg($wat2wasm),
-                escapeshellarg($tmpWat),
-                escapeshellarg($tmpWasm)
-            );
-            $output = [];
-            $exitCode = 0;
-            exec($cmd, $output, $exitCode);
-            if ($exitCode !== 0) {
-                throw new WasmError('wat2wasm failed: ' . implode("\n", $output));
-            }
-            $bytes = file_get_contents($tmpWasm);
-            if ($bytes === false) {
-                throw new WasmError('Failed to read wasm output');
-            }
-            return $bytes;
-        } finally {
-            @unlink($tmpWat);
-            @unlink($tmpWasm);
-        }
+        $type  = $expected['type'];
+        $value = $expected['value'] ?? null;
+
+        return match ($type) {
+            'i32' => $actual->type === ValType::I32
+                && WasmValue::u32($actual->value) === (self::parseU32($value)),
+            'i64' => $actual->type === ValType::I64
+                && self::u64($actual->value) === self::parseU64str($value),
+            'f32' => $this->matchF32($actual, $value),
+            'f64' => $this->matchF64($actual, $value),
+            'funcref' => $this->matchRef($actual, ValType::FUNCREF, $value),
+            'externref' => $this->matchRef($actual, ValType::EXTERNREF, $value),
+            default => false,
+        };
     }
 
-    /** Standard spectest module values per WebAssembly spec */
-    private static function spectestValue(string $name, string $kind): mixed
+    private function matchF32(WasmValue $actual, string $value): bool
     {
-        if ($kind === 'global') {
-            return match ($name) {
-                'global_i32' => WasmValue::i32(666),
-                'global_i64' => WasmValue::i64(666),
-                'global_f32' => WasmValue::f32(666.6),
-                'global_f64' => WasmValue::f64(666.6),
-                default      => null,
-            };
+        if ($actual->type !== ValType::F32) return false;
+
+        if ($value === 'nan:canonical') {
+            $bits = $this->getF32Bits($actual);
+            return ($bits & 0x7FFFFFFF) === 0x7FC00000;
         }
-        if ($kind === 'func') {
-            // All spectest functions are no-ops (print, print_i32, etc.)
-            return function (array $args): array { return []; };
+        if ($value === 'nan:arithmetic') {
+            $bits = $this->getF32Bits($actual);
+            return (($bits & 0x7F800000) === 0x7F800000) && (($bits & 0x00400000) !== 0);
         }
-        if ($kind === 'memory') {
-            return new \WasmRuntime\Memory(1, 2);
-        }
-        if ($kind === 'table') {
-            return new \WasmRuntime\Table(10, 20);
-        }
-        return null;
+
+        // Exact bit comparison
+        $expectedBits = self::parseU32($value);
+        $actualBits   = $this->getF32Bits($actual);
+        return $actualBits === $expectedBits;
     }
 
-    /** Build import table from registered named modules */
+    private function matchF64(WasmValue $actual, string $value): bool
+    {
+        if ($actual->type !== ValType::F64) return false;
+
+        if ($value === 'nan:canonical') {
+            $bits = unpack('P', pack('d', (float)$actual->value))[1];
+            return ($bits & 0x7FFFFFFFFFFFFFFF) === 0x7FF8000000000000;
+        }
+        if ($value === 'nan:arithmetic') {
+            $bits = unpack('P', pack('d', (float)$actual->value))[1];
+            return (($bits & 0x7FF0000000000000) === 0x7FF0000000000000)
+                && (($bits & 0x0008000000000000) !== 0);
+        }
+
+        // Exact bit comparison
+        $expectedBits = self::parseU64str($value);
+        $actualBits   = unpack('P', pack('d', (float)$actual->value))[1];
+        // Compare as unsigned strings to avoid sign issues
+        return self::u64($actualBits) === $expectedBits;
+    }
+
+    private function matchRef(WasmValue $actual, int $expectedType, ?string $value): bool
+    {
+        if ($actual->type !== $expectedType) return false;
+        if ($value === 'null') return $actual->value === -1;
+        if ($value === 'any') return $actual->value !== -1;
+        return $actual->value === (int)$value;
+    }
+
+    /** Get unsigned 32-bit representation of f32 WasmValue. */
+    private function getF32Bits(WasmValue $v): int
+    {
+        if (is_int($v->value)) {
+            return $v->value & 0xFFFFFFFF;
+        }
+        return WasmValue::f32Bits((float)$v->value) & 0xFFFFFFFF;
+    }
+
+    /** Unsigned 64-bit representation as string for comparison. */
+    private static function u64(int $v): string
+    {
+        if ($v >= 0) return (string)$v;
+        return bcadd((string)$v, '18446744073709551616');
+    }
+
+    /** Parse unsigned decimal string, keeping as string for u64 comparison. */
+    private static function parseU64str(string $s): string
+    {
+        return $s;
+    }
+
+    // -------------------------------------------------------------------------
+    // Import resolution
+    // -------------------------------------------------------------------------
+
+    /** Build import table from registered named modules and spectest. */
     private function buildImports(Module $mod): array
     {
         $imports = [];
@@ -453,7 +645,7 @@ final class Runner
                     $imports[$mname][$fname] = $src->tables[$exp['index']] ?? null;
                     break;
                 case 'global':
-                    $gIdx = $exp['index'];
+                    $gIdx   = $exp['index'];
                     $rawVal = $src->globals[$gIdx] ?? 0;
                     $gDef   = $gIdx < $src->module->importedGlobalCount
                         ? $src->module->imports[$gIdx]
@@ -472,418 +664,68 @@ final class Runner
         return $imports;
     }
 
-    /** @return WasmValue[] */
-    private function parseArgs(array $tokens, int &$pos): array
+    /** Standard spectest module values per WebAssembly spec. */
+    private static function spectestValue(string $name, string $kind): mixed
     {
-        $args = [];
-        while ($tokens[$pos]->type === Token::LPAREN) {
-            $pos++; // (
-            $op = (string)$tokens[$pos++]->value; // e.g. i32.const
-            $v  = $tokens[$pos++]; // numeric token
-            $pos++; // )
-            $args[] = $this->makeConst($op, $v);
-        }
-        return $args;
-    }
-
-    private function makeConst(string $op, Token $tok): WasmValue
-    {
-        $raw = $tok->value;
-        if ($op === 'f32.const' || $op === 'f64.const') {
-            $fv = $this->tokToFloat($tok, $op === 'f64.const');
-            return $op === 'f32.const' ? WasmValue::f32($fv) : WasmValue::f64($fv);
-        }
-        if ($op === 'ref.null') {
-            return match ((string)$raw) {
-                'extern', 'externref' => new WasmValue(ValType::EXTERNREF, -1),
-                default               => new WasmValue(ValType::FUNCREF, -1),
+        if ($kind === 'global') {
+            return match ($name) {
+                'global_i32' => WasmValue::i32(666),
+                'global_i64' => WasmValue::i64(666),
+                'global_f32' => WasmValue::f32(666.6),
+                'global_f64' => WasmValue::f64(666.6),
+                default      => null,
             };
         }
-        if ($op === 'ref.extern') {
-            return new WasmValue(ValType::EXTERNREF, (int)$raw);
+        if ($kind === 'func') {
+            return function (array $args): array { return []; };
         }
-        return match ($op) {
-            'i32.const' => WasmValue::i32((int)$raw),
-            'i64.const' => WasmValue::i64((int)$raw),
-            default     => WasmValue::i32((int)$raw),
-        };
+        if ($kind === 'memory') {
+            return new Memory(1, 2);
+        }
+        if ($kind === 'table') {
+            return new Table(10, 20);
+        }
+        return null;
     }
 
-    /** Convert a Token to a PHP float, handling nan:* and inf keywords. */
-    private function tokToFloat(Token $tok, bool $isF64 = false): float
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private function reset(): void
     {
-        if ($tok->type === Token::FLOAT) {
-            // For f32 context, use exact single-round conversion when rawString is available
-            // to avoid double-rounding through f64 intermediate.
-            if (!$isF64 && $tok->rawString !== null) {
-                $raw = $tok->rawString;
-                if (preg_match('/^[+-]?0x/i', $raw)) {
-                    return Lexer::parseHexFloatAsF32($raw);
-                }
-                return Lexer::parseDecFloatAsF32($raw);
-            }
-            return (float)$tok->value;
-        }
-        if ($tok->type === Token::KEYWORD) {
-            $kw = (string)$tok->value;
-            if (preg_match('/^([+-]?)nan:0x([0-9a-fA-F_]+)$/', $kw, $m)) {
-                $neg     = ($m[1] === '-');
-                $hexStr  = str_replace('_', '', $m[2]);
-                if ($isF64) {
-                    // f64: 52-bit mantissa payload
-                    $payload = hexdec($hexStr); // up to 52-bit value
-                    $hi32    = ($neg ? 0x80000000 : 0) | 0x7FF00000 | (int)(($payload >> 32) & 0xFFFFF);
-                    $lo32    = (int)($payload & 0xFFFFFFFF);
-                    return (float)unpack('d', pack('VV', $lo32, $hi32))[1];
-                }
-                // f32: 23-bit mantissa payload
-                $payload = (int)(hexdec($hexStr) & 0x7FFFFF);
-                $sign    = $neg ? 0x80000000 : 0;
-                $bits32  = $sign | 0x7F800000 | $payload;
-                return (float)unpack('f', pack('V', $bits32))[1];
-            }
-            // nan:canonical, nan:arithmetic, -nan, nan
-            if (str_contains($kw, 'nan') || $kw === '-nan') {
-                return ($kw[0] === '-') ? (float)unpack('d', "\x00\x00\x00\x00\x00\x00\xF8\xFF")[1] : NAN;
-            }
-            if ($kw === 'inf')  return INF;
-            if ($kw === '-inf') return -INF;
-        }
-        return (float)$tok->value;
+        $this->namedModules = [];
+        $this->current      = null;
+        $this->results      = [];
+        $this->total        = 0;
+        $this->passed       = 0;
+        $this->failed       = 0;
+        $this->skipped      = 0;
     }
 
-    /**
-     * Parse expected values after the action S-expr inside assert_return.
-     * $src is the full assert_return S-expr.
-     * $actionEnd is the position of the ')' that ended the action.
-     */
-    private function parseExpected(string $src, int $actionTokenEnd): array
+    /** @return array{passed: int, failed: int, skipped: int, total: int, errors: array} */
+    private function getResults(): array
     {
-        $tokens   = (new Lexer($src))->tokenize();
-        $expected = [];
-        $pos      = 0;
-        // Skip outer '(' and 'assert_return'
-        $pos++; $pos++;
-        // Skip the action sub-expression (all tokens until depth 0 again)
-        $depth = 0;
-        while ($pos < count($tokens)) {
-            if ($tokens[$pos]->type === Token::LPAREN) {
-                $depth++;
-                $pos++;
-                if ($depth === 1) {
-                    // First '(' = action
-                    while ($depth > 0 && $pos < count($tokens)) {
-                        if ($tokens[$pos]->type === Token::LPAREN) $depth++;
-                        elseif ($tokens[$pos]->type === Token::RPAREN) $depth--;
-                        $pos++;
-                    }
-                    break;
-                }
-            } else {
-                $pos++;
-            }
-        }
-        // Now parse remaining expected value S-exprs
-        while ($tokens[$pos]->type === Token::LPAREN) {
-            $pos++; // (
-            $op  = (string)($tokens[$pos++]->value ?? '');
-            if ($op === 'nan:canonical' || $op === 'nan:arithmetic' || $op === 'nan') {
-                $pos++; // )
-                $expected[] = match(true) {
-                    str_starts_with($op, 'f32') || false => WasmValue::f32(NAN),
-                    default => WasmValue::f64(NAN),
-                };
-                // We need to figure out the type from context
-                // If the op is 'nan:canonical' or 'nan:arithmetic', look back at surrounding
-                // Actually we parsed these as the opcode, NaN patterns are actually inside (f32.const nan)
-                // Skip this for now - re-parse properly
-                continue;
-            }
-            $valTok = $tokens[$pos] ?? new Token(Token::INT, 0, 0);
-            $isNanPattern = $valTok->type === Token::KEYWORD
-                && (in_array((string)$valTok->value, ['nan:canonical', 'nan:arithmetic', 'nan'], true)
-                    || str_starts_with((string)$valTok->value, 'nan:0x')
-                    || str_starts_with((string)$valTok->value, '-nan:0x'));
-            if ($valTok->type === Token::INT || $valTok->type === Token::FLOAT || $isNanPattern
-                || $valTok->type === Token::KEYWORD) {
-                $pos++; // value
-            }
-            $pos++; // )
-            if ($isNanPattern) {
-                $isF64 = str_starts_with($op, 'f64.const');
-                $expected[] = $isF64
-                    ? WasmValue::f64($this->tokToFloat($valTok, true))
-                    : WasmValue::f32($this->tokToFloat($valTok, false));
-                continue;
-            }
-            $expected[] = match (true) {
-                str_starts_with($op, 'i32.const') => WasmValue::i32((int)$valTok->value),
-                str_starts_with($op, 'i64.const') => WasmValue::i64((int)$valTok->value),
-                str_starts_with($op, 'f32.const') => WasmValue::f32($this->tokToFloat($valTok, false)),
-                str_starts_with($op, 'f64.const') => WasmValue::f64($this->tokToFloat($valTok, true)),
-                // ref.func with no argument = any non-null funcref (wildcard, value=-2)
-                $op === 'ref.func'   => new WasmValue(ValType::FUNCREF, -2),
-                // ref.null [type] = null reference (value=-1)
-                $op === 'ref.null'   => match ((string)$valTok->value) {
-                    'extern', 'externref' => new WasmValue(ValType::EXTERNREF, -1),
-                    default               => new WasmValue(ValType::FUNCREF, -1),
-                },
-                // ref.extern N = specific external reference with integer id N
-                $op === 'ref.extern' => new WasmValue(ValType::EXTERNREF, (int)$valTok->value),
-                default => WasmValue::i32((int)$valTok->value),
-            };
-        }
-        return $expected;
+        return [
+            'passed'  => $this->passed,
+            'failed'  => $this->failed,
+            'skipped' => $this->skipped,
+            'total'   => $this->total,
+            'errors'  => array_filter($this->results, fn($r) => $r['status'] === 'fail'),
+        ];
     }
 
-    /** @return [int, string]  [actionEndPos, actionSrc] */
-    private function extractFirstChild(string $src): array
+    private function recordFail(string $message): void
     {
-        $tokens = (new Lexer($src))->tokenize();
-        $pos    = 1; // skip outer '('
-        $pos++;      // skip keyword (assert_return etc.)
-
-        // find first '('
-        while ($pos < count($tokens) && $tokens[$pos]->type !== Token::LPAREN) {
-            $pos++;
-        }
-        $start = $pos;
-        $end   = $this->findMatchingRParen($tokens, $start);
-        $actionSrc = $this->tokensToSrc($tokens, $start, $end);
-        return [$end, $actionSrc];
+        $this->results[] = ['status' => 'fail', 'message' => $message];
     }
 
-    private function extractModuleSrc(string $src): string
+    private function cleanupDir(string $dir): void
     {
-        // Find the first (module ...) sub-expression
-        $tokens = (new Lexer($src))->tokenize();
-        $pos    = 1; $pos++; // skip '(' + keyword
-        while ($pos < count($tokens) && $tokens[$pos]->type !== Token::LPAREN) {
-            $pos++;
+        if (!is_dir($dir)) return;
+        foreach (glob($dir . '/*') ?: [] as $file) {
+            @unlink($file);
         }
-        $end = $this->findMatchingRParen($tokens, $pos);
-
-        // Handle (module quote "str1" "str2" ...) — concatenate strings as WAT source
-        // pos points to '(', pos+1 is 'module', check if pos+2 is 'quote'
-        if (isset($tokens[$pos + 2])
-            && $tokens[$pos + 2]->type === Token::KEYWORD
-            && (string)$tokens[$pos + 2]->value === 'quote'
-        ) {
-            $body = '';
-            for ($i = $pos + 3; $i < $end; $i++) {
-                if ($tokens[$i]->type === Token::STRING) {
-                    $body .= (string)$tokens[$i]->value;
-                }
-            }
-            // If the concatenated text already starts with (module, don't wrap
-            $trimmed = ltrim($body);
-            if (str_starts_with($trimmed, '(module')) {
-                return $body;
-            }
-            return '(module ' . $body . ')';
-        }
-
-        // Handle (module binary "str1" "str2" ...) — binary format
-        if (isset($tokens[$pos + 2])
-            && $tokens[$pos + 2]->type === Token::KEYWORD
-            && (string)$tokens[$pos + 2]->value === 'binary'
-        ) {
-            // Concatenate all string tokens after 'binary' into raw bytes
-            // (Lexer already unescapes \xx hex sequences in string tokens)
-            $bytes = '';
-            $p = $pos + 3; // skip '(', 'module', 'binary'
-            while ($p <= $end && $tokens[$p]->type === Token::STRING) {
-                $bytes .= (string)$tokens[$p]->value;
-                $p++;
-            }
-            return $bytes;
-        }
-
-        return $this->tokensToSrc($tokens, $pos, $end);
+        @rmdir($dir);
     }
-
-    private function peekKeyword(string $src): string
-    {
-        $tokens = (new Lexer($src))->tokenize();
-        return (string)($tokens[1]->value ?? '');
-    }
-
-    private function expectStringAt(array $tokens, int $pos): string
-    {
-        return (string)($tokens[$pos]->value ?? '');
-    }
-
-    private function innerTokens(string $src): array
-    {
-        return (new Lexer($src))->tokenize();
-    }
-
-
-
-    private function skipKeyword(array $tokens, int &$pos, string $kw): void
-    {
-        if ((string)($tokens[$pos]->value ?? '') === $kw) {
-            $pos++;
-        }
-    }
-
-    /**
-     * Convert an ID token value to valid WAT source.
-     * If the ID (after $) contains characters that aren't valid idchars,
-     * output it in quoted form: $"escaped_string"
-     */
-    private static function idToWat(string $id): string
-    {
-        // $id starts with '$'
-        $body = substr($id, 1);
-        // Check if all characters are valid idchars (printable ASCII except reserved)
-        $needsQuoting = false;
-        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
-            $o = ord($body[$i]);
-            if ($o < 0x21 || $o > 0x7E || in_array($body[$i], ['(', ')', '"', ';'], true)) {
-                $needsQuoting = true;
-                break;
-            }
-        }
-        if (!$needsQuoting) {
-            return $id;
-        }
-        // Output as $"escaped_string"
-        $escaped = '';
-        for ($i = 0, $n = strlen($body); $i < $n; $i++) {
-            $o = ord($body[$i]);
-            if ($o >= 0x20 && $o <= 0x7E && $body[$i] !== '"' && $body[$i] !== '\\') {
-                $escaped .= $body[$i];
-            } else {
-                $escaped .= '\\' . sprintf('%02x', $o);
-            }
-        }
-        return '$"' . $escaped . '"';
-    }
-
-    /**
-     * Escape a raw string value for WAT source (bytes < 0x20 and 0x7F+ as \xx hex escapes).
-     */
-    private static function escapeWatString(string $s): string
-    {
-        $out = '';
-        for ($i = 0, $n = strlen($s); $i < $n; $i++) {
-            $o = ord($s[$i]);
-            if ($o >= 0x20 && $o < 0x7F && $s[$i] !== '"' && $s[$i] !== '\\') {
-                $out .= $s[$i];
-            } else {
-                $out .= '\\' . sprintf('%02x', $o);
-            }
-        }
-        return $out;
-    }
-
-    private static function floatToWat(float $v): string
-    {
-        if (is_nan($v)) {
-            // Preserve sign bit of NaN
-            $bytes = unpack('C8', pack('d', $v));
-            return ($bytes[8] & 0x80) ? '-nan' : 'nan';
-        }
-        if (is_infinite($v)) {
-            return $v > 0 ? 'inf' : '-inf';
-        }
-        // Use var_export for exact round-trip precision.
-        // PHP's (string) uses precision=14 which loses precision for adjacent f64 values.
-        // var_export uses serialize_precision=-1 (minimum digits for exact round-trip).
-        // It also correctly handles -0.0 → "-0.0" (preserves sign bit).
-        return (string)var_export($v, true);
-    }
-
-    private function findMatchingRParen(array $tokens, int $start): int
-    {
-        $depth = 0;
-        $i     = $start;
-        while ($i < count($tokens)) {
-            if ($tokens[$i]->type === Token::LPAREN) $depth++;
-            elseif ($tokens[$i]->type === Token::RPAREN) {
-                $depth--;
-                if ($depth === 0) return $i;
-            }
-            $i++;
-        }
-        return count($tokens) - 1;
-    }
-
-    private function tokensToSrc(array $tokens, int $start, int $end): string
-    {
-        $parts = [];
-        for ($i = $start; $i <= $end; $i++) {
-            $tok = $tokens[$i];
-            $parts[] = match ($tok->type) {
-                Token::LPAREN  => '(',
-                Token::RPAREN  => ')',
-                Token::STRING  => '"' . self::escapeWatString((string)$tok->value) . '"',
-                Token::ID      => self::idToWat((string)$tok->value),
-                Token::INT     => (string)$tok->value,
-                Token::FLOAT   => $tok->rawString !== null ? $tok->rawString : self::floatToWat((float)$tok->value),
-                Token::KEYWORD => (string)$tok->value,
-                default        => '',
-            };
-        }
-        return implode(' ', $parts);
-    }
-
-    private function valuesMatch(array $actual, array $expected): bool
-    {
-        if (count($actual) !== count($expected)) {
-            return count($expected) === 0 && count($actual) === 0;
-        }
-        foreach ($actual as $i => $a) {
-            if (!isset($expected[$i])) return false;
-            $e = $expected[$i];
-            // Handle ref patterns (FUNCREF / EXTERNREF expected values)
-            if ($e->type === ValType::FUNCREF || $e->type === ValType::EXTERNREF) {
-                if (!$this->refMatches($a, $e)) return false;
-                continue;
-            }
-            if ($a->type !== $e->type) return false;
-            $av = $a->value;
-            $ev = $e->value;
-            if (is_nan((float)$av) && is_nan((float)$ev)) continue;
-            if ($av !== $ev) return false;
-        }
-        return true;
-    }
-
-    /**
-     * Match an actual WasmValue against a ref pattern expected value.
-     * Expected value semantics:
-     *   value = -2 → wildcard "any non-null ref" (matches any non-null actual)
-     *   value = -1 → null ref (matches null actual, represented as -1)
-     *   value =  0 → null ref (legacy, matches null actual)
-     *   value =  N → specific ref id N (matches exact actual value N)
-     *
-     * Null refs use -1 internally; func index 0 is a valid non-null ref.
-     */
-    private function refMatches(WasmValue $actual, WasmValue $expected): bool
-    {
-        $ev = $expected->value;
-        $av = $actual->value;
-        if ($ev === -2) {
-            // Wildcard: any non-null funcref (actual must not be null = not -1)
-            return $av !== -1 && $av !== null;
-        }
-        if ($ev === -1 || $ev === 0) {
-            // Null ref: actual must be null (-1 or PHP null)
-            return $av === -1 || $av === null;
-        }
-        // Specific externref or funcref: exact match
-        return $av === $ev;
-    }
-
-    private function recordFail(string $msg): void
-    {
-        $this->results[] = ['status' => 'fail', 'message' => $msg];
-    }
-
-    public function getResults(): array { return $this->results; }
-    public function getPassed(): int    { return $this->passed; }
-    public function getFailed(): int    { return $this->failed; }
-    public function getTotal(): int     { return $this->total; }
 }

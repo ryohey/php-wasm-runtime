@@ -49,6 +49,12 @@ final class WastTest extends TestCase
         'utf8-custom-section-id.wast',
         // reference type: uses anyref which WABT 1.0.39 doesn't support
         'ref_null.wast',
+        // WABT 1.0.39 doesn't support "module definition" syntax
+        'instance.wast',
+        // WABT 1.0.39 doesn't support quoted identifiers ($"...")
+        'id.wast',
+        // WABT 1.0.39 doesn't support memory64 offsets > 0xFFFFFFFF
+        'align.wast',
         // GC proposal (typed function references, rec types — not implemented)
         'br_on_non_null.wast',
         'br_on_null.wast',
@@ -57,9 +63,13 @@ final class WastTest extends TestCase
         'ref_as_non_null.wast',
         'type-rec.wast',
         'type-equivalence.wast',
+        'type-canon.wast',
         'local_init.wast',
         // table-sub uses GC proposal typed references
         'table-sub.wast',
+        // "module definition" syntax not supported by WABT 1.0.39
+        'memory.wast',
+        'table.wast',
     ];
 
     // -------------------------------------------------------------------------
@@ -322,9 +332,8 @@ final class WastTest extends TestCase
 
     private function assertWastFile(string $file): void
     {
-        $src     = (string)file_get_contents($file);
         $runner  = new Runner();
-        $results = $runner->run($src);
+        $results = $runner->runFile($file);
 
         if ($results['total'] === 0) {
             $this->markTestSkipped(sprintf(
