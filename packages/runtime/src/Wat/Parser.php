@@ -214,7 +214,12 @@ final class Parser
                 break;
             case 'table':
                 if ($this->peek()->type === Token::ID) {
-                    $this->consume();
+                    $tName = $this->consume()->value;
+                    $tIdx = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'table'));
+                    if (isset($this->tableIds[$tName])) {
+                        throw new WasmError("duplicate table: $tName");
+                    }
+                    $this->tableIds[$tName] = $tIdx;
                 }
                 [$min, $max] = $this->parseLimits();
                 $refType = $this->expectKeyword(null); // funcref/externref
@@ -229,7 +234,12 @@ final class Parser
                 break;
             case 'global':
                 if ($this->peek()->type === Token::ID) {
-                    $this->consume();
+                    $gName = $this->consume()->value;
+                    $importedGlobals = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'global'));
+                    if (isset($this->globalIds[$gName])) {
+                        throw new WasmError("duplicate global: $gName");
+                    }
+                    $this->globalIds[$gName] = $importedGlobals;
                 }
                 [$gtype, $mutable] = $this->parseGlobalType();
                 $this->mod->imports[] = [
@@ -337,6 +347,9 @@ final class Parser
         $tableId  = null;
         if ($this->peek()->type === Token::ID) {
             $tableId = (string)$this->consume()->value;
+            if (isset($this->tableIds[$tableId])) {
+                throw new WasmError("duplicate table: $tableId");
+            }
             $this->tableIds[$tableId] = $tableIdx;
         }
         // optional inline export(s)
@@ -517,7 +530,11 @@ final class Parser
         $importedGlobals = count(array_filter($this->mod->imports, fn($i) => $i['kind'] === 'global'));
         $gIdx = $importedGlobals + count($this->mod->globals);
         if ($this->peek()->type === Token::ID) {
-            $this->globalIds[$this->consume()->value] = $gIdx;
+            $gName = $this->consume()->value;
+            if (isset($this->globalIds[$gName])) {
+                throw new WasmError("duplicate global: $gName");
+            }
+            $this->globalIds[$gName] = $gIdx;
         }
         // optional inline export
         while ($this->peek()->type === Token::LPAREN && $this->peekAhead(1)->value === 'export') {
