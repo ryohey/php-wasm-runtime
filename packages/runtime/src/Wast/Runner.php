@@ -105,12 +105,14 @@ final class Runner
 
     private function cmdModule(string $src): void
     {
+        // Extract module ID from WAT source before binary conversion (IDs are lost in binary format)
+        $moduleId = $this->extractModuleId($src);
         $mod            = $this->parseModule($src);
         $imports        = $this->buildImports($mod);
         $this->current  = Instance::instantiate($mod, $imports);
         // If the module has an id ($name), register it for later invoke/get
-        if ($mod->id !== null) {
-            $this->namedModules[$mod->id] = $this->current;
+        if ($moduleId !== null) {
+            $this->namedModules[$moduleId] = $this->current;
         }
     }
 
@@ -301,6 +303,24 @@ final class Runner
     // Parsing helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * Extract the module $id from WAT source (e.g., "(module $Foo ...)").
+     * Returns null if no ID is present.
+     */
+    private function extractModuleId(string $src): ?string
+    {
+        $tokens = (new Lexer($src))->tokenize();
+        // Look for: '(' 'module' $id
+        if ($tokens[0]->type === Token::LPAREN
+            && (string)($tokens[1]->value ?? '') === 'module'
+            && isset($tokens[2])
+            && $tokens[2]->type === Token::ID
+        ) {
+            return (string)$tokens[2]->value;
+        }
+        return null;
+    }
+
     private function parseModule(string $src): Module
     {
         $wasmBytes = $this->wat2wasm($src);
@@ -325,7 +345,7 @@ final class Runner
                 }
             }
             $cmd = sprintf(
-                '%s %s -o %s 2>&1',
+                '%s --enable-all %s -o %s 2>&1',
                 escapeshellarg($wat2wasm),
                 escapeshellarg($tmpWat),
                 escapeshellarg($tmpWasm)
