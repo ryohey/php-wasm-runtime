@@ -121,11 +121,18 @@ final class Instance
             }
             $tableIdx = $es['tableIndex'];
             $offset   = (int)self::resolveConstInit($es['offset'], $inst->globals);
-            if (isset($inst->tables[$tableIdx])) {
-                foreach ($es['funcIndices'] as $i => $fi) {
-                    if ($fi >= 0) { // skip null references (-1)
-                        $inst->tables[$tableIdx]->set($offset + $i, $fi);
-                    }
+            $table    = $inst->tables[$tableIdx] ?? null;
+            if ($table === null) {
+                throw new Trap("element segment references non-existent table $tableIdx");
+            }
+            $count = count($es['funcIndices']);
+            // Bounds check: offset + count must not exceed table size
+            if ($offset < 0 || ($offset & 0xFFFFFFFF) + $count > $table->size()) {
+                throw new Trap("out of bounds table access");
+            }
+            foreach ($es['funcIndices'] as $i => $fi) {
+                if ($fi >= 0) { // skip null references (-1)
+                    $table->set($offset + $i, $fi);
                 }
             }
         }
