@@ -26,11 +26,26 @@ final class Wasi
 {
     private ?Instance $instance = null;
 
-    /** @var array<int, resource> Open file descriptors (fd >= 3 are user-opened) */
+    /**
+     * @var array<int, resource|null> Open file descriptors (fd >= 3 are user-opened)
+     *   resource = open file handle, null = was closed
+     */
     private array $openFds = [];
 
     /** @var array<int, string> Pre-opened directory fds => path */
     private array $preopens = [];
+
+    /** @var array<int, int> FD flags per fd (FDFLAGS_APPEND etc.) */
+    private array $fdFlags = [];
+
+    /** @var array<int, int> Filetype per fd */
+    private array $fdTypes = [];
+
+    /** @var array<int, int> Base rights per fd */
+    private array $fdRightsBase = [];
+
+    /** @var array<int, int> Inheriting rights per fd */
+    private array $fdRightsInheriting = [];
 
     private int $nextFd = 3; // 0=stdin, 1=stdout, 2=stderr are fixed
 
@@ -40,6 +55,116 @@ final class Wasi
     private $stderr;
     /** @var resource */
     private $stdin;
+
+    // ---- WASI constants ----
+    // Filetypes
+    private const FILETYPE_UNKNOWN          = 0;
+    private const FILETYPE_BLOCK_DEVICE     = 1;
+    private const FILETYPE_CHARACTER_DEVICE = 2;
+    private const FILETYPE_DIRECTORY        = 3;
+    private const FILETYPE_REGULAR_FILE     = 4;
+    private const FILETYPE_SYMBOLIC_LINK    = 7;
+
+    // Fdflags
+    private const FDFLAGS_APPEND   = 0x01;
+    private const FDFLAGS_DSYNC    = 0x02;
+    private const FDFLAGS_NONBLOCK = 0x04;
+    private const FDFLAGS_RSYNC    = 0x08;
+    private const FDFLAGS_SYNC     = 0x10;
+
+    // Oflags
+    private const OFLAGS_CREAT     = 0x01;
+    private const OFLAGS_DIRECTORY = 0x02;
+    private const OFLAGS_EXCL      = 0x04;
+    private const OFLAGS_TRUNC     = 0x08;
+
+    // Lookupflags
+    private const LOOKUPFLAGS_SYMLINK_FOLLOW = 0x01;
+
+    // Fstflags
+    private const FSTFLAGS_ATIM     = 0x01;
+    private const FSTFLAGS_ATIM_NOW = 0x02;
+    private const FSTFLAGS_MTIM     = 0x04;
+    private const FSTFLAGS_MTIM_NOW = 0x08;
+
+    // Whence
+    private const WHENCE_SET = 0;
+    private const WHENCE_CUR = 1;
+    private const WHENCE_END = 2;
+
+    // Rights (bitmask)
+    private const RIGHT_FD_DATASYNC             = 1 << 0;
+    private const RIGHT_FD_READ                 = 1 << 1;
+    private const RIGHT_FD_SEEK                 = 1 << 2;
+    private const RIGHT_FD_FDSTAT_SET_FLAGS     = 1 << 3;
+    private const RIGHT_FD_SYNC                 = 1 << 4;
+    private const RIGHT_FD_TELL                 = 1 << 5;
+    private const RIGHT_FD_WRITE                = 1 << 6;
+    private const RIGHT_FD_ADVISE               = 1 << 7;
+    private const RIGHT_FD_ALLOCATE             = 1 << 8;
+    private const RIGHT_PATH_CREATE_DIRECTORY   = 1 << 9;
+    private const RIGHT_PATH_CREATE_FILE        = 1 << 10;
+    private const RIGHT_PATH_LINK_SOURCE        = 1 << 11;
+    private const RIGHT_PATH_LINK_TARGET        = 1 << 12;
+    private const RIGHT_PATH_OPEN               = 1 << 13;
+    private const RIGHT_FD_READDIR              = 1 << 14;
+    private const RIGHT_PATH_READLINK           = 1 << 15;
+    private const RIGHT_PATH_RENAME_SOURCE      = 1 << 16;
+    private const RIGHT_PATH_RENAME_TARGET      = 1 << 17;
+    private const RIGHT_PATH_FILESTAT_GET       = 1 << 18;
+    private const RIGHT_PATH_FILESTAT_SET_SIZE  = 1 << 19;
+    private const RIGHT_PATH_FILESTAT_SET_TIMES = 1 << 20;
+    private const RIGHT_FD_FILESTAT_GET         = 1 << 21;
+    private const RIGHT_FD_FILESTAT_SET_SIZE    = 1 << 22;
+    private const RIGHT_FD_FILESTAT_SET_TIMES   = 1 << 23;
+    private const RIGHT_PATH_SYMLINK            = 1 << 24;
+    private const RIGHT_PATH_REMOVE_DIRECTORY   = 1 << 25;
+    private const RIGHT_PATH_UNLINK_FILE        = 1 << 26;
+    private const RIGHT_POLL_FD_READWRITE       = 1 << 27;
+    private const RIGHT_SOCK_SHUTDOWN           = 1 << 28;
+    private const RIGHT_SOCK_ACCEPT             = 1 << 29;
+
+    // All rights
+    private const RIGHTS_ALL = (1 << 30) - 1;
+
+    // Directory rights (base)
+    private const RIGHTS_DIR_BASE =
+        self::RIGHT_FD_FDSTAT_SET_FLAGS |
+        self::RIGHT_FD_SYNC |
+        self::RIGHT_FD_ADVISE |
+        self::RIGHT_PATH_CREATE_DIRECTORY |
+        self::RIGHT_PATH_CREATE_FILE |
+        self::RIGHT_PATH_LINK_SOURCE |
+        self::RIGHT_PATH_LINK_TARGET |
+        self::RIGHT_PATH_OPEN |
+        self::RIGHT_FD_READDIR |
+        self::RIGHT_PATH_READLINK |
+        self::RIGHT_PATH_RENAME_SOURCE |
+        self::RIGHT_PATH_RENAME_TARGET |
+        self::RIGHT_PATH_FILESTAT_GET |
+        self::RIGHT_PATH_FILESTAT_SET_SIZE |
+        self::RIGHT_PATH_FILESTAT_SET_TIMES |
+        self::RIGHT_FD_FILESTAT_GET |
+        self::RIGHT_FD_FILESTAT_SET_TIMES |
+        self::RIGHT_PATH_SYMLINK |
+        self::RIGHT_PATH_REMOVE_DIRECTORY |
+        self::RIGHT_PATH_UNLINK_FILE;
+
+    // File rights (base)
+    private const RIGHTS_FILE_BASE =
+        self::RIGHT_FD_DATASYNC |
+        self::RIGHT_FD_READ |
+        self::RIGHT_FD_SEEK |
+        self::RIGHT_FD_FDSTAT_SET_FLAGS |
+        self::RIGHT_FD_SYNC |
+        self::RIGHT_FD_TELL |
+        self::RIGHT_FD_WRITE |
+        self::RIGHT_FD_ADVISE |
+        self::RIGHT_FD_ALLOCATE |
+        self::RIGHT_FD_FILESTAT_GET |
+        self::RIGHT_FD_FILESTAT_SET_SIZE |
+        self::RIGHT_FD_FILESTAT_SET_TIMES |
+        self::RIGHT_POLL_FD_READWRITE;
 
     /**
      * @param string[]             $args        argv (index 0 is the program name)
@@ -60,8 +185,24 @@ final class Wasi
         $this->stdout = $stdout ?? STDOUT;
         $this->stderr = $stderr ?? STDERR;
         $this->stdin  = $stdin  ?? STDIN;
+
+        // Initialize stdio rights
+        $this->fdTypes[0] = self::FILETYPE_CHARACTER_DEVICE;
+        $this->fdTypes[1] = self::FILETYPE_CHARACTER_DEVICE;
+        $this->fdTypes[2] = self::FILETYPE_CHARACTER_DEVICE;
+        $this->fdRightsBase[0] = self::RIGHTS_ALL;
+        $this->fdRightsBase[1] = self::RIGHTS_ALL;
+        $this->fdRightsBase[2] = self::RIGHTS_ALL;
+        $this->fdRightsInheriting[0] = self::RIGHTS_ALL;
+        $this->fdRightsInheriting[1] = self::RIGHTS_ALL;
+        $this->fdRightsInheriting[2] = self::RIGHTS_ALL;
+
         foreach ($preopenDirs as $dir) {
-            $this->preopens[$this->nextFd++] = $dir;
+            $fd = $this->nextFd++;
+            $this->preopens[$fd] = $dir;
+            $this->fdTypes[$fd] = self::FILETYPE_DIRECTORY;
+            $this->fdRightsBase[$fd] = self::RIGHTS_DIR_BASE;
+            $this->fdRightsInheriting[$fd] = self::RIGHTS_DIR_BASE | self::RIGHTS_FILE_BASE;
         }
     }
 
@@ -83,33 +224,64 @@ final class Wasi
     {
         return [
             'wasi_snapshot_preview1' => [
-                'args_get'            => fn(array $a) => $this->argsGet($a),
-                'args_sizes_get'      => fn(array $a) => $this->argsSizesGet($a),
-                'environ_get'         => fn(array $a) => $this->environGet($a),
-                'environ_sizes_get'   => fn(array $a) => $this->environSizesGet($a),
-                'clock_time_get'      => fn(array $a) => $this->clockTimeGet($a),
-                'fd_close'            => fn(array $a) => $this->fdClose($a),
-                'fd_fdstat_get'       => fn(array $a) => $this->fdFdstatGet($a),
-                'fd_prestat_get'      => fn(array $a) => $this->fdPrestatGet($a),
-                'fd_prestat_dir_name' => fn(array $a) => $this->fdPrestatDirName($a),
-                'fd_read'             => fn(array $a) => $this->fdRead($a),
-                'fd_seek'             => fn(array $a) => $this->fdSeek($a),
-                'fd_write'            => fn(array $a) => $this->fdWrite($a),
-                'path_open'           => fn(array $a) => $this->pathOpen($a),
-                'proc_exit'           => fn(array $a) => $this->procExit($a),
-                'random_get'          => fn(array $a) => $this->randomGet($a),
+                'args_get'              => fn(array $a) => $this->argsGet($a),
+                'args_sizes_get'        => fn(array $a) => $this->argsSizesGet($a),
+                'environ_get'           => fn(array $a) => $this->environGet($a),
+                'environ_sizes_get'     => fn(array $a) => $this->environSizesGet($a),
+                'clock_time_get'        => fn(array $a) => $this->clockTimeGet($a),
+                'clock_res_get'         => fn(array $a) => $this->clockResGet($a),
+                'fd_advise'             => fn(array $a) => $this->fdAdvise($a),
+                'fd_allocate'           => fn(array $a) => $this->fdAllocate($a),
+                'fd_close'              => fn(array $a) => $this->fdClose($a),
+                'fd_datasync'           => fn(array $a) => $this->fdDatasync($a),
+                'fd_fdstat_get'         => fn(array $a) => $this->fdFdstatGet($a),
+                'fd_fdstat_set_flags'   => fn(array $a) => $this->fdFdstatSetFlags($a),
+                'fd_fdstat_set_rights'  => fn(array $a) => $this->fdFdstatSetRights($a),
+                'fd_filestat_get'       => fn(array $a) => $this->fdFilestatGet($a),
+                'fd_filestat_set_size'  => fn(array $a) => $this->fdFilestatSetSize($a),
+                'fd_filestat_set_times' => fn(array $a) => $this->fdFilestatSetTimes($a),
+                'fd_pread'              => fn(array $a) => $this->fdPread($a),
+                'fd_prestat_get'        => fn(array $a) => $this->fdPrestatGet($a),
+                'fd_prestat_dir_name'   => fn(array $a) => $this->fdPrestatDirName($a),
+                'fd_pwrite'             => fn(array $a) => $this->fdPwrite($a),
+                'fd_read'               => fn(array $a) => $this->fdRead($a),
+                'fd_readdir'            => fn(array $a) => $this->fdReaddir($a),
+                'fd_renumber'           => fn(array $a) => $this->fdRenumber($a),
+                'fd_seek'               => fn(array $a) => $this->fdSeek($a),
+                'fd_sync'               => fn(array $a) => $this->fdSync($a),
+                'fd_tell'               => fn(array $a) => $this->fdTell($a),
+                'fd_write'              => fn(array $a) => $this->fdWrite($a),
+                'path_create_directory' => fn(array $a) => $this->pathCreateDirectory($a),
+                'path_filestat_get'     => fn(array $a) => $this->pathFilestatGet($a),
+                'path_filestat_set_times' => fn(array $a) => $this->pathFilestatSetTimes($a),
+                'path_link'             => fn(array $a) => $this->pathLink($a),
+                'path_open'             => fn(array $a) => $this->pathOpen($a),
+                'path_readlink'         => fn(array $a) => $this->pathReadlink($a),
+                'path_remove_directory' => fn(array $a) => $this->pathRemoveDirectory($a),
+                'path_rename'           => fn(array $a) => $this->pathRename($a),
+                'path_symlink'          => fn(array $a) => $this->pathSymlink($a),
+                'path_unlink_file'      => fn(array $a) => $this->pathUnlinkFile($a),
+                'poll_oneoff'           => fn(array $a) => $this->pollOneoff($a),
+                'proc_exit'             => fn(array $a) => $this->procExit($a),
+                'random_get'            => fn(array $a) => $this->randomGet($a),
+                'sched_yield'           => fn(array $a) => $this->ok(),
+                'sock_accept'           => fn(array $a) => $this->err(Errno::NOSYS),
+                'sock_recv'             => fn(array $a) => $this->err(Errno::NOSYS),
+                'sock_send'             => fn(array $a) => $this->err(Errno::NOSYS),
+                'sock_shutdown'         => fn(array $a) => $this->err(Errno::NOSYS),
             ],
         ];
     }
 
-    // ---- private helpers ----
+    // ================================================================
+    //  Private helpers
+    // ================================================================
 
     private function mem(): Memory
     {
         return $this->instance->memories[0];
     }
 
-    /** Treat a WasmValue i32 as an unsigned 32-bit address */
     private function addr(WasmValue $v): int
     {
         return $v->value & 0xFFFFFFFF;
@@ -125,19 +297,142 @@ final class Wasi
         return [WasmValue::i32($errno)];
     }
 
-    // ---- WASI syscall implementations ----
+    /** Check if fd is valid (std, preopen, or open file) */
+    private function fdValid(int $fd): bool
+    {
+        // An fd is valid if it has type metadata (set on creation, cleared on close)
+        return isset($this->fdTypes[$fd]);
+    }
 
-    /**
-     * fd_write(fd, iovs, iovs_len, nwritten) -> errno
-     *
-     * Each iovec is 8 bytes: { buf: u32, buf_len: u32 }.
-     */
+    /** Get the resource handle for an fd, or null */
+    private function fdResource(int $fd): mixed
+    {
+        if ($fd <= 2) {
+            if (!isset($this->fdTypes[$fd])) return null; // closed
+            // Check if stdio was renumbered to a file
+            if (isset($this->openFds[$fd])) return $this->openFds[$fd];
+            return match ($fd) {
+                0 => $this->stdin,
+                1 => $this->stdout,
+                2 => $this->stderr,
+            };
+        }
+        return $this->openFds[$fd] ?? null;
+    }
+
+    /** Resolve a guest path relative to a preopened dirfd, with sandbox enforcement */
+    private function resolvePath(int $dirfd, string $relPath): ?string
+    {
+        $dirPath = $this->preopens[$dirfd] ?? null;
+        if ($dirPath === null) {
+            return null;
+        }
+        return rtrim($dirPath, '/') . '/' . $relPath;
+    }
+
+    /** Check that a resolved path does not escape the sandbox */
+    private function checkSandbox(int $dirfd, string $relPath): ?int
+    {
+        $dirPath = $this->preopens[$dirfd] ?? null;
+        if ($dirPath === null) return Errno::BADF;
+
+        // Reject absolute paths
+        if (str_starts_with($relPath, '/')) return Errno::PERM;
+
+        // Normalize path components and check for sandbox escape
+        $dirReal = realpath($dirPath);
+        if ($dirReal === false) $dirReal = $dirPath;
+
+        $absPath = rtrim($dirPath, '/') . '/' . $relPath;
+        // Resolve .. manually to check for escape
+        $parts = explode('/', $relPath);
+        $depth = 0;
+        foreach ($parts as $part) {
+            if ($part === '' || $part === '.') continue;
+            if ($part === '..') {
+                $depth--;
+                if ($depth < 0) return Errno::PERM;
+            } else {
+                $depth++;
+            }
+        }
+
+        return null; // OK
+    }
+
+    /** Detect filetype from a real filesystem path */
+    private function filetypeFromPath(string $path, bool $followSymlinks = true): int
+    {
+        if (!$followSymlinks && is_link($path)) {
+            return self::FILETYPE_SYMBOLIC_LINK;
+        }
+        if (is_dir($path)) {
+            return self::FILETYPE_DIRECTORY;
+        }
+        if (is_file($path)) {
+            return self::FILETYPE_REGULAR_FILE;
+        }
+        if (is_link($path)) {
+            return self::FILETYPE_SYMBOLIC_LINK;
+        }
+        return self::FILETYPE_UNKNOWN;
+    }
+
+    /** Write a 64-byte filestat struct to memory */
+    private function writeFilestat(int $ptr, array $stat, int $filetype): void
+    {
+        $mem = $this->mem();
+        $mem->storeI64($ptr + 0, $stat['dev'] ?? 0);          // dev
+        $mem->storeI64($ptr + 8, $stat['ino'] ?? 0);          // ino
+        $mem->storeI8($ptr + 16, $filetype);                   // filetype
+        // 7 bytes padding (17-23)
+        for ($i = 17; $i < 24; $i++) $mem->storeI8($ptr + $i, 0);
+        $mem->storeI64($ptr + 24, $stat['nlink'] ?? 1);       // nlink
+        $mem->storeI64($ptr + 32, $stat['size'] ?? 0);        // size
+        // Use second-precision timestamps from stat, converted to nanoseconds
+        $atimNs = ($stat['atime'] ?? 0) * 1_000_000_000;
+        $mtimNs = ($stat['mtime'] ?? 0) * 1_000_000_000;
+        $ctimNs = ($stat['ctime'] ?? 0) * 1_000_000_000;
+        $mem->storeI64($ptr + 40, (int)$atimNs);              // atim
+        $mem->storeI64($ptr + 48, (int)$mtimNs);              // mtim
+        $mem->storeI64($ptr + 56, (int)$ctimNs);              // ctim
+    }
+
+    /** Check that fd has the given right */
+    private function hasRight(int $fd, int $right): bool
+    {
+        $base = $this->fdRightsBase[$fd] ?? self::RIGHTS_ALL;
+        return ($base & $right) !== 0;
+    }
+
+    // ================================================================
+    //  WASI syscall implementations
+    // ================================================================
+
+    // ---- fd_write ----
+
     private function fdWrite(array $args): array
     {
         $fd          = $args[0]->value;
         $iovs        = $this->addr($args[1]);
         $iovsLen     = $args[2]->value;
         $nwrittenPtr = $this->addr($args[3]);
+
+        if (!$this->fdValid($fd)) {
+            return $this->err(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_WRITE)) {
+            return $this->err(Errno::BADF);
+        }
+
+        $resource = $this->fdResource($fd);
+        if ($resource === null && $fd > 2) {
+            // Directory fd — cannot write
+            if (isset($this->preopens[$fd])) {
+                return $this->err(Errno::ISDIR);
+            }
+            return $this->err(Errno::BADF);
+        }
 
         $mem          = $this->mem();
         $totalWritten = 0;
@@ -152,23 +447,20 @@ final class Wasi
             }
 
             $data = substr($mem->rawBytes(), $bufPtr, $bufLen);
-
-            match ($fd) {
-                1 => fwrite($this->stdout, $data),
-                2 => fwrite($this->stderr, $data),
-                default => isset($this->openFds[$fd]) ? fwrite($this->openFds[$fd], $data) : null,
-            };
-
-            $totalWritten += $bufLen;
+            $written = @fwrite($resource, $data);
+            if ($written === false) {
+                if ($totalWritten === 0) return $this->err(Errno::IO);
+                break;
+            }
+            $totalWritten += $written;
         }
 
         $mem->storeI32($nwrittenPtr, $totalWritten);
         return $this->ok();
     }
 
-    /**
-     * fd_read(fd, iovs, iovs_len, nread) -> errno
-     */
+    // ---- fd_read ----
+
     private function fdRead(array $args): array
     {
         $fd       = $args[0]->value;
@@ -176,17 +468,23 @@ final class Wasi
         $iovsLen  = $args[2]->value;
         $nreadPtr = $this->addr($args[3]);
 
-        $mem       = $this->mem();
-        $totalRead = 0;
+        if (!$this->fdValid($fd)) {
+            return $this->err(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_READ)) {
+            return $this->err(Errno::BADF);
+        }
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
 
-        $resource = match ($fd) {
-            0       => $this->stdin,
-            default => $this->openFds[$fd] ?? null,
-        };
-
+        $resource = $this->fdResource($fd);
         if ($resource === null) {
             return $this->err(Errno::BADF);
         }
+
+        $mem       = $this->mem();
+        $totalRead = 0;
 
         for ($i = 0; $i < $iovsLen; $i++) {
             $base   = $iovs + $i * 8;
@@ -197,8 +495,8 @@ final class Wasi
                 continue;
             }
 
-            $data = fread($resource, $bufLen);
-            if ($data === false) {
+            $data = @fread($resource, $bufLen);
+            if ($data === false || $data === '') {
                 break;
             }
 
@@ -207,7 +505,7 @@ final class Wasi
             $totalRead += $readLen;
 
             if ($readLen < $bufLen) {
-                break; // EOF
+                break;
             }
         }
 
@@ -215,30 +513,145 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * fd_close(fd) -> errno
-     */
+    // ---- fd_pread ----
+
+    private function fdPread(array $args): array
+    {
+        $fd       = $args[0]->value;
+        $iovs     = $this->addr($args[1]);
+        $iovsLen  = $args[2]->value;
+        $offset   = $args[3]->value; // i64
+        $nreadPtr = $this->addr($args[4]);
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->err(Errno::BADF);
+
+        $mem       = $this->mem();
+        $totalRead = 0;
+
+        // Save current position
+        $savedPos = ftell($resource);
+        fseek($resource, $offset, SEEK_SET);
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $base   = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($base);
+            $bufLen = $mem->loadU32($base + 4);
+
+            if ($bufLen === 0) continue;
+
+            $data = @fread($resource, $bufLen);
+            if ($data === false || $data === '') break;
+
+            $readLen = strlen($data);
+            $mem->init($bufPtr, $data);
+            $totalRead += $readLen;
+
+            if ($readLen < $bufLen) break;
+        }
+
+        // Restore original position
+        fseek($resource, $savedPos, SEEK_SET);
+
+        $mem->storeI32($nreadPtr, $totalRead);
+        return $this->ok();
+    }
+
+    // ---- fd_pwrite ----
+
+    private function fdPwrite(array $args): array
+    {
+        $fd          = $args[0]->value;
+        $iovs        = $this->addr($args[1]);
+        $iovsLen     = $args[2]->value;
+        $offset      = $args[3]->value; // i64
+        $nwrittenPtr = $this->addr($args[4]);
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->err(Errno::BADF);
+
+        $mem          = $this->mem();
+        $totalWritten = 0;
+
+        $savedPos = ftell($resource);
+        fseek($resource, $offset, SEEK_SET);
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $base   = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($base);
+            $bufLen = $mem->loadU32($base + 4);
+
+            if ($bufLen === 0) continue;
+
+            $data    = substr($mem->rawBytes(), $bufPtr, $bufLen);
+            $written = @fwrite($resource, $data);
+            if ($written === false) break;
+            $totalWritten += $written;
+        }
+
+        fseek($resource, $savedPos, SEEK_SET);
+
+        $mem->storeI32($nwrittenPtr, $totalWritten);
+        return $this->ok();
+    }
+
+    // ---- fd_close ----
+
     private function fdClose(array $args): array
     {
         $fd = $args[0]->value;
 
-        if ($fd <= 2) {
-            return $this->err(Errno::NOTSUP);
-        }
-
-        if (!isset($this->openFds[$fd])) {
+        // Stdio fds can be closed (renumber tests require this)
+        if ($fd < 0) {
             return $this->err(Errno::BADF);
         }
 
-        fclose($this->openFds[$fd]);
-        unset($this->openFds[$fd]);
-        return $this->ok();
+        // Close preopen
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            unset($this->preopens[$fd]);
+            unset($this->fdTypes[$fd]);
+            unset($this->fdRightsBase[$fd]);
+            unset($this->fdRightsInheriting[$fd]);
+            unset($this->fdFlags[$fd]);
+            return $this->ok();
+        }
+
+        // Close regular file
+        if (isset($this->openFds[$fd])) {
+            @fclose($this->openFds[$fd]);
+            unset($this->openFds[$fd]);
+            unset($this->preopens[$fd]);
+            unset($this->fdTypes[$fd]);
+            unset($this->fdRightsBase[$fd]);
+            unset($this->fdRightsInheriting[$fd]);
+            unset($this->fdFlags[$fd]);
+            return $this->ok();
+        }
+
+        // Close stdio
+        if ($fd <= 2) {
+            // Mark as closed by clearing the rights
+            unset($this->fdTypes[$fd]);
+            unset($this->fdRightsBase[$fd]);
+            unset($this->fdRightsInheriting[$fd]);
+            return $this->ok();
+        }
+
+        return $this->err(Errno::BADF);
     }
 
-    /**
-     * fd_seek(fd, offset, whence, newoffset) -> errno
-     * offset: i64, whence: i32, newoffset: pointer to i64
-     */
+    // ---- fd_seek ----
+
     private function fdSeek(array $args): array
     {
         $fd           = $args[0]->value;
@@ -246,81 +659,480 @@ final class Wasi
         $whence       = $args[2]->value;
         $newoffsetPtr = $this->addr($args[3]);
 
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
         if (!isset($this->openFds[$fd])) {
+            return $this->err(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_SEEK)) {
             return $this->err(Errno::BADF);
         }
 
         $seekWhence = match ($whence) {
-            0 => SEEK_SET,
-            1 => SEEK_CUR,
-            2 => SEEK_END,
-            default => null,
+            self::WHENCE_SET => SEEK_SET,
+            self::WHENCE_CUR => SEEK_CUR,
+            self::WHENCE_END => SEEK_END,
+            default          => null,
         };
 
         if ($seekWhence === null) {
             return $this->err(Errno::INVAL);
         }
 
-        if (fseek($this->openFds[$fd], $offset, $seekWhence) !== 0) {
-            return $this->err(Errno::IO);
+        // Check for seek before start of file
+        $resource = $this->openFds[$fd];
+        if ($seekWhence === SEEK_SET && $offset < 0) {
+            return $this->err(Errno::INVAL);
+        }
+        if ($seekWhence === SEEK_CUR) {
+            $cur = ftell($resource);
+            if ($cur + $offset < 0) {
+                return $this->err(Errno::INVAL);
+            }
         }
 
-        $pos = ftell($this->openFds[$fd]);
+        if (fseek($resource, $offset, $seekWhence) !== 0) {
+            return $this->err(Errno::INVAL);
+        }
+
+        $pos = ftell($resource);
         $this->mem()->storeI64($newoffsetPtr, (int)$pos);
         return $this->ok();
     }
 
-    /**
-     * fd_fdstat_get(fd, stat) -> errno
-     *
-     * Writes a 24-byte fdstat struct:
-     *   offset  0: fs_filetype  (u8)
-     *   offset  1: fs_flags     (u16)
-     *   offset  3: padding      (5 bytes)
-     *   offset  8: fs_rights_base        (u64)
-     *   offset 16: fs_rights_inheriting  (u64)
-     */
+    // ---- fd_tell ----
+
+    private function fdTell(array $args): array
+    {
+        $fd        = $args[0]->value;
+        $offsetPtr = $this->addr($args[1]);
+
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
+        if (!isset($this->openFds[$fd])) {
+            return $this->err(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_TELL)) {
+            return $this->err(Errno::BADF);
+        }
+
+        $pos = ftell($this->openFds[$fd]);
+        $this->mem()->storeI64($offsetPtr, (int)$pos);
+        return $this->ok();
+    }
+
+    // ---- fd_sync / fd_datasync ----
+
+    private function fdSync(array $args): array
+    {
+        $fd = $args[0]->value;
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        $res = $this->openFds[$fd] ?? null;
+        if ($res !== null) @fflush($res);
+        return $this->ok();
+    }
+
+    private function fdDatasync(array $args): array
+    {
+        return $this->fdSync($args);
+    }
+
+    // ---- fd_fdstat_get ----
+
     private function fdFdstatGet(array $args): array
     {
         $fd      = $args[0]->value;
         $statPtr = $this->addr($args[1]);
 
-        $isStd     = $fd <= 2;
-        $isPreopen = isset($this->preopens[$fd]);
-        $isOpen    = isset($this->openFds[$fd]);
-
-        if (!$isStd && !$isPreopen && !$isOpen) {
+        if (!$this->fdValid($fd)) {
             return $this->err(Errno::BADF);
         }
 
         $mem = $this->mem();
 
-        // fs_filetype: 2=character_device, 3=directory, 4=regular_file
-        $fileType = match (true) {
-            $isStd     => 2,
-            $isPreopen => 3,
-            default    => 4,
-        };
+        $fileType = $this->fdTypes[$fd] ?? self::FILETYPE_UNKNOWN;
+        $flags    = $this->fdFlags[$fd] ?? 0;
+        $rightsBase       = $this->fdRightsBase[$fd] ?? self::RIGHTS_ALL;
+        $rightsInheriting = $this->fdRightsInheriting[$fd] ?? self::RIGHTS_ALL;
 
+        // fdstat struct (24 bytes):
+        //  0: fs_filetype (u8)
+        //  2: fs_flags (u16) — aligned at offset 2
+        //  8: fs_rights_base (u64)
+        // 16: fs_rights_inheriting (u64)
         $mem->storeI8($statPtr, $fileType);
-        $mem->storeI8($statPtr + 1, 0); // fs_flags low
-        $mem->storeI8($statPtr + 2, 0); // fs_flags high
-        for ($j = 3; $j < 8; $j++) {
-            $mem->storeI8($statPtr + $j, 0); // padding
+        $mem->storeI8($statPtr + 1, 0); // padding
+        $mem->storeI8($statPtr + 2, $flags & 0xFF);
+        $mem->storeI8($statPtr + 3, ($flags >> 8) & 0xFF);
+        // padding bytes 4-7
+        for ($j = 4; $j < 8; $j++) {
+            $mem->storeI8($statPtr + $j, 0);
         }
-        $mem->storeI64($statPtr + 8, -1);  // fs_rights_base (all rights)
-        $mem->storeI64($statPtr + 16, -1); // fs_rights_inheriting (all rights)
+        $mem->storeI64($statPtr + 8, $rightsBase);
+        $mem->storeI64($statPtr + 16, $rightsInheriting);
 
         return $this->ok();
     }
 
-    /**
-     * fd_prestat_get(fd, prestat) -> errno
-     *
-     * prestat struct (8 bytes):
-     *   offset 0: tag       (u8, 0=dir)
-     *   offset 4: name_len  (u32)
-     */
+    // ---- fd_fdstat_set_flags ----
+
+    private function fdFdstatSetFlags(array $args): array
+    {
+        $fd    = $args[0]->value;
+        $flags = $args[1]->value;
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (!$this->hasRight($fd, self::RIGHT_FD_FDSTAT_SET_FLAGS)) {
+            return $this->err(Errno::BADF);
+        }
+
+        // If changing append flag on an open file, reopen with new mode
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource !== null) {
+            $meta = stream_get_meta_data($resource);
+            $path = $meta['uri'] ?? null;
+            if ($path !== null) {
+                $newAppend = ($flags & self::FDFLAGS_APPEND) !== 0;
+                $oldAppend = (($this->fdFlags[$fd] ?? 0) & self::FDFLAGS_APPEND) !== 0;
+                if ($newAppend !== $oldAppend) {
+                    $pos = ftell($resource);
+                    $wantsRead = true; // Assume r+w for simplicity
+                    fclose($resource);
+                    $mode = $newAppend ? 'a+b' : 'r+b';
+                    $newHandle = @fopen($path, $mode);
+                    if ($newHandle !== false) {
+                        $this->openFds[$fd] = $newHandle;
+                        if (!$newAppend) {
+                            fseek($newHandle, $pos, SEEK_SET);
+                        }
+                    }
+                }
+            }
+        }
+
+        $this->fdFlags[$fd] = $flags;
+        return $this->ok();
+    }
+
+    // ---- fd_fdstat_set_rights ----
+
+    private function fdFdstatSetRights(array $args): array
+    {
+        $fd               = $args[0]->value;
+        $newRightsBase    = $args[1]->value; // i64
+        $newRightsInherit = $args[2]->value; // i64
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+
+        $currentBase    = $this->fdRightsBase[$fd] ?? self::RIGHTS_ALL;
+        $currentInherit = $this->fdRightsInheriting[$fd] ?? self::RIGHTS_ALL;
+
+        // Can only remove rights, not add new ones
+        if (($newRightsBase & ~$currentBase) !== 0) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+        if (($newRightsInherit & ~$currentInherit) !== 0) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+
+        $this->fdRightsBase[$fd] = $newRightsBase;
+        $this->fdRightsInheriting[$fd] = $newRightsInherit;
+        return $this->ok();
+    }
+
+    // ---- fd_filestat_get ----
+
+    private function fdFilestatGet(array $args): array
+    {
+        $fd      = $args[0]->value;
+        $statPtr = $this->addr($args[1]);
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (!$this->hasRight($fd, self::RIGHT_FD_FILESTAT_GET)) {
+            return $this->err(Errno::BADF);
+        }
+
+        // For preopens (directories), stat the directory
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            $path = $this->preopens[$fd];
+            $stat = @stat($path);
+            if ($stat === false) return $this->err(Errno::IO);
+            $this->writeFilestat($statPtr, $stat, self::FILETYPE_DIRECTORY);
+            return $this->ok();
+        }
+
+        // For open files, use fstat
+        $resource = $this->fdResource($fd);
+        if ($resource === null) return $this->err(Errno::BADF);
+
+        if (is_resource($resource)) {
+            $stat = @fstat($resource);
+            if ($stat === false) return $this->err(Errno::IO);
+            $filetype = $this->fdTypes[$fd] ?? self::FILETYPE_REGULAR_FILE;
+            $this->writeFilestat($statPtr, $stat, $filetype);
+            return $this->ok();
+        }
+
+        return $this->err(Errno::BADF);
+    }
+
+    // ---- fd_filestat_set_size ----
+
+    private function fdFilestatSetSize(array $args): array
+    {
+        $fd   = $args[0]->value;
+        $size = $args[1]->value; // i64
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_FILESTAT_SET_SIZE)) {
+            return $this->err(Errno::BADF);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->err(Errno::BADF);
+
+        if (!ftruncate($resource, $size)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- fd_filestat_set_times ----
+
+    private function fdFilestatSetTimes(array $args): array
+    {
+        $fd      = $args[0]->value;
+        $atim    = $args[1]->value; // i64 nanoseconds
+        $mtim    = $args[2]->value; // i64 nanoseconds
+        $fstflags = $args[3]->value;
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (!$this->hasRight($fd, self::RIGHT_FD_FILESTAT_SET_TIMES)) {
+            return $this->err(Errno::BADF);
+        }
+
+        // Validate: can't set both ATIM and ATIM_NOW, or MTIM and MTIM_NOW
+        if (($fstflags & self::FSTFLAGS_ATIM) && ($fstflags & self::FSTFLAGS_ATIM_NOW)) {
+            return $this->err(Errno::INVAL);
+        }
+        if (($fstflags & self::FSTFLAGS_MTIM) && ($fstflags & self::FSTFLAGS_MTIM_NOW)) {
+            return $this->err(Errno::INVAL);
+        }
+
+        // Resolve file path for touch
+        $path = null;
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            $path = $this->preopens[$fd];
+        } elseif (isset($this->openFds[$fd])) {
+            $meta = stream_get_meta_data($this->openFds[$fd]);
+            $path = $meta['uri'] ?? null;
+        }
+        if ($path === null) return $this->err(Errno::BADF);
+
+        $now = time();
+        $currentStat = @stat($path);
+        $newAtime = $currentStat ? $currentStat['atime'] : $now;
+        $newMtime = $currentStat ? $currentStat['mtime'] : $now;
+
+        if ($fstflags & self::FSTFLAGS_ATIM_NOW) {
+            $newAtime = $now;
+        } elseif ($fstflags & self::FSTFLAGS_ATIM) {
+            $newAtime = (int)($atim / 1_000_000_000);
+        }
+
+        if ($fstflags & self::FSTFLAGS_MTIM_NOW) {
+            $newMtime = $now;
+        } elseif ($fstflags & self::FSTFLAGS_MTIM) {
+            $newMtime = (int)($mtim / 1_000_000_000);
+        }
+
+        @touch($path, $newMtime, $newAtime);
+        return $this->ok();
+    }
+
+    // ---- fd_advise ----
+
+    private function fdAdvise(array $args): array
+    {
+        $fd = $args[0]->value;
+        // offset = $args[1], len = $args[2], advice = $args[3] — all ignored
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        // fd_advise is advisory only, always succeeds
+        return $this->ok();
+    }
+
+    // ---- fd_allocate ----
+
+    private function fdAllocate(array $args): array
+    {
+        $fd     = $args[0]->value;
+        $offset = $args[1]->value; // i64
+        $len    = $args[2]->value; // i64
+
+        if (!$this->fdValid($fd)) return $this->err(Errno::BADF);
+        if (!$this->hasRight($fd, self::RIGHT_FD_ALLOCATE)) {
+            return $this->err(Errno::BADF);
+        }
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->err(Errno::ISDIR);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->err(Errno::BADF);
+
+        // Extend file if needed
+        $stat = fstat($resource);
+        $needed = $offset + $len;
+        if ($needed > $stat['size']) {
+            ftruncate($resource, $needed);
+        }
+        return $this->ok();
+    }
+
+    // ---- fd_readdir ----
+
+    private function fdReaddir(array $args): array
+    {
+        $fd        = $args[0]->value;
+        $bufPtr    = $this->addr($args[1]);
+        $bufLen    = $args[2]->value;
+        $cookie    = $args[3]->value; // i64
+        $usedPtr   = $this->addr($args[4]);
+
+        if (!isset($this->preopens[$fd])) {
+            return $this->err(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_READDIR)) {
+            return $this->err(Errno::BADF);
+        }
+
+        $dirPath = $this->preopens[$fd];
+        $entries = @scandir($dirPath);
+        if ($entries === false) {
+            return $this->err(Errno::IO);
+        }
+
+        // Sort and prepend . and .. (scandir includes them but we ensure order)
+        $dotEntries = [];
+        $otherEntries = [];
+        foreach ($entries as $e) {
+            if ($e === '.' || $e === '..') {
+                $dotEntries[] = $e;
+            } else {
+                $otherEntries[] = $e;
+            }
+        }
+        sort($dotEntries);
+        sort($otherEntries);
+        $allEntries = array_merge($dotEntries, $otherEntries);
+
+        $mem    = $this->mem();
+        $offset = 0;
+        $idx    = 0;
+
+        foreach ($allEntries as $entry) {
+            if ($idx < $cookie) {
+                $idx++;
+                continue;
+            }
+
+            $entryPath = rtrim($dirPath, '/') . '/' . $entry;
+            $stat = @stat($entryPath);
+            $ino  = $stat ? $stat['ino'] : 0;
+
+            $filetype = self::FILETYPE_UNKNOWN;
+            if ($entry === '.' || $entry === '..') {
+                $filetype = self::FILETYPE_DIRECTORY;
+            } elseif (is_link($entryPath)) {
+                $filetype = self::FILETYPE_SYMBOLIC_LINK;
+            } elseif (is_dir($entryPath)) {
+                $filetype = self::FILETYPE_DIRECTORY;
+            } elseif (is_file($entryPath)) {
+                $filetype = self::FILETYPE_REGULAR_FILE;
+            }
+
+            $nameBytes = $entry;
+            $nameLen   = strlen($nameBytes);
+
+            // dirent struct: next(u64) + ino(u64) + namelen(u32) + type(u8) = 24 bytes header + name
+            $headerSize = 24;
+            $entrySize  = $headerSize + $nameLen;
+
+            if ($offset + $headerSize <= $bufLen) {
+                $base = $bufPtr + $offset;
+                $mem->storeI64($base, $idx + 1);           // d_next (cookie for next entry)
+                $mem->storeI64($base + 8, $ino);            // d_ino
+                $mem->storeI32($base + 16, $nameLen);       // d_namlen
+                $mem->storeI8($base + 20, $filetype);       // d_type
+                // padding 21-23
+                $mem->storeI8($base + 21, 0);
+                $mem->storeI8($base + 22, 0);
+                $mem->storeI8($base + 23, 0);
+
+                // Write as much of the name as fits
+                $nameSpace = min($nameLen, $bufLen - $offset - $headerSize);
+                if ($nameSpace > 0) {
+                    $mem->init($base + $headerSize, substr($nameBytes, 0, $nameSpace));
+                }
+            }
+
+            $offset += $entrySize;
+            $idx++;
+        }
+
+        $mem->storeI32($usedPtr, min($offset, $bufLen));
+        return $this->ok();
+    }
+
+    // ---- fd_renumber ----
+
+    private function fdRenumber(array $args): array
+    {
+        $from = $args[0]->value;
+        $to   = $args[1]->value;
+
+        if (!$this->fdValid($from)) return $this->err(Errno::BADF);
+        if (!$this->fdValid($to))   return $this->err(Errno::BADF);
+
+        // Close the target fd first
+        if (isset($this->openFds[$to])) {
+            @fclose($this->openFds[$to]);
+            unset($this->openFds[$to]);
+        }
+
+        // Move all metadata from source to target
+        if (isset($this->openFds[$from])) {
+            $this->openFds[$to] = $this->openFds[$from];
+            unset($this->openFds[$from]);
+        }
+        if (isset($this->preopens[$from])) {
+            $this->preopens[$to] = $this->preopens[$from];
+            unset($this->preopens[$from]);
+        } else {
+            unset($this->preopens[$to]);
+        }
+
+        $this->fdTypes[$to] = $this->fdTypes[$from] ?? self::FILETYPE_UNKNOWN;
+        $this->fdRightsBase[$to] = $this->fdRightsBase[$from] ?? self::RIGHTS_ALL;
+        $this->fdRightsInheriting[$to] = $this->fdRightsInheriting[$from] ?? self::RIGHTS_ALL;
+        $this->fdFlags[$to] = $this->fdFlags[$from] ?? 0;
+
+        // Source fd is now invalid
+        unset($this->fdTypes[$from]);
+        unset($this->fdRightsBase[$from]);
+        unset($this->fdRightsInheriting[$from]);
+        unset($this->fdFlags[$from]);
+
+        return $this->ok();
+    }
+
+    // ---- fd_prestat_get ----
+
     private function fdPrestatGet(array $args): array
     {
         $fd         = $args[0]->value;
@@ -331,15 +1143,14 @@ final class Wasi
         }
 
         $mem = $this->mem();
-        $mem->storeI8($prestatPtr, 0); // tag = dir
+        $mem->storeI32($prestatPtr, 0); // tag = dir (u8, but aligned to u32)
         $mem->storeI32($prestatPtr + 4, strlen($this->preopens[$fd]));
 
         return $this->ok();
     }
 
-    /**
-     * fd_prestat_dir_name(fd, path, path_len) -> errno
-     */
+    // ---- fd_prestat_dir_name ----
+
     private function fdPrestatDirName(array $args): array
     {
         $fd      = $args[0]->value;
@@ -350,76 +1161,604 @@ final class Wasi
             return $this->err(Errno::BADF);
         }
 
-        $this->mem()->init($pathPtr, substr($this->preopens[$fd], 0, $pathLen));
+        $name = $this->preopens[$fd];
+        if ($pathLen < strlen($name)) {
+            return $this->err(Errno::NAMETOOLONG);
+        }
+
+        $this->mem()->init($pathPtr, substr($name, 0, $pathLen));
         return $this->ok();
     }
 
-    /**
-     * path_open(dirfd, dirflags, path_ptr, path_len, oflags,
-     *           fs_rights_base, fs_rights_inheriting, fdflags, fd_ptr) -> errno
-     */
+    // ---- path_open ----
+
     private function pathOpen(array $args): array
     {
-        $dirfd   = $args[0]->value;
-        // $dirflags            = $args[1]->value; // lookupflags (SYMLINK_FOLLOW), unused
-        $pathPtr = $this->addr($args[2]);
-        $pathLen = $args[3]->value;
-        $oflags  = $args[4]->value;
-        // $fsRightsBase        = $args[5]->value; // unused
-        // $fsRightsInheriting  = $args[6]->value; // unused
-        // $fdflags             = $args[7]->value; // unused
-        $fdPtr   = $this->addr($args[8]);
+        $dirfd       = $args[0]->value;
+        $dirflags    = $args[1]->value; // lookupflags
+        $pathPtr     = $this->addr($args[2]);
+        $pathLen     = $args[3]->value;
+        $oflags      = $args[4]->value;
+        $fsRightsBase       = $args[5]->value; // i64
+        $fsRightsInheriting = $args[6]->value; // i64
+        $fdflags     = $args[7]->value;
+        $fdPtr       = $this->addr($args[8]);
 
+        // dirfd must be a directory
         if (!isset($this->preopens[$dirfd])) {
+            if (isset($this->openFds[$dirfd])) {
+                return $this->err(Errno::NOTDIR);
+            }
             return $this->err(Errno::BADF);
         }
 
         $mem     = $this->mem();
         $relPath = substr($mem->rawBytes(), $pathPtr, $pathLen);
-        $dirPath = rtrim($this->preopens[$dirfd], '/');
-        $absPath = $dirPath . '/' . $relPath;
 
-        // oflags bits: 0x01=creat, 0x02=directory, 0x04=excl, 0x08=trunc
-        $createDir = ($oflags & 0x02) !== 0;
-        $create    = ($oflags & 0x01) !== 0;
-        $exclusive = ($oflags & 0x04) !== 0;
-        $truncate  = ($oflags & 0x08) !== 0;
+        // Validate path
+        if (str_contains($relPath, "\0")) {
+            return $this->err(Errno::INVAL);
+        }
 
-        if ($createDir) {
-            if (!is_dir($absPath) && !mkdir($absPath, 0777, true)) {
-                return $this->err(Errno::IO);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        $followSymlinks = ($dirflags & self::LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
+
+        $isDirectory = ($oflags & self::OFLAGS_DIRECTORY) !== 0;
+        $isCreate    = ($oflags & self::OFLAGS_CREAT) !== 0;
+        $isExclusive = ($oflags & self::OFLAGS_EXCL) !== 0;
+        $isTruncate  = ($oflags & self::OFLAGS_TRUNC) !== 0;
+
+        $hasAppend = ($fdflags & self::FDFLAGS_APPEND) !== 0;
+
+        // Sandbox check (rejects absolute paths and too many ..)
+        $sandboxErr = $this->checkSandbox($dirfd, $relPath);
+        if ($sandboxErr !== null) return $this->err($sandboxErr);
+
+        // Check truncation rights
+        if ($isTruncate) {
+            if (!$this->hasRight($dirfd, self::RIGHT_PATH_FILESTAT_SET_SIZE)) {
+                return $this->err(Errno::PERM);
             }
+        }
+
+        // Check for symlinks when not following
+        if (!$followSymlinks && is_link($absPath)) {
+            return $this->err(Errno::LOOP);
+        }
+
+        // Opening a directory
+        if ($isDirectory) {
+            if (is_file($absPath)) {
+                return $this->err(Errno::NOTDIR);
+            }
+            if (!is_dir($absPath)) {
+                return $this->err(Errno::NOENT);
+            }
+            // Opening directory for read — check if they want write too
+            $wantsWrite = ($fsRightsBase & self::RIGHT_FD_WRITE) !== 0;
+            if ($wantsWrite) {
+                return $this->err(Errno::ISDIR);
+            }
+
             $fd = $this->nextFd++;
             $this->preopens[$fd] = $absPath;
+            $this->fdTypes[$fd] = self::FILETYPE_DIRECTORY;
+            // Directory rights: inherit from parent but intersect with requested
+            $parentRightsBase = $this->fdRightsInheriting[$dirfd] ?? self::RIGHTS_ALL;
+            $this->fdRightsBase[$fd] = $parentRightsBase & self::RIGHTS_DIR_BASE;
+            $this->fdRightsInheriting[$fd] = $parentRightsBase & (self::RIGHTS_DIR_BASE | self::RIGHTS_FILE_BASE);
+            $this->fdFlags[$fd] = $fdflags;
             $mem->storeI32($fdPtr, $fd);
             return $this->ok();
         }
 
-        $mode = match (true) {
-            $create && $truncate => 'w+b',
-            $create && $exclusive => 'xb',
-            $create  => 'a+b',
-            $truncate => 'w+b',
-            default  => 'rb',
-        };
+        // Handle trailing slashes on non-directory paths
+        if (str_ends_with($relPath, '/')) {
+            if (is_file($absPath)) {
+                return $this->err(Errno::NOTDIR);
+            }
+        }
+
+        // Exclusive create: file must not exist
+        if ($isCreate && $isExclusive && file_exists($absPath)) {
+            return $this->err(Errno::EXIST);
+        }
+
+        // Non-create open: file must exist
+        if (!$isCreate && !file_exists($absPath)) {
+            return $this->err(Errno::NOENT);
+        }
+
+        // Determine read/write from requested rights
+        $wantsRead  = ($fsRightsBase & self::RIGHT_FD_READ) !== 0;
+        $wantsWrite = ($fsRightsBase & self::RIGHT_FD_WRITE) !== 0;
+
+        // Determine fopen mode
+        if ($isCreate && $isExclusive) {
+            $mode = $wantsRead ? 'x+b' : 'xb';
+        } elseif ($isCreate && $isTruncate) {
+            $mode = $wantsRead ? 'w+b' : 'wb';
+        } elseif ($isTruncate) {
+            $mode = $wantsRead ? 'w+b' : 'wb';
+        } elseif ($isCreate && $hasAppend) {
+            $mode = $wantsRead ? 'a+b' : 'ab';
+        } elseif ($isCreate) {
+            if (!file_exists($absPath)) {
+                $mode = $wantsRead ? 'w+b' : 'wb';
+            } else {
+                $mode = ($wantsRead && $wantsWrite) ? 'r+b' : ($wantsWrite ? 'r+b' : 'rb');
+            }
+        } elseif ($hasAppend) {
+            $mode = $wantsRead ? 'a+b' : 'ab';
+        } elseif ($wantsRead && $wantsWrite) {
+            $mode = 'r+b';
+        } elseif ($wantsWrite) {
+            $mode = 'r+b';
+        } else {
+            $mode = 'rb';
+        }
 
         $handle = @fopen($absPath, $mode);
         if ($handle === false) {
-            return $this->err(file_exists($absPath) ? Errno::ACCES : Errno::NOENT);
+            if (!file_exists($absPath)) return $this->err(Errno::NOENT);
+            if (is_dir($absPath))       return $this->err(Errno::ISDIR);
+            return $this->err(Errno::ACCES);
         }
 
         $fd = $this->nextFd++;
         $this->openFds[$fd] = $handle;
+        $this->fdTypes[$fd] = self::FILETYPE_REGULAR_FILE;
+        // Intersect requested rights with inheriting rights from parent
+        $parentRightsInheriting = $this->fdRightsInheriting[$dirfd] ?? self::RIGHTS_ALL;
+        $this->fdRightsBase[$fd] = $fsRightsBase & $parentRightsInheriting;
+        $this->fdRightsInheriting[$fd] = $fsRightsInheriting & $parentRightsInheriting;
+        $this->fdFlags[$fd] = $fdflags;
         $mem->storeI32($fdPtr, $fd);
         return $this->ok();
     }
 
-    /**
-     * args_sizes_get(argc_ptr, argv_buf_size_ptr) -> errno
-     */
+    // ---- path_create_directory ----
+
+    private function pathCreateDirectory(array $args): array
+    {
+        $dirfd   = $args[0]->value;
+        $pathPtr = $this->addr($args[1]);
+        $pathLen = $args[2]->value;
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+        if (!$this->hasRight($dirfd, self::RIGHT_PATH_CREATE_DIRECTORY)) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        if (str_contains($relPath, "\0")) return $this->err(Errno::INVAL);
+
+        $sandboxErr = $this->checkSandbox($dirfd, $relPath);
+        if ($sandboxErr !== null) return $this->err($sandboxErr);
+
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        if (file_exists($absPath)) return $this->err(Errno::EXIST);
+
+        if (!@mkdir($absPath, 0777, true)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_remove_directory ----
+
+    private function pathRemoveDirectory(array $args): array
+    {
+        $dirfd   = $args[0]->value;
+        $pathPtr = $this->addr($args[1]);
+        $pathLen = $args[2]->value;
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+        if (!$this->hasRight($dirfd, self::RIGHT_PATH_REMOVE_DIRECTORY)) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        if (!is_dir($absPath)) {
+            if (is_file($absPath) || is_link($absPath)) {
+                return $this->err(Errno::NOTDIR);
+            }
+            return $this->err(Errno::NOENT);
+        }
+
+        // Check if directory is empty
+        $contents = @scandir($absPath);
+        if ($contents !== false && count($contents) > 2) { // . and ..
+            return $this->err(Errno::NOTEMPTY);
+        }
+
+        if (!@rmdir($absPath)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_unlink_file ----
+
+    private function pathUnlinkFile(array $args): array
+    {
+        $dirfd   = $args[0]->value;
+        $pathPtr = $this->addr($args[1]);
+        $pathLen = $args[2]->value;
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+        if (!$this->hasRight($dirfd, self::RIGHT_PATH_UNLINK_FILE)) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        // Cannot unlink directories
+        if (is_dir($absPath) && !is_link($absPath)) {
+            return $this->err(Errno::ISDIR);
+        }
+
+        if (!file_exists($absPath) && !is_link($absPath)) {
+            return $this->err(Errno::NOENT);
+        }
+
+        if (!@unlink($absPath)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_rename ----
+
+    private function pathRename(array $args): array
+    {
+        $oldDirfd = $args[0]->value;
+        $oldPtr   = $this->addr($args[1]);
+        $oldLen   = $args[2]->value;
+        $newDirfd = $args[3]->value;
+        $newPtr   = $this->addr($args[4]);
+        $newLen   = $args[5]->value;
+
+        if (!isset($this->preopens[$oldDirfd])) return $this->err(Errno::BADF);
+        if (!isset($this->preopens[$newDirfd])) return $this->err(Errno::BADF);
+
+        $mem     = $this->mem();
+        $oldRel  = substr($mem->rawBytes(), $oldPtr, $oldLen);
+        $newRel  = substr($mem->rawBytes(), $newPtr, $newLen);
+        $oldPath = $this->resolvePath($oldDirfd, $oldRel);
+        $newPath = $this->resolvePath($newDirfd, $newRel);
+        if ($oldPath === null || $newPath === null) return $this->err(Errno::BADF);
+
+        if (!file_exists($oldPath) && !is_link($oldPath)) {
+            return $this->err(Errno::NOENT);
+        }
+
+        // Can't rename file to existing directory
+        if (is_file($oldPath) && is_dir($newPath)) {
+            return $this->err(Errno::ISDIR);
+        }
+
+        // Can't rename directory to existing file
+        if (is_dir($oldPath) && is_file($newPath)) {
+            return $this->err(Errno::NOTDIR);
+        }
+
+        // Can't rename directory to non-empty directory
+        if (is_dir($oldPath) && is_dir($newPath)) {
+            $contents = @scandir($newPath);
+            if ($contents !== false && count($contents) > 2) {
+                return $this->err(Errno::NOTEMPTY);
+            }
+        }
+
+        if (!@rename($oldPath, $newPath)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_symlink ----
+
+    private function pathSymlink(array $args): array
+    {
+        $oldPathPtr = $this->addr($args[0]);
+        $oldPathLen = $args[1]->value;
+        $dirfd      = $args[2]->value;
+        $newPathPtr = $this->addr($args[3]);
+        $newPathLen = $args[4]->value;
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+        if (!$this->hasRight($dirfd, self::RIGHT_PATH_SYMLINK)) {
+            return $this->err(Errno::NOTCAPABLE);
+        }
+
+        $mem     = $this->mem();
+        $target  = substr($mem->rawBytes(), $oldPathPtr, $oldPathLen);
+        $linkRel = substr($mem->rawBytes(), $newPathPtr, $newPathLen);
+
+        // Reject link names ending with /
+        if (str_ends_with($linkRel, '/')) {
+            return $this->err(Errno::NOENT);
+        }
+
+        $linkPath = $this->resolvePath($dirfd, $linkRel);
+        if ($linkPath === null) return $this->err(Errno::BADF);
+
+        // Reject absolute targets
+        if (str_starts_with($target, '/')) {
+            return $this->err(Errno::PERM);
+        }
+
+        if (file_exists($linkPath) || is_link($linkPath)) {
+            return $this->err(Errno::EXIST);
+        }
+
+        if (!@symlink($target, $linkPath)) {
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_readlink ----
+
+    private function pathReadlink(array $args): array
+    {
+        $dirfd   = $args[0]->value;
+        $pathPtr = $this->addr($args[1]);
+        $pathLen = $args[2]->value;
+        $bufPtr  = $this->addr($args[3]);
+        $bufLen  = $args[4]->value;
+        $usedPtr = $this->addr($args[5]);
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        $target = @readlink($absPath);
+        if ($target === false) {
+            return $this->err(Errno::INVAL);
+        }
+
+        $mem  = $this->mem();
+        $used = min(strlen($target), $bufLen);
+        if ($used > 0) {
+            $mem->init($bufPtr, substr($target, 0, $used));
+        }
+        $mem->storeI32($usedPtr, $used);
+        return $this->ok();
+    }
+
+    // ---- path_link ----
+
+    private function pathLink(array $args): array
+    {
+        $oldDirfd = $args[0]->value;
+        $oldFlags = $args[1]->value; // lookupflags
+        $oldPtr   = $this->addr($args[2]);
+        $oldLen   = $args[3]->value;
+        $newDirfd = $args[4]->value;
+        $newPtr   = $this->addr($args[5]);
+        $newLen   = $args[6]->value;
+
+        if (!isset($this->preopens[$oldDirfd])) return $this->err(Errno::BADF);
+        if (!isset($this->preopens[$newDirfd])) return $this->err(Errno::BADF);
+
+        $mem     = $this->mem();
+        $oldRel  = substr($mem->rawBytes(), $oldPtr, $oldLen);
+        $newRel  = substr($mem->rawBytes(), $newPtr, $newLen);
+        $oldPath = $this->resolvePath($oldDirfd, $oldRel);
+        $newPath = $this->resolvePath($newDirfd, $newRel);
+        if ($oldPath === null || $newPath === null) return $this->err(Errno::BADF);
+
+        if (!file_exists($oldPath) && !is_link($oldPath)) return $this->err(Errno::NOENT);
+        if (is_dir($oldPath) && !is_link($oldPath)) return $this->err(Errno::PERM);
+
+        // Trailing slash in new path — the parent must exist
+        if (str_ends_with($newRel, '/')) {
+            return $this->err(Errno::NOENT);
+        }
+
+        if (file_exists($newPath)) return $this->err(Errno::EXIST);
+
+        if (!@link($oldPath, $newPath)) {
+            // Check for common errors
+            if (!file_exists(dirname($newPath))) return $this->err(Errno::NOENT);
+            return $this->err(Errno::IO);
+        }
+        return $this->ok();
+    }
+
+    // ---- path_filestat_get ----
+
+    private function pathFilestatGet(array $args): array
+    {
+        $dirfd    = $args[0]->value;
+        $flags    = $args[1]->value; // lookupflags
+        $pathPtr  = $this->addr($args[2]);
+        $pathLen  = $args[3]->value;
+        $statPtr  = $this->addr($args[4]);
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+
+        $followSymlinks = ($flags & self::LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
+
+        if ($followSymlinks) {
+            $stat = @stat($absPath);
+        } else {
+            $stat = @lstat($absPath);
+        }
+
+        if ($stat === false) {
+            return $this->err(Errno::NOENT);
+        }
+
+        $filetype = $this->filetypeFromPath($absPath, $followSymlinks);
+        $this->writeFilestat($statPtr, $stat, $filetype);
+        return $this->ok();
+    }
+
+    // ---- path_filestat_set_times ----
+
+    private function pathFilestatSetTimes(array $args): array
+    {
+        $dirfd    = $args[0]->value;
+        $flags    = $args[1]->value; // lookupflags
+        $pathPtr  = $this->addr($args[2]);
+        $pathLen  = $args[3]->value;
+        $atim     = $args[4]->value; // i64
+        $mtim     = $args[5]->value; // i64
+        $fstflags = $args[6]->value;
+
+        if (!isset($this->preopens[$dirfd])) return $this->err(Errno::BADF);
+
+        // Validate flags
+        if (($fstflags & self::FSTFLAGS_ATIM) && ($fstflags & self::FSTFLAGS_ATIM_NOW)) {
+            return $this->err(Errno::INVAL);
+        }
+        if (($fstflags & self::FSTFLAGS_MTIM) && ($fstflags & self::FSTFLAGS_MTIM_NOW)) {
+            return $this->err(Errno::INVAL);
+        }
+
+        $relPath = substr($this->mem()->rawBytes(), $pathPtr, $pathLen);
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->err(Errno::BADF);
+        if (!file_exists($absPath)) return $this->err(Errno::NOENT);
+
+        $now = time();
+        $currentStat = @stat($absPath);
+        $newAtime = $currentStat ? $currentStat['atime'] : $now;
+        $newMtime = $currentStat ? $currentStat['mtime'] : $now;
+
+        if ($fstflags & self::FSTFLAGS_ATIM_NOW) {
+            $newAtime = $now;
+        } elseif ($fstflags & self::FSTFLAGS_ATIM) {
+            $newAtime = (int)($atim / 1_000_000_000);
+        }
+
+        if ($fstflags & self::FSTFLAGS_MTIM_NOW) {
+            $newMtime = $now;
+        } elseif ($fstflags & self::FSTFLAGS_MTIM) {
+            $newMtime = (int)($mtim / 1_000_000_000);
+        }
+
+        @touch($absPath, $newMtime, $newAtime);
+        return $this->ok();
+    }
+
+    // ---- poll_oneoff ----
+
+    private function pollOneoff(array $args): array
+    {
+        $inPtr    = $this->addr($args[0]);
+        $outPtr   = $this->addr($args[1]);
+        $nsubsc   = $args[2]->value;
+        $nevtsPtr = $this->addr($args[3]);
+
+        $mem = $this->mem();
+
+        // subscription struct layout (48 bytes):
+        //   0: userdata (u64)
+        //   8: u.tag (u8) — 0=clock, 1=fd_read, 2=fd_write
+        //  16: u.u (tagged union, 32 bytes)
+        //     clock: id(u32@16) + pad + timeout(u64@24) + precision(u64@32) + flags(u16@40)
+        //     fd_read/write: file_descriptor(u32@16)
+
+        // event struct layout (32 bytes):
+        //   0: userdata (u64)
+        //   8: error (u16)
+        //  10: type (u8)
+        //  16: fd_readwrite union (16 bytes) — nbytes(u64@16) + flags(u16@24)
+
+        // Parse all subscriptions
+        $clockSubs = [];
+        $fdSubs = [];
+        for ($i = 0; $i < $nsubsc; $i++) {
+            $subBase  = $inPtr + $i * 48;
+            $userdata = $mem->loadI64($subBase);
+            $type     = $mem->loadI8u($subBase + 8);
+            if ($type === 0) {
+                $clockSubs[] = ['userdata' => $userdata, 'type' => $type];
+            } else {
+                $fd = $mem->loadU32($subBase + 16);
+                $fdSubs[] = ['userdata' => $userdata, 'type' => $type, 'fd' => $fd];
+            }
+        }
+
+        $nevts = 0;
+
+        // Check FD readiness first — stdout/stderr are always writable
+        $hasFdReady = false;
+        foreach ($fdSubs as $sub) {
+            $ready = false;
+            if ($sub['type'] === 2) {
+                // fd_write: stdout/stderr always writable, files always writable
+                $ready = true;
+            } elseif ($sub['type'] === 1) {
+                // fd_read: check if readable (stdin might not be)
+                $fd = $sub['fd'];
+                $resource = $this->fdResource($fd);
+                if ($resource !== null && $fd !== 0) {
+                    // Files are always readable
+                    $ready = true;
+                }
+                // stdin: not ready in non-interactive mode
+            }
+
+            if ($ready) {
+                $hasFdReady = true;
+                $evtBase = $outPtr + $nevts * 32;
+                for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                $mem->storeI64($evtBase, $sub['userdata']);
+                $mem->storeI8($evtBase + 10, $sub['type'] & 0xFF);
+                $nevts++;
+            }
+        }
+
+        // Only fire clock events if no fd events are ready
+        if (!$hasFdReady) {
+            foreach ($clockSubs as $sub) {
+                $evtBase = $outPtr + $nevts * 32;
+                for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                $mem->storeI64($evtBase, $sub['userdata']);
+                $mem->storeI8($evtBase + 10, 0); // clock type
+                $nevts++;
+            }
+        }
+
+        // Ensure at least one event
+        if ($nevts === 0 && count($clockSubs) > 0) {
+            $sub = $clockSubs[0];
+            $evtBase = $outPtr;
+            for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+            $mem->storeI64($evtBase, $sub['userdata']);
+            $mem->storeI8($evtBase + 10, 0);
+            $nevts = 1;
+        }
+
+        $mem->storeI32($nevtsPtr, $nevts);
+        return $this->ok();
+    }
+
+    // ---- args_sizes_get ----
+
     private function argsSizesGet(array $args): array
     {
-        $argcPtr       = $this->addr($args[0]);
+        $argcPtr        = $this->addr($args[0]);
         $argvBufSizePtr = $this->addr($args[1]);
 
         $mem     = $this->mem();
@@ -431,12 +1770,8 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * args_get(argv_ptr, argv_buf_ptr) -> errno
-     *
-     * argv_ptr points to an array of u32 pointers (one per arg).
-     * argv_buf_ptr is the buffer where null-terminated strings are written.
-     */
+    // ---- args_get ----
+
     private function argsGet(array $args): array
     {
         $argvPtr    = $this->addr($args[0]);
@@ -454,9 +1789,8 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * environ_sizes_get(environ_count_ptr, environ_buf_size_ptr) -> errno
-     */
+    // ---- environ_sizes_get ----
+
     private function environSizesGet(array $args): array
     {
         $countPtr   = $this->addr($args[0]);
@@ -473,11 +1807,8 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * environ_get(environ_ptr, environ_buf_ptr) -> errno
-     *
-     * environ_ptr: array of u32 pointers to "KEY=VALUE\0" strings.
-     */
+    // ---- environ_get ----
+
     private function environGet(array $args): array
     {
         $environPtr    = $this->addr($args[0]);
@@ -498,26 +1829,36 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * clock_time_get(clock_id, precision, time_ptr) -> errno
-     * clock_id: 0=realtime, 1=monotonic
-     * time_ptr: pointer to write u64 nanoseconds
-     */
+    // ---- clock_time_get ----
+
     private function clockTimeGet(array $args): array
     {
-        // $clockId   = $args[0]->value; // 0=realtime, 1=monotonic
+        $clockId = $args[0]->value;
         // $precision = $args[1]->value; // i64, ignored
         $timePtr = $this->addr($args[2]);
 
-        // hrtime(true) returns monotonic nanoseconds as int (PHP 7.3+)
-        $ns = hrtime(true);
+        $ns = match ($clockId) {
+            0       => (int)(microtime(true) * 1_000_000_000), // realtime
+            default => hrtime(true),                            // monotonic
+        };
         $this->mem()->storeI64($timePtr, $ns);
         return $this->ok();
     }
 
-    /**
-     * random_get(buf_ptr, buf_len) -> errno
-     */
+    // ---- clock_res_get ----
+
+    private function clockResGet(array $args): array
+    {
+        $clockId   = $args[0]->value;
+        $resoPtr   = $this->addr($args[1]);
+
+        // Report 1 microsecond resolution
+        $this->mem()->storeI64($resoPtr, 1000);
+        return $this->ok();
+    }
+
+    // ---- random_get ----
+
     private function randomGet(array $args): array
     {
         $bufPtr = $this->addr($args[0]);
@@ -527,10 +1868,8 @@ final class Wasi
         return $this->ok();
     }
 
-    /**
-     * proc_exit(exit_code)
-     * Throws WasiExitException; catch it in the host to read the exit code.
-     */
+    // ---- proc_exit ----
+
     private function procExit(array $args): array
     {
         throw new WasiExitException($args[0]->value & 0xFF);
