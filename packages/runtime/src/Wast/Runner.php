@@ -345,7 +345,7 @@ final class Runner
                 }
             }
             $cmd = sprintf(
-                '%s --enable-all %s -o %s 2>&1',
+                '%s --enable-tail-call --enable-extended-const --enable-gc --enable-function-references --enable-exceptions %s -o %s 2>&1',
                 escapeshellarg($wat2wasm),
                 escapeshellarg($tmpWat),
                 escapeshellarg($tmpWasm)
