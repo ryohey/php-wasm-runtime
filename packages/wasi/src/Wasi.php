@@ -378,8 +378,62 @@ final class Wasi
         return self::FILETYPE_UNKNOWN;
     }
 
+    /**
+     * Get nanosecond-precision timestamps for a file path using Python.
+     * Falls back to PHP stat() (second precision) if Python is unavailable.
+     *
+     * @param bool $followSymlinks If true, use os.stat (follows symlinks); if false, use os.lstat.
+     * @return array{atime_ns: int, mtime_ns: int, ctime_ns: int}|null
+     */
+    private function statNs(string $path, bool $followSymlinks = false): ?array
+    {
+        $escaped = escapeshellarg($path);
+        $func = $followSymlinks ? 'os.stat' : 'os.lstat';
+        $cmd = "python3 -c " . escapeshellarg(
+            "import os; s = {$func}({$escaped}); print(s.st_atime_ns, s.st_mtime_ns, s.st_ctime_ns)"
+        );
+        $output = @shell_exec($cmd);
+        if ($output !== null && $output !== false) {
+            $parts = explode(' ', trim($output));
+            if (count($parts) === 3) {
+                return [
+                    'atime_ns' => (int)$parts[0],
+                    'mtime_ns' => (int)$parts[1],
+                    'ctime_ns' => (int)$parts[2],
+                ];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Set nanosecond-precision atime/mtime on a file using Python's os.utime.
+     * Falls back to PHP touch() (second precision) if Python is unavailable.
+     *
+     * @param string $path File path
+     * @param int $atimeNs Access time in nanoseconds
+     * @param int $mtimeNs Modification time in nanoseconds
+     * @param bool $followSymlinks Whether to follow symlinks
+     * @return bool Success
+     */
+    private function utimeNs(string $path, int $atimeNs, int $mtimeNs, bool $followSymlinks = true): bool
+    {
+        $escaped = escapeshellarg($path);
+        $follow = $followSymlinks ? 'True' : 'False';
+        $cmd = "python3 -c " . escapeshellarg(
+            "import os; os.utime({$escaped}, ns=({$atimeNs}, {$mtimeNs}), follow_symlinks={$follow})"
+        );
+        $ret = null;
+        @exec($cmd, $output, $ret);
+        if ($ret === 0) {
+            return true;
+        }
+        // Fall back to PHP touch (second precision)
+        return @touch($path, (int)($mtimeNs / 1_000_000_000), (int)($atimeNs / 1_000_000_000));
+    }
+
     /** Write a 64-byte filestat struct to memory */
-    private function writeFilestat(int $ptr, array $stat, int $filetype): void
+    private function writeFilestat(int $ptr, array $stat, int $filetype, ?string $path = null, bool $followSymlinks = true): void
     {
         $mem = $this->mem();
         $mem->storeI64($ptr + 0, $stat['dev'] ?? 0);          // dev
@@ -389,13 +443,21 @@ final class Wasi
         for ($i = 17; $i < 24; $i++) $mem->storeI8($ptr + $i, 0);
         $mem->storeI64($ptr + 24, $stat['nlink'] ?? 1);       // nlink
         $mem->storeI64($ptr + 32, $stat['size'] ?? 0);        // size
-        // Use second-precision timestamps from stat, converted to nanoseconds
-        $atimNs = ($stat['atime'] ?? 0) * 1_000_000_000;
-        $mtimNs = ($stat['mtime'] ?? 0) * 1_000_000_000;
-        $ctimNs = ($stat['ctime'] ?? 0) * 1_000_000_000;
-        $mem->storeI64($ptr + 40, (int)$atimNs);              // atim
-        $mem->storeI64($ptr + 48, (int)$mtimNs);              // mtim
-        $mem->storeI64($ptr + 56, (int)$ctimNs);              // ctim
+
+        // Try nanosecond-precision timestamps via Python, fall back to PHP stat seconds
+        $nsData = ($path !== null) ? $this->statNs($path, $followSymlinks) : null;
+        if ($nsData !== null) {
+            $atimNs = $nsData['atime_ns'];
+            $mtimNs = $nsData['mtime_ns'];
+            $ctimNs = $nsData['ctime_ns'];
+        } else {
+            $atimNs = (int)(($stat['atime'] ?? 0) * 1_000_000_000);
+            $mtimNs = (int)(($stat['mtime'] ?? 0) * 1_000_000_000);
+            $ctimNs = (int)(($stat['ctime'] ?? 0) * 1_000_000_000);
+        }
+        $mem->storeI64($ptr + 40, $atimNs);                   // atim
+        $mem->storeI64($ptr + 48, $mtimNs);                   // mtim
+        $mem->storeI64($ptr + 56, $ctimNs);                   // ctim
     }
 
     /** Check that fd has the given right */
@@ -859,7 +921,7 @@ final class Wasi
             $path = $this->preopens[$fd];
             $stat = @stat($path);
             if ($stat === false) return $this->err(Errno::IO);
-            $this->writeFilestat($statPtr, $stat, self::FILETYPE_DIRECTORY);
+            $this->writeFilestat($statPtr, $stat, self::FILETYPE_DIRECTORY, $path);
             return $this->ok();
         }
 
@@ -871,7 +933,13 @@ final class Wasi
             $stat = @fstat($resource);
             if ($stat === false) return $this->err(Errno::IO);
             $filetype = $this->fdTypes[$fd] ?? self::FILETYPE_REGULAR_FILE;
-            $this->writeFilestat($statPtr, $stat, $filetype);
+            // Get file path for nanosecond-precision timestamps
+            $filePath = null;
+            $meta = @stream_get_meta_data($resource);
+            if ($meta !== false && isset($meta['uri'])) {
+                $filePath = $meta['uri'];
+            }
+            $this->writeFilestat($statPtr, $stat, $filetype, $filePath);
             return $this->ok();
         }
 
@@ -934,24 +1002,34 @@ final class Wasi
         }
         if ($path === null) return $this->err(Errno::BADF);
 
-        $now = time();
-        $currentStat = @stat($path);
-        $newAtime = $currentStat ? $currentStat['atime'] : $now;
-        $newMtime = $currentStat ? $currentStat['mtime'] : $now;
+        // Get current timestamps in nanoseconds
+        $nsData = $this->statNs($path);
+        if ($nsData !== null) {
+            $curAtimeNs = $nsData['atime_ns'];
+            $curMtimeNs = $nsData['mtime_ns'];
+        } else {
+            $currentStat = @stat($path);
+            $curAtimeNs = ($currentStat ? $currentStat['atime'] : time()) * 1_000_000_000;
+            $curMtimeNs = ($currentStat ? $currentStat['mtime'] : time()) * 1_000_000_000;
+        }
+
+        $nowNs = (int)(microtime(true) * 1_000_000_000);
+        $newAtimeNs = $curAtimeNs;
+        $newMtimeNs = $curMtimeNs;
 
         if ($fstflags & self::FSTFLAGS_ATIM_NOW) {
-            $newAtime = $now;
+            $newAtimeNs = $nowNs;
         } elseif ($fstflags & self::FSTFLAGS_ATIM) {
-            $newAtime = (int)($atim / 1_000_000_000);
+            $newAtimeNs = $atim;
         }
 
         if ($fstflags & self::FSTFLAGS_MTIM_NOW) {
-            $newMtime = $now;
+            $newMtimeNs = $nowNs;
         } elseif ($fstflags & self::FSTFLAGS_MTIM) {
-            $newMtime = (int)($mtim / 1_000_000_000);
+            $newMtimeNs = $mtim;
         }
 
-        @touch($path, $newMtime, $newAtime);
+        $this->utimeNs($path, $newAtimeNs, $newMtimeNs);
         return $this->ok();
     }
 
@@ -1561,6 +1639,17 @@ final class Wasi
         $newPath = $this->resolvePath($newDirfd, $newRel);
         if ($oldPath === null || $newPath === null) return $this->err(Errno::BADF);
 
+        // Determine if we should follow symlinks (create hardlink to target)
+        $followSymlinks = ($oldFlags & self::LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
+
+        if ($followSymlinks && is_link($oldPath)) {
+            // Following a dangling symlink → target doesn't exist
+            $target = @readlink($oldPath);
+            if ($target === false || !file_exists($oldPath)) {
+                return $this->err(Errno::NOENT);
+            }
+        }
+
         if (!file_exists($oldPath) && !is_link($oldPath)) return $this->err(Errno::NOENT);
         if (is_dir($oldPath) && !is_link($oldPath)) return $this->err(Errno::PERM);
 
@@ -1569,12 +1658,28 @@ final class Wasi
             return $this->err(Errno::NOENT);
         }
 
-        if (file_exists($newPath)) return $this->err(Errno::EXIST);
+        if (file_exists($newPath) || is_link($newPath)) return $this->err(Errno::EXIST);
 
-        if (!@link($oldPath, $newPath)) {
-            // Check for common errors
-            if (!file_exists(dirname($newPath))) return $this->err(Errno::NOENT);
-            return $this->err(Errno::IO);
+        if (!$followSymlinks && is_link($oldPath)) {
+            // PHP link() follows symlinks. For no-follow semantics on symlinks,
+            // use Python's os.link with follow_symlinks=False to hardlink the symlink itself.
+            $escaped_old = escapeshellarg($oldPath);
+            $escaped_new = escapeshellarg($newPath);
+            $cmd = "python3 -c " . escapeshellarg(
+                "import os; os.link({$escaped_old}, {$escaped_new}, follow_symlinks=False)"
+            );
+            $ret = null;
+            @exec($cmd, $output, $ret);
+            if ($ret !== 0) {
+                if (!file_exists(dirname($newPath))) return $this->err(Errno::NOENT);
+                return $this->err(Errno::IO);
+            }
+        } else {
+            if (!@link($oldPath, $newPath)) {
+                // Check for common errors
+                if (!file_exists(dirname($newPath))) return $this->err(Errno::NOENT);
+                return $this->err(Errno::IO);
+            }
         }
         return $this->ok();
     }
@@ -1608,7 +1713,7 @@ final class Wasi
         }
 
         $filetype = $this->filetypeFromPath($absPath, $followSymlinks);
-        $this->writeFilestat($statPtr, $stat, $filetype);
+        $this->writeFilestat($statPtr, $stat, $filetype, $absPath, $followSymlinks);
         return $this->ok();
     }
 
@@ -1639,24 +1744,36 @@ final class Wasi
         if ($absPath === null) return $this->err(Errno::BADF);
         if (!file_exists($absPath)) return $this->err(Errno::NOENT);
 
-        $now = time();
-        $currentStat = @stat($absPath);
-        $newAtime = $currentStat ? $currentStat['atime'] : $now;
-        $newMtime = $currentStat ? $currentStat['mtime'] : $now;
+        $followSymlinks = ($flags & self::LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
+
+        // Get current timestamps in nanoseconds
+        $nsData = $this->statNs($absPath);
+        if ($nsData !== null) {
+            $curAtimeNs = $nsData['atime_ns'];
+            $curMtimeNs = $nsData['mtime_ns'];
+        } else {
+            $currentStat = @stat($absPath);
+            $curAtimeNs = ($currentStat ? $currentStat['atime'] : time()) * 1_000_000_000;
+            $curMtimeNs = ($currentStat ? $currentStat['mtime'] : time()) * 1_000_000_000;
+        }
+
+        $nowNs = (int)(microtime(true) * 1_000_000_000);
+        $newAtimeNs = $curAtimeNs;
+        $newMtimeNs = $curMtimeNs;
 
         if ($fstflags & self::FSTFLAGS_ATIM_NOW) {
-            $newAtime = $now;
+            $newAtimeNs = $nowNs;
         } elseif ($fstflags & self::FSTFLAGS_ATIM) {
-            $newAtime = (int)($atim / 1_000_000_000);
+            $newAtimeNs = $atim;
         }
 
         if ($fstflags & self::FSTFLAGS_MTIM_NOW) {
-            $newMtime = $now;
+            $newMtimeNs = $nowNs;
         } elseif ($fstflags & self::FSTFLAGS_MTIM) {
-            $newMtime = (int)($mtim / 1_000_000_000);
+            $newMtimeNs = $mtim;
         }
 
-        @touch($absPath, $newMtime, $newAtime);
+        $this->utimeNs($absPath, $newAtimeNs, $newMtimeNs, $followSymlinks);
         return $this->ok();
     }
 

@@ -31,6 +31,9 @@ final class WasmRuntimeCLI
 {
     public function run(array $argv): int
     {
+        Profiler::setMeta('entrypoint', 'cli');
+        Profiler::setMeta('argvCount', count($argv));
+
         $args = array_slice($argv, 1);
 
         if (count($args) === 0 || in_array($args[0], ['-h', '--help'], true)) {
@@ -60,6 +63,7 @@ final class WasmRuntimeCLI
         }
 
         $file = array_shift($args);
+        Profiler::setMeta('inputFile', $file);
 
         if (!file_exists($file)) {
             fwrite(STDERR, "Error: file not found: $file\n");

@@ -25,7 +25,7 @@ A WebAssembly runtime implemented in pure PHP. No C extensions required — PHP 
 | Exports | Functions, memory, tables, and globals |
 | Bulk memory | `memory.fill`, `memory.copy`, `memory.init`, `data.drop` |
 | Bulk table | `table.fill`, `table.copy`, `table.init`, `elem.drop` |
-| WASI | `fd_read/write`, `path_open`, `args_get`, `environ_get`, `clock_time_get`, `random_get`, `proc_exit`, … |
+| WASI | Full `wasi_snapshot_preview1` — 46/46 official tests passing (fd I/O, filesystem, symlinks, poll, rights) |
 
 ## Architecture
 
@@ -250,7 +250,7 @@ cargo build --manifest-path=tests/rust/wasm32-wasip1/Cargo.toml --target=wasm32-
 php scripts/wasi-tests/run.php
 ```
 
-See `WASI_COVERAGE.md` for detailed results (9/46 passing).
+See `WASI_COVERAGE.md` for detailed results (46/46 passing).
 
 ## WASI support
 
@@ -260,20 +260,24 @@ Implements `wasi_snapshot_preview1` with the following syscalls:
 |---|---|
 | `args_get` / `args_sizes_get` | ✅ |
 | `environ_get` / `environ_sizes_get` | ✅ |
-| `clock_time_get` | ✅ |
+| `clock_time_get` / `clock_res_get` | ✅ |
 | `random_get` | ✅ |
 | `proc_exit` | ✅ |
-| `fd_read` / `fd_write` | ✅ |
-| `fd_close` / `fd_seek` | ✅ |
-| `fd_fdstat_get` | ✅ Basic |
+| `fd_read` / `fd_write` / `fd_pread` / `fd_pwrite` | ✅ |
+| `fd_close` / `fd_seek` / `fd_tell` | ✅ |
+| `fd_fdstat_get` / `fd_fdstat_set_flags` / `fd_fdstat_set_rights` | ✅ |
+| `fd_filestat_get` / `fd_filestat_set_size` / `fd_filestat_set_times` | ✅ |
 | `fd_prestat_get` / `fd_prestat_dir_name` | ✅ |
-| `path_open` | ✅ Basic |
-| `fd_filestat_get` / `path_filestat_get` | ❌ Not yet |
-| `fd_readdir` | ❌ Not yet |
-| `path_create_directory` / `path_remove_directory` | ❌ Not yet |
-| `path_symlink` / `path_readlink` / `path_link` | ❌ Not yet |
-| `path_rename` / `path_unlink_file` | ❌ Not yet |
-| `poll_oneoff` | ❌ Not yet |
+| `fd_readdir` | ✅ |
+| `fd_renumber` / `fd_advise` / `fd_allocate` | ✅ |
+| `fd_sync` / `fd_datasync` | ✅ |
+| `path_open` | ✅ |
+| `path_filestat_get` / `path_filestat_set_times` | ✅ |
+| `path_create_directory` / `path_remove_directory` | ✅ |
+| `path_symlink` / `path_readlink` / `path_link` | ✅ |
+| `path_rename` / `path_unlink_file` | ✅ |
+| `poll_oneoff` | ✅ |
+| `sched_yield` | ✅ |
 
 See `WASI_COVERAGE.md` for full test results and implementation details.
 
@@ -283,4 +287,5 @@ See `WASI_COVERAGE.md` for full test results and implementation details.
 - Proposals (SIMD, threads, exceptions, GC, typed function references) are not supported
 - NaN bit-pattern propagation is simplified (PHP float limitation)
 - Multi-module linking has partial support (some imports.wast/linking.wast cases fail)
-- WASI filesystem operations are partially implemented (basic read/write/open; no stat, readdir, symlinks)
+- WASI nanosecond-precision timestamps require Python 3 (falls back to second precision without it)
+- WASI `path_link` with symlinks requires Python 3 on macOS (PHP `link()` follows symlinks)

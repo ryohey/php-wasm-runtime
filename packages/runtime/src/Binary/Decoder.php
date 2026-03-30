@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WasmRuntime\Binary;
 
-use WasmRuntime\{FuncType, Module, ValType, WasmError, WasmValue};
+use WasmRuntime\{FuncType, Module, Profiler, ValType, WasmError, WasmValue};
 
 /**
  * Decodes a WebAssembly binary (.wasm) into a Module.
@@ -24,44 +24,73 @@ final class Decoder
      */
     public function decode(string $bytes): Module
     {
-        $r = new BinaryReader($bytes);
-        $this->mod = new Module();
+        Profiler::enter('decoder.decode');
+        try {
+            $r = new BinaryReader($bytes);
+            $this->mod = new Module();
 
-        // ---- Header ----
-        $magic = $r->readBytes(4);
-        if ($magic !== "\x00asm") {
-            throw new WasmError('magic header not detected');
+            // ---- Header ----
+            $magic = $r->readBytes(4);
+            if ($magic !== "\x00asm") {
+                throw new WasmError('magic header not detected');
+            }
+            $version = unpack('V', $r->readBytes(4))[1];
+            if ($version !== 1) {
+                throw new WasmError("unknown binary version: $version");
+            }
+
+            // ---- Sections ----
+            while (!$r->eof()) {
+                $sectionId = $r->readByte();
+                $sectionLen = $r->readU32();
+                $sub = $r->subReader($sectionLen);
+                $sectionStart = hrtime(true);
+
+                match ($sectionId) {
+                    0  => $this->decodeCustomSection($sub),
+                    1  => $this->decodeTypeSection($sub),
+                    2  => $this->decodeImportSection($sub),
+                    3  => $this->decodeFunctionSection($sub),
+                    4  => $this->decodeTableSection($sub),
+                    5  => $this->decodeMemorySection($sub),
+                    6  => $this->decodeGlobalSection($sub),
+                    7  => $this->decodeExportSection($sub),
+                    8  => $this->decodeStartSection($sub),
+                    9  => $this->decodeElementSection($sub),
+                    10 => $this->decodeCodeSection($sub),
+                    11 => $this->decodeDataSection($sub),
+                    12 => $this->decodeDataCountSection($sub),
+                    default => null, // skip unknown sections
+                };
+
+                $elapsed = hrtime(true) - $sectionStart;
+                Profiler::addSectionDuration('decoder.section.' . self::sectionName($sectionId), $elapsed);
+            }
+
+            return $this->mod;
+        } finally {
+            Profiler::leave('decoder.decode');
         }
-        $version = unpack('V', $r->readBytes(4))[1];
-        if ($version !== 1) {
-            throw new WasmError("unknown binary version: $version");
-        }
+    }
 
-        // ---- Sections ----
-        while (!$r->eof()) {
-            $sectionId = $r->readByte();
-            $sectionLen = $r->readU32();
-            $sub = $r->subReader($sectionLen);
-
-            match ($sectionId) {
-                0  => $this->decodeCustomSection($sub),
-                1  => $this->decodeTypeSection($sub),
-                2  => $this->decodeImportSection($sub),
-                3  => $this->decodeFunctionSection($sub),
-                4  => $this->decodeTableSection($sub),
-                5  => $this->decodeMemorySection($sub),
-                6  => $this->decodeGlobalSection($sub),
-                7  => $this->decodeExportSection($sub),
-                8  => $this->decodeStartSection($sub),
-                9  => $this->decodeElementSection($sub),
-                10 => $this->decodeCodeSection($sub),
-                11 => $this->decodeDataSection($sub),
-                12 => $this->decodeDataCountSection($sub),
-                default => null, // skip unknown sections
-            };
-        }
-
-        return $this->mod;
+    private static function sectionName(int $sectionId): string
+    {
+        return match ($sectionId) {
+            0 => 'custom',
+            1 => 'type',
+            2 => 'import',
+            3 => 'function',
+            4 => 'table',
+            5 => 'memory',
+            6 => 'global',
+            7 => 'export',
+            8 => 'start',
+            9 => 'element',
+            10 => 'code',
+            11 => 'data',
+            12 => 'data_count',
+            default => 'unknown_' . $sectionId,
+        };
     }
 
     // =========================================================================

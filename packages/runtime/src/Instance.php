@@ -36,113 +36,118 @@ final class Instance
      */
     public static function instantiate(Module $mod, array $imports = []): self
     {
-        $inst = new self($mod);
+        Profiler::enter('instance.instantiate');
+        try {
+            $inst = new self($mod);
 
-        // ---- Process imports ----
-        $impFuncIdx = 0;
-        foreach ($mod->imports as $imp) {
-            $modName   = $imp['module'];
-            $fieldName = $imp['name'];
-            $provided  = $imports[$modName][$fieldName] ?? null;
+            // ---- Process imports ----
+            $impFuncIdx = 0;
+            foreach ($mod->imports as $imp) {
+                $modName   = $imp['module'];
+                $fieldName = $imp['name'];
+                $provided  = $imports[$modName][$fieldName] ?? null;
 
-            switch ($imp['kind']) {
-                case 'func':
-                    if ($provided === null) {
-                        $provided = static function (array $args): array { return []; };
-                    }
-                    $inst->executor->registerHostFunc($impFuncIdx, $provided);
-                    $impFuncIdx++;
-                    break;
-                case 'memory':
-                    if ($provided instanceof Memory) {
-                        $inst->memories[] = $provided;
-                    } else {
-                        $inst->memories[] = new Memory($imp['min'], $imp['max'] ?? null);
-                    }
-                    break;
-                case 'table':
-                    if ($provided instanceof Table) {
-                        $inst->tables[] = $provided;
-                    } else {
-                        $inst->tables[] = new Table($imp['min'], $imp['max'] ?? null);
-                    }
-                    break;
-                case 'global':
-                    if ($provided instanceof WasmValue) {
-                        $inst->globals[] = $provided->value;
-                    } else {
-                        $inst->globals[] = $provided ?? 0;
-                    }
-                    break;
-            }
-        }
-
-        // ---- Memories ----
-        foreach ($mod->memories as $memDef) {
-            $inst->memories[] = new Memory($memDef['min'], $memDef['max'] ?? null);
-        }
-
-        // ---- Tables ----
-        foreach ($mod->tables as $tblDef) {
-            $initVal = null;
-            if (isset($tblDef['init'])) {
-                $resolved = self::resolveConstInit($tblDef['init'], $inst->globals);
-                // -1 sentinel = null ref (from ref.null), otherwise it's a func index
-                $initVal = ($resolved === -1 || $resolved === null) ? null : $resolved;
-            }
-            $inst->tables[] = new Table($tblDef['min'], $tblDef['max'] ?? null, $initVal);
-        }
-
-        // ---- Globals ----
-        foreach ($mod->globals as $gDef) {
-            $init = $gDef['init'];
-            $inst->globals[] = self::resolveConstInit($init, $inst->globals);
-        }
-
-        // ---- Data segments ----
-        foreach ($mod->dataSegments as $ds) {
-            // Passive data segments have no memory index; they are initialized via memory.init
-            if (!empty($ds['passive'])) {
-                continue;
-            }
-            $memIdx = $ds['memIndex'];
-            $offset = (int)self::resolveConstInit($ds['offset'], $inst->globals);
-            if (!isset($inst->memories[$memIdx])) {
-                throw new WasmError("unknown memory $memIdx");
-            }
-            $inst->memories[$memIdx]->init($offset, $ds['bytes']);
-        }
-
-        // ---- Element segments ----
-        foreach ($mod->elements as $es) {
-            // Passive/declarative element segments are not applied during instantiation
-            if (!empty($es['passive'])) {
-                continue;
-            }
-            $tableIdx = $es['tableIndex'];
-            $offset   = (int)self::resolveConstInit($es['offset'], $inst->globals);
-            $table    = $inst->tables[$tableIdx] ?? null;
-            if ($table === null) {
-                throw new Trap("element segment references non-existent table $tableIdx");
-            }
-            $count = count($es['funcIndices']);
-            // Bounds check: offset + count must not exceed table size
-            if ($offset < 0 || ($offset & 0xFFFFFFFF) + $count > $table->size()) {
-                throw new Trap("out of bounds table access");
-            }
-            foreach ($es['funcIndices'] as $i => $fi) {
-                if ($fi >= 0) { // skip null references (-1)
-                    $table->set($offset + $i, $fi);
+                switch ($imp['kind']) {
+                    case 'func':
+                        if ($provided === null) {
+                            $provided = static function (array $args): array { return []; };
+                        }
+                        $inst->executor->registerHostFunc($impFuncIdx, $provided);
+                        $impFuncIdx++;
+                        break;
+                    case 'memory':
+                        if ($provided instanceof Memory) {
+                            $inst->memories[] = $provided;
+                        } else {
+                            $inst->memories[] = new Memory($imp['min'], $imp['max'] ?? null);
+                        }
+                        break;
+                    case 'table':
+                        if ($provided instanceof Table) {
+                            $inst->tables[] = $provided;
+                        } else {
+                            $inst->tables[] = new Table($imp['min'], $imp['max'] ?? null);
+                        }
+                        break;
+                    case 'global':
+                        if ($provided instanceof WasmValue) {
+                            $inst->globals[] = $provided->value;
+                        } else {
+                            $inst->globals[] = $provided ?? 0;
+                        }
+                        break;
                 }
             }
-        }
 
-        // ---- Start function ----
-        if ($mod->startFunc >= 0) {
-            $inst->executor->invoke($mod->startFunc, []);
-        }
+            // ---- Memories ----
+            foreach ($mod->memories as $memDef) {
+                $inst->memories[] = new Memory($memDef['min'], $memDef['max'] ?? null);
+            }
 
-        return $inst;
+            // ---- Tables ----
+            foreach ($mod->tables as $tblDef) {
+                $initVal = null;
+                if (isset($tblDef['init'])) {
+                    $resolved = self::resolveConstInit($tblDef['init'], $inst->globals);
+                    // -1 sentinel = null ref (from ref.null), otherwise it's a func index
+                    $initVal = ($resolved === -1 || $resolved === null) ? null : $resolved;
+                }
+                $inst->tables[] = new Table($tblDef['min'], $tblDef['max'] ?? null, $initVal);
+            }
+
+            // ---- Globals ----
+            foreach ($mod->globals as $gDef) {
+                $init = $gDef['init'];
+                $inst->globals[] = self::resolveConstInit($init, $inst->globals);
+            }
+
+            // ---- Data segments ----
+            foreach ($mod->dataSegments as $ds) {
+                // Passive data segments have no memory index; they are initialized via memory.init
+                if (!empty($ds['passive'])) {
+                    continue;
+                }
+                $memIdx = $ds['memIndex'];
+                $offset = (int)self::resolveConstInit($ds['offset'], $inst->globals);
+                if (!isset($inst->memories[$memIdx])) {
+                    throw new WasmError("unknown memory $memIdx");
+                }
+                $inst->memories[$memIdx]->init($offset, $ds['bytes']);
+            }
+
+            // ---- Element segments ----
+            foreach ($mod->elements as $es) {
+                // Passive/declarative element segments are not applied during instantiation
+                if (!empty($es['passive'])) {
+                    continue;
+                }
+                $tableIdx = $es['tableIndex'];
+                $offset   = (int)self::resolveConstInit($es['offset'], $inst->globals);
+                $table    = $inst->tables[$tableIdx] ?? null;
+                if ($table === null) {
+                    throw new Trap("element segment references non-existent table $tableIdx");
+                }
+                $count = count($es['funcIndices']);
+                // Bounds check: offset + count must not exceed table size
+                if ($offset < 0 || ($offset & 0xFFFFFFFF) + $count > $table->size()) {
+                    throw new Trap("out of bounds table access");
+                }
+                foreach ($es['funcIndices'] as $i => $fi) {
+                    if ($fi >= 0) { // skip null references (-1)
+                        $table->set($offset + $i, $fi);
+                    }
+                }
+            }
+
+            // ---- Start function ----
+            if ($mod->startFunc >= 0) {
+                $inst->executor->invoke($mod->startFunc, []);
+            }
+
+            return $inst;
+        } finally {
+            Profiler::leave('instance.instantiate');
+        }
     }
 
     /**
@@ -153,11 +158,16 @@ final class Instance
      */
     public function callExport(string $name, array $args = []): array
     {
-        $exp = $this->module->exports[$name] ?? throw new WasmError("No export '$name'");
-        if ($exp['kind'] !== 'func') {
-            throw new WasmError("Export '$name' is not a function");
+        Profiler::enter('instance.callExport');
+        try {
+            $exp = $this->module->exports[$name] ?? throw new WasmError("No export '$name'");
+            if ($exp['kind'] !== 'func') {
+                throw new WasmError("Export '$name' is not a function");
+            }
+            return $this->executor->invoke($exp['index'], $args);
+        } finally {
+            Profiler::leave('instance.callExport');
         }
-        return $this->executor->invoke($exp['index'], $args);
     }
 
     /**
