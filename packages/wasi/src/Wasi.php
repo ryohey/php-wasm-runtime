@@ -1826,14 +1826,24 @@ final class Wasi
                 // fd_write: stdout/stderr always writable, files always writable
                 $ready = true;
             } elseif ($sub['type'] === 1) {
-                // fd_read: check if readable (stdin might not be)
+                // fd_read: check if readable
                 $fd = $sub['fd'];
                 $resource = $this->fdResource($fd);
-                if ($resource !== null && $fd !== 0) {
-                    // Files are always readable
-                    $ready = true;
+                if ($resource !== null) {
+                    if ($fd === 0) {
+                        // stdin: ready if it's a TTY (interactive) or has data buffered
+                        if (stream_isatty($resource)) {
+                            $ready = true;
+                        } else {
+                            // Non-TTY stdin: check if data is available without blocking
+                            $r = [$resource]; $w = []; $e = [];
+                            $ready = @stream_select($r, $w, $e, 0) > 0;
+                        }
+                    } else {
+                        // Files are always readable
+                        $ready = true;
+                    }
                 }
-                // stdin: not ready in non-interactive mode
             }
 
             if ($ready) {
