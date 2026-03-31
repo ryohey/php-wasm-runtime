@@ -1809,7 +1809,9 @@ final class Wasi
             $userdata = $mem->loadI64($subBase);
             $type     = $mem->loadI8u($subBase + 8);
             if ($type === 0) {
-                $clockSubs[] = ['userdata' => $userdata, 'type' => $type];
+                // Parse clock subscription: extract timeout
+                $timeoutNs = $mem->loadI64($subBase + 24);
+                $clockSubs[] = ['userdata' => $userdata, 'type' => $type, 'timeout_ns' => $timeoutNs];
             } else {
                 $fd = $mem->loadU32($subBase + 16);
                 $fdSubs[] = ['userdata' => $userdata, 'type' => $type, 'fd' => $fd];
@@ -1818,46 +1820,110 @@ final class Wasi
 
         $nevts = 0;
 
-        // Check FD readiness first — stdout/stderr are always writable
-        $hasFdReady = false;
+        // Separate FD subs into immediately-ready and needs-poll categories
+        $readyFdSubs = [];
+        $pollReadFds = [];   // fd_read subs that need stream_select
+        $pollReadResources = []; // corresponding resources
+
         foreach ($fdSubs as $sub) {
-            $ready = false;
             if ($sub['type'] === 2) {
-                // fd_write: stdout/stderr always writable, files always writable
-                $ready = true;
+                // fd_write: stdout/stderr/files are always writable
+                $readyFdSubs[] = $sub;
             } elseif ($sub['type'] === 1) {
-                // fd_read: check if readable
                 $fd = $sub['fd'];
                 $resource = $this->fdResource($fd);
-                if ($resource !== null) {
-                    if ($fd === 0) {
-                        // stdin: ready if it's a TTY (interactive) or has data buffered
-                        if (stream_isatty($resource)) {
-                            $ready = true;
-                        } else {
-                            // Non-TTY stdin: check if data is available without blocking
-                            $r = [$resource]; $w = []; $e = [];
-                            $ready = @stream_select($r, $w, $e, 0) > 0;
-                        }
-                    } else {
-                        // Files are always readable
-                        $ready = true;
-                    }
+                if ($resource === null) {
+                    continue; // Invalid fd, skip
                 }
-            }
-
-            if ($ready) {
-                $hasFdReady = true;
-                $evtBase = $outPtr + $nevts * 32;
-                for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
-                $mem->storeI64($evtBase, $sub['userdata']);
-                $mem->storeI8($evtBase + 10, $sub['type'] & 0xFF);
-                $nevts++;
+                if (stream_isatty($resource)) {
+                    // TTY stdin: always report as ready (fread will block for input)
+                    $readyFdSubs[] = $sub;
+                } elseif ($fd !== 0) {
+                    // Regular files are always readable (may return EOF, that's fine)
+                    $readyFdSubs[] = $sub;
+                } else {
+                    // Non-TTY stdin: needs actual polling
+                    $pollReadFds[] = $sub;
+                    $pollReadResources[$fd] = $resource;
+                }
             }
         }
 
-        // Only fire clock events if no fd events are ready
-        if (!$hasFdReady) {
+        // If we already have fd_write events ready, check if fd_read resources
+        // are also immediately available (non-blocking check)
+        if (count($readyFdSubs) > 0 && count($pollReadResources) > 0) {
+            $read = array_values($pollReadResources);
+            $write = null;
+            $except = null;
+            $changed = @stream_select($read, $write, $except, 0, 0);
+            if ($changed !== false && $changed > 0) {
+                foreach ($pollReadFds as $sub) {
+                    $res = $pollReadResources[$sub['fd']] ?? null;
+                    if ($res !== null && in_array($res, $read, true)) {
+                        $readyFdSubs[] = $sub;
+                    }
+                }
+                $pollReadFds = [];
+                $pollReadResources = [];
+            }
+        }
+
+        // Write ready fd events
+        foreach ($readyFdSubs as $sub) {
+            $evtBase = $outPtr + $nevts * 32;
+            for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+            $mem->storeI64($evtBase, $sub['userdata']);
+            $mem->storeI8($evtBase + 10, $sub['type'] & 0xFF);
+            $nevts++;
+        }
+
+        // If there are still fd_read subs that need polling (e.g. stdin)
+        // and we don't have any ready events yet, do a blocking poll
+        if ($nevts === 0 && count($pollReadResources) > 0) {
+            // Determine timeout from clock subscriptions
+            $timeoutSec = null;
+            $timeoutUsec = 0;
+            if (count($clockSubs) > 0) {
+                // Use the smallest clock timeout
+                $minTimeoutNs = PHP_INT_MAX;
+                foreach ($clockSubs as $cs) {
+                    if ($cs['timeout_ns'] < $minTimeoutNs) {
+                        $minTimeoutNs = $cs['timeout_ns'];
+                    }
+                }
+                $timeoutSec = (int)($minTimeoutNs / 1_000_000_000);
+                $timeoutUsec = (int)(($minTimeoutNs % 1_000_000_000) / 1_000);
+            }
+
+            $read = array_values($pollReadResources);
+            $write = null;
+            $except = null;
+            $changed = @stream_select($read, $write, $except, $timeoutSec, $timeoutUsec);
+
+            if ($changed !== false && $changed > 0) {
+                // Some fds are ready
+                foreach ($pollReadFds as $sub) {
+                    $res = $pollReadResources[$sub['fd']] ?? null;
+                    if ($res !== null && in_array($res, $read, true)) {
+                        $evtBase = $outPtr + $nevts * 32;
+                        for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                        $mem->storeI64($evtBase, $sub['userdata']);
+                        $mem->storeI8($evtBase + 10, $sub['type'] & 0xFF);
+                        $nevts++;
+                    }
+                }
+            } else {
+                // Timeout expired — fire clock events
+                foreach ($clockSubs as $sub) {
+                    $evtBase = $outPtr + $nevts * 32;
+                    for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                    $mem->storeI64($evtBase, $sub['userdata']);
+                    $mem->storeI8($evtBase + 10, 0); // clock type
+                    $nevts++;
+                }
+            }
+        } elseif ($nevts === 0 && count($clockSubs) > 0) {
+            // No fd subscriptions at all, only clock — fire clock events
             foreach ($clockSubs as $sub) {
                 $evtBase = $outPtr + $nevts * 32;
                 for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
@@ -1868,13 +1934,24 @@ final class Wasi
         }
 
         // Ensure at least one event
-        if ($nevts === 0 && count($clockSubs) > 0) {
-            $sub = $clockSubs[0];
-            $evtBase = $outPtr;
-            for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
-            $mem->storeI64($evtBase, $sub['userdata']);
-            $mem->storeI8($evtBase + 10, 0);
-            $nevts = 1;
+        if ($nevts === 0) {
+            if (count($clockSubs) > 0) {
+                $sub = $clockSubs[0];
+                $evtBase = $outPtr;
+                for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                $mem->storeI64($evtBase, $sub['userdata']);
+                $mem->storeI8($evtBase + 10, 0);
+                $nevts = 1;
+            } elseif (count($fdSubs) > 0) {
+                // Last resort: report all fd subs as ready
+                foreach ($fdSubs as $sub) {
+                    $evtBase = $outPtr + $nevts * 32;
+                    for ($j = 0; $j < 32; $j++) $mem->storeI8($evtBase + $j, 0);
+                    $mem->storeI64($evtBase, $sub['userdata']);
+                    $mem->storeI8($evtBase + 10, $sub['type'] & 0xFF);
+                    $nevts++;
+                }
+            }
         }
 
         $mem->storeI32($nevtsPtr, $nevts);

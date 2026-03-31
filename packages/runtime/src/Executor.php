@@ -47,22 +47,45 @@ final class Executor
     {
         Profiler::enter('executor.invoke');
         try {
-            if (++$this->callDepth > self::MAX_CALL_DEPTH) {
-                $this->callDepth--;
-                throw Trap::callStackExhausted();
+            $rawArgs = [];
+            foreach ($args as $a) {
+                if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
+                    $rawArgs[] = null;
+                    continue;
+                }
+                $rawArgs[] = $a->value;
             }
-            try {
-                return $this->callFunction($funcIdx, $args);
-            } finally {
-                $this->callDepth--;
-            }
+
+            $rawResults = $this->invokeRaw($funcIdx, $rawArgs);
+            return $this->packResults($this->instance->module->funcType($funcIdx), $rawResults);
         } finally {
             Profiler::leave('executor.invoke');
         }
     }
 
-    /** @return WasmValue[] */
-    private function callFunction(int $funcIdx, array $args): array
+    /**
+     * @param  (int|float|null)[] $rawArgs
+     * @return (int|float|null)[]
+     */
+    private function invokeRaw(int $funcIdx, array $rawArgs): array
+    {
+        if (++$this->callDepth > self::MAX_CALL_DEPTH) {
+            $this->callDepth--;
+            throw Trap::callStackExhausted();
+        }
+
+        try {
+            return $this->callFunctionRaw($funcIdx, $rawArgs);
+        } finally {
+            $this->callDepth--;
+        }
+    }
+
+    /**
+     * @param  (int|float|null)[] $rawArgs
+     * @return (int|float|null)[]
+     */
+    private function callFunctionRaw(int $funcIdx, array $rawArgs): array
     {
         Profiler::enter('executor.callFunction');
         // Trampoline loop for tail-call optimisation (return_call / return_call_indirect).
@@ -71,10 +94,13 @@ final class Executor
         try {
             while (true) {
                 $mod = $this->instance->module;
+                $ft  = $mod->funcType($funcIdx);
 
                 if (isset($this->hostFuncs[$funcIdx])) {
-                    $r = ($this->hostFuncs[$funcIdx])($args);
-                    return is_array($r) ? $r : ($r !== null ? [$r] : []);
+                    $hostArgs = $this->packArgsForHost($ft, $rawArgs);
+                    $r = ($this->hostFuncs[$funcIdx])($hostArgs);
+                    $hostResults = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                    return $this->unpackHostResults($hostResults);
                 }
 
                 $localIdx = $funcIdx - $mod->importedFuncCount;
@@ -83,17 +109,7 @@ final class Executor
                 }
 
                 $body = $mod->funcBodies[$localIdx];
-                $ft   = $mod->funcType($funcIdx);
-
-                $locals = [];
-                foreach ($args as $a) {
-                    // Convert -1 sentinel back to PHP null for reference types
-                    if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
-                        $locals[] = null;
-                    } else {
-                        $locals[] = $a->value;
-                    }
-                }
+                $locals = $rawArgs;
                 foreach ($body['locals'] as $lt) {
                     $locals[] = match ($lt) {
                         ValType::I32, ValType::I64 => 0,
@@ -108,24 +124,11 @@ final class Executor
                 } catch (TailCallSignal $tcs) {
                     // Tail call: restart loop with new function and args (no stack growth)
                     $funcIdx = $tcs->funcIdx;
-                    $args    = $tcs->args;
+                    $rawArgs = $tcs->args;
                     continue;
                 }
 
-                $out = [];
-                foreach ($ft->results as $i => $rtype) {
-                    $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
-                    $out[] = match ($rtype) {
-                        ValType::I32 => WasmValue::i32((int)$v),
-                        ValType::I64 => WasmValue::i64((int)$v),
-                        ValType::F32 => WasmValue::f32(self::asF32($v)),
-                        ValType::F64 => WasmValue::f64((float)$v),
-                        ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
-                        ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
-                        default      => WasmValue::i32((int)$v),
-                    };
-                }
-                return $out;
+                return $rawResults;
             }
         } finally {
             Profiler::leave('executor.callFunction');
@@ -250,8 +253,8 @@ final class Executor
                 case 'call': {
                     $fIdx = $instr[1];
                     $cft  = $this->instance->module->funcType($fIdx);
-                    $cargs = $this->popCallArgs($cft, $stack);
-                    $this->pushCallResults($this->invoke($fIdx, $cargs), $stack);
+                    $cargs = $this->popRawCallArgs($cft, $stack);
+                    $this->pushRawCallResults($this->invokeRaw($fIdx, $cargs), $stack);
                     break;
                 }
 
@@ -259,7 +262,7 @@ final class Executor
                     // Tail call: call then return (same result as call + return)
                     $fIdx = $instr[1];
                     $cft  = $this->instance->module->funcType($fIdx);
-                    $cargs = $this->popCallArgs($cft, $stack);
+                    $cargs = $this->popRawCallArgs($cft, $stack);
                     throw new TailCallSignal($fIdx, $cargs);
                 }
 
@@ -268,14 +271,14 @@ final class Executor
                     $tableIdx = $instr[2] ?? 0;
                     $elemIdx  = (int)array_pop($stack);
                     $cft      = $this->instance->module->types[$typeIdx];
-                    $cargs    = $this->popCallArgs($cft, $stack);
+                    $cargs    = $this->popRawCallArgs($cft, $stack);
                     $table = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx  = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$cft->equals($this->instance->module->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
-                    $this->pushCallResults($this->invoke($fIdx, $cargs), $stack);
+                    $this->pushRawCallResults($this->invokeRaw($fIdx, $cargs), $stack);
                     break;
                 }
 
@@ -285,7 +288,7 @@ final class Executor
                     $tableIdx = $instr[2] ?? 0;
                     $elemIdx  = (int)array_pop($stack);
                     $cft      = $this->instance->module->types[$typeIdx];
-                    $cargs    = $this->popCallArgs($cft, $stack);
+                    $cargs    = $this->popRawCallArgs($cft, $stack);
                     $table = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx  = $table->get($elemIdx);
@@ -777,25 +780,44 @@ final class Executor
     // Numeric helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Pop call arguments from the value stack and convert to WasmValue[]
-     * in function signature order.
-     *
-     * @param (int|float|null)[] $stack
-     * @return WasmValue[]
-     */
-    private function popCallArgs(FuncType $ft, array &$stack): array
+    /** @param (int|float|null)[] $stack @return (int|float|null)[] */
+    private function popRawCallArgs(FuncType $ft, array &$stack): array
     {
         $pc = count($ft->params);
         if ($pc === 0) {
             return [];
         }
 
-        $args = array_fill(0, $pc, WasmValue::i32(0));
+        $args = array_fill(0, $pc, 0);
         for ($j = $pc - 1; $j >= 0; $j--) {
-            $type = $ft->params[$j];
-            $raw  = array_pop($stack);
-            $args[$j] = match ($type) {
+            $raw = array_pop($stack);
+            $args[$j] = match ($ft->params[$j]) {
+                ValType::I32 => WasmValue::mask32((int)$raw),
+                ValType::I64 => (int)$raw,
+                ValType::F32 => (float)$raw,
+                ValType::F64 => (float)$raw,
+                ValType::FUNCREF, ValType::EXTERNREF => $raw === null ? null : (int)$raw,
+                default => (int)($raw ?? 0),
+            };
+        }
+        return $args;
+    }
+
+    /** @param (int|float|null)[] $results @param (int|float|null)[] $stack */
+    private function pushRawCallResults(array $results, array &$stack): void
+    {
+        foreach ($results as $v) {
+            $stack[] = $v;
+        }
+    }
+
+    /** @param (int|float|null)[] $rawArgs @return WasmValue[] */
+    private function packArgsForHost(FuncType $ft, array $rawArgs): array
+    {
+        $out = [];
+        foreach ($ft->params as $i => $type) {
+            $raw = $rawArgs[$i] ?? 0;
+            $out[] = match ($type) {
                 ValType::I32 => WasmValue::i32((int)$raw),
                 ValType::I64 => WasmValue::i64((int)$raw),
                 ValType::F32 => WasmValue::f32((float)$raw),
@@ -805,23 +827,47 @@ final class Executor
                 default      => WasmValue::i32((int)($raw ?? 0)),
             };
         }
-
-        return $args;
+        return $out;
     }
 
     /**
-     * Push call results (WasmValue[]) back to raw value stack.
-     *
-     * @param WasmValue[] $results
-     * @param (int|float|null)[] $stack
+     * @param  array<int,mixed> $hostResults
+     * @return (int|float|null)[]
      */
-    private function pushCallResults(array $results, array &$stack): void
+    private function unpackHostResults(array $hostResults): array
     {
-        foreach ($results as $r) {
-            $stack[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
-                ? ($r->value === -1 ? null : $r->value)
-                : $r->value;
+        $out = [];
+        foreach ($hostResults as $r) {
+            if ($r instanceof WasmValue) {
+                $out[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
+                    ? ($r->value === -1 ? null : $r->value)
+                    : $r->value;
+                continue;
+            }
+            if ($r === null || is_int($r) || is_float($r)) {
+                $out[] = $r;
+            }
         }
+        return $out;
+    }
+
+    /** @param (int|float|null)[] $rawResults @return WasmValue[] */
+    private function packResults(FuncType $ft, array $rawResults): array
+    {
+        $out = [];
+        foreach ($ft->results as $i => $rtype) {
+            $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
+            $out[] = match ($rtype) {
+                ValType::I32 => WasmValue::i32((int)$v),
+                ValType::I64 => WasmValue::i64((int)$v),
+                ValType::F32 => WasmValue::f32(self::asF32($v)),
+                ValType::F64 => WasmValue::f64((float)$v),
+                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
+                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
+                default      => WasmValue::i32((int)$v),
+            };
+        }
+        return $out;
     }
 
     private static function p2i(array &$s): array { $b=(int)array_pop($s); $a=(int)array_pop($s); return [$a,$b]; }
@@ -1045,7 +1091,7 @@ final class EarlyReturn extends \Exception
 final class TailCallSignal extends \Exception
 {
     /**
-     * @param WasmValue[] $args
+     * @param (int|float|null)[] $args
      */
     public function __construct(
         public readonly int   $funcIdx,

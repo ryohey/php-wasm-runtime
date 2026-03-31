@@ -196,6 +196,28 @@ php packages/cli/bin/wasm --wasi --dir=. app.wasm arg1 arg2
 php packages/cli/bin/wasm example.wasm mul f64:3.14 f64:2.0
 ```
 
+### Runtime profiling
+
+You can profile runtime hotspots (function sections and optional opcode-level stats) with environment variables:
+
+```bash
+# Section-level profiling to stderr
+WASM_RUNTIME_PROFILE=1 \
+php packages/cli/bin/wasm --wasi qjs-wasi.wasm -q
+
+# Include opcode timing/counts and print JSON to stdout
+WASM_RUNTIME_PROFILE=1 \
+WASM_RUNTIME_PROFILE_OPCODES=1 \
+WASM_RUNTIME_PROFILE_OUT=stdout \
+php packages/cli/bin/wasm --wasi qjs-wasi.wasm -q
+```
+
+Environment variables:
+
+- `WASM_RUNTIME_PROFILE=1` enables profiling.
+- `WASM_RUNTIME_PROFILE_OPCODES=1` adds opcode-level totals (`call`, `i32.load`, etc.).
+- `WASM_RUNTIME_PROFILE_OUT` controls output target (`stderr` default, `stdout`, or a file path).
+
 ## Running tests
 
 ```bash
