@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WasmRuntime\Binary;
 
-use WasmRuntime\{FuncType, Module, Profiler, ValType, WasmError, WasmValue};
+use WasmRuntime\{FuncType, Module, Op, Profiler, ValType, WasmError, WasmValue};
 
 /**
  * Decodes a WebAssembly binary (.wasm) into a Module.
@@ -672,12 +672,24 @@ final class Decoder
      *   else:   ['else', endIp]
      *   end:    ['end']
      */
+    /**
+     * Decode expression into flat bytecode stream.
+     *
+     * Format: Op::XXX, imm1, imm2, ... (flat array, no sub-arrays per instruction)
+     *
+     * Control flow layout in the flat stream:
+     *   BLOCK: Op::BLOCK, blockType, endIp
+     *   LOOP:  Op::LOOP,  blockType, contIp, endIp
+     *   IF:    Op::IF_,   blockType, elseIp, endIp
+     *   ELSE:  Op::ELSE_, endIp
+     *   END:   Op::END
+     */
     private function decodeExpr(BinaryReader $r): array
     {
         $code = [];
 
-        // Fixup stack for control flow: each entry is
-        //   ['kind' => 'block'|'loop'|'if', 'ip' => int, 'elseIp' => ?int]
+        // Control stack: each entry is [kind, ipOfOpcode, elseIp|null]
+        // ipOfOpcode points to the Op::BLOCK/LOOP/IF_ slot in $code
         $controlStack = [];
 
         while (!$r->eof()) {
@@ -686,21 +698,19 @@ final class Decoder
             if ($opcode === 0x0B) {
                 // end
                 if (empty($controlStack)) {
-                    // End of the function/expression — emit final end
-                    $code[] = ['end'];
+                    $code[] = Op::END;
                     break;
                 }
                 $frame = array_pop($controlStack);
                 $endIp = count($code);
 
-                // Fixup the opening instruction
-                match ($frame['kind']) {
-                    'block' => $code[$frame['ip']][2] = $endIp,
-                    'loop'  => $code[$frame['ip']][3] = $endIp,
+                match ($frame[0]) {
+                    'block' => $code[$frame[1] + 2] = $endIp,          // block: fixup endIp
+                    'loop'  => $code[$frame[1] + 3] = $endIp,          // loop: fixup endIp
                     'if'    => $this->fixupIf($code, $frame, $endIp),
                 };
 
-                $code[] = ['end'];
+                $code[] = Op::END;
                 continue;
             }
 
@@ -710,9 +720,9 @@ final class Decoder
                     throw new WasmError('else without matching if');
                 }
                 $elseIp = count($code);
-                $controlStack[count($controlStack) - 1]['elseIp'] = $elseIp;
-                // We'll fixup endIp when we hit 'end'
-                $code[] = ['else', -1]; // endIp placeholder
+                $controlStack[count($controlStack) - 1][2] = $elseIp;
+                $code[] = Op::ELSE_;
+                $code[] = -1; // endIp placeholder
                 continue;
             }
 
@@ -724,15 +734,16 @@ final class Decoder
 
     private function fixupIf(array &$code, array $frame, int $endIp): void
     {
-        if ($frame['elseIp'] !== null) {
-            // if with else
-            $code[$frame['ip']][2] = $frame['elseIp']; // elseIp
-            $code[$frame['ip']][3] = $endIp;            // endIp
-            $code[$frame['elseIp']][1] = $endIp;        // else's endIp
+        $elseIp = $frame[2];
+        if ($elseIp !== null) {
+            // if with else: Op::IF_, blockType, elseIp, endIp
+            $code[$frame[1] + 2] = $elseIp;   // elseIp
+            $code[$frame[1] + 3] = $endIp;     // endIp
+            $code[$elseIp + 1] = $endIp;       // else's endIp
         } else {
             // if without else
-            $code[$frame['ip']][2] = $endIp; // elseIp = endIp
-            $code[$frame['ip']][3] = $endIp; // endIp
+            $code[$frame[1] + 2] = $endIp;     // elseIp = endIp
+            $code[$frame[1] + 3] = $endIp;     // endIp
         }
     }
 
@@ -772,290 +783,297 @@ final class Decoder
     }
 
     /**
-     * Decode a single instruction and append to $code.
+     * Decode a single instruction into flat bytecode and append to $code.
      */
     private function decodeInstruction(int $opcode, BinaryReader $r, array &$code, array &$controlStack): void
     {
         switch ($opcode) {
             // ---- Control flow ----
-            case 0x00: $code[] = ['unreachable']; break;
-            case 0x01: $code[] = ['nop']; break;
+            case 0x00: $code[] = Op::UNREACHABLE; break;
+            case 0x01: $code[] = Op::NOP; break;
 
             case 0x02: // block
                 $bt = $this->decodeBlockType($r);
                 $ip = count($code);
-                $code[] = ['block', $bt, -1]; // endIp placeholder
-                $controlStack[] = ['kind' => 'block', 'ip' => $ip, 'elseIp' => null];
+                $code[] = Op::BLOCK;
+                $code[] = $bt;
+                $code[] = -1; // endIp placeholder
+                $controlStack[] = ['block', $ip, null];
                 break;
 
             case 0x03: // loop
                 $bt = $this->decodeBlockType($r);
                 $ip = count($code);
-                $contIp = $ip + 1;
-                $code[] = ['loop', $bt, $contIp, -1]; // endIp placeholder
-                $controlStack[] = ['kind' => 'loop', 'ip' => $ip, 'elseIp' => null];
+                $code[] = Op::LOOP;
+                $code[] = $bt;
+                $code[] = $ip + 4; // contIp = first body instruction
+                $code[] = -1;      // endIp placeholder
+                $controlStack[] = ['loop', $ip, null];
                 break;
 
             case 0x04: // if
                 $bt = $this->decodeBlockType($r);
                 $ip = count($code);
-                $code[] = ['if', $bt, -1, -1]; // elseIp, endIp placeholders
-                $controlStack[] = ['kind' => 'if', 'ip' => $ip, 'elseIp' => null];
+                $code[] = Op::IF_;
+                $code[] = $bt;
+                $code[] = -1; // elseIp placeholder
+                $code[] = -1; // endIp placeholder
+                $controlStack[] = ['if', $ip, null];
                 break;
 
             // ---- Branch ----
-            case 0x0C: $code[] = ['br', $r->readU32()]; break;
-            case 0x0D: $code[] = ['br_if', $r->readU32()]; break;
+            case 0x0C: $code[] = Op::BR; $code[] = $r->readU32(); break;
+            case 0x0D: $code[] = Op::BR_IF; $code[] = $r->readU32(); break;
 
             case 0x0E: // br_table
                 $labels = $r->readVec(fn() => $r->readU32());
                 $default = $r->readU32();
-                $code[] = ['br_table', ...$labels, $default];
+                $code[] = Op::BR_TABLE;
+                $code[] = count($labels); // label count
+                foreach ($labels as $l) $code[] = $l;
+                $code[] = $default;
                 break;
 
-            case 0x0F: $code[] = ['return']; break;
+            case 0x0F: $code[] = Op::RETURN_; break;
 
             // ---- Calls ----
-            case 0x10: $code[] = ['call', $r->readU32()]; break;
+            case 0x10: $code[] = Op::CALL; $code[] = $r->readU32(); break;
 
             case 0x11: // call_indirect
                 $typeIdx  = $r->readU32();
                 $tableIdx = $r->readU32();
-                $code[] = ['call_indirect', $typeIdx, $tableIdx];
+                $code[] = Op::CALL_INDIRECT; $code[] = $typeIdx; $code[] = $tableIdx;
                 break;
 
-            case 0x12: $code[] = ['return_call', $r->readU32()]; break;
+            case 0x12: $code[] = Op::RETURN_CALL; $code[] = $r->readU32(); break;
 
             case 0x13: // return_call_indirect
                 $typeIdx  = $r->readU32();
                 $tableIdx = $r->readU32();
-                $code[] = ['return_call_indirect', $typeIdx, $tableIdx];
+                $code[] = Op::RETURN_CALL_INDIRECT; $code[] = $typeIdx; $code[] = $tableIdx;
                 break;
 
             // ---- Stack ----
-            case 0x1A: $code[] = ['drop']; break;
+            case 0x1A: $code[] = Op::DROP; break;
 
-            case 0x1B: $code[] = ['select']; break;
+            case 0x1B: $code[] = Op::SELECT; break;
 
             case 0x1C: // select (typed)
-                $r->readVec(fn() => $this->readValType($r)); // value types (ignored)
-                $code[] = ['select'];
+                $r->readVec(fn() => $this->readValType($r));
+                $code[] = Op::SELECT;
                 break;
 
             // ---- Variables ----
-            case 0x20: $code[] = ['local.get', $r->readU32()]; break;
-            case 0x21: $code[] = ['local.set', $r->readU32()]; break;
-            case 0x22: $code[] = ['local.tee', $r->readU32()]; break;
-            case 0x23: $code[] = ['global.get', $r->readU32()]; break;
-            case 0x24: $code[] = ['global.set', $r->readU32()]; break;
+            case 0x20: $code[] = Op::LOCAL_GET;  $code[] = $r->readU32(); break;
+            case 0x21: $code[] = Op::LOCAL_SET;  $code[] = $r->readU32(); break;
+            case 0x22: $code[] = Op::LOCAL_TEE;  $code[] = $r->readU32(); break;
+            case 0x23: $code[] = Op::GLOBAL_GET; $code[] = $r->readU32(); break;
+            case 0x24: $code[] = Op::GLOBAL_SET; $code[] = $r->readU32(); break;
 
             // ---- Table ----
-            case 0x25: $code[] = ['table.get', $r->readU32()]; break;
-            case 0x26: $code[] = ['table.set', $r->readU32()]; break;
+            case 0x25: $code[] = Op::TABLE_GET; $code[] = $r->readU32(); break;
+            case 0x26: $code[] = Op::TABLE_SET; $code[] = $r->readU32(); break;
 
             // ---- Memory load ----
-            case 0x28: $code[] = ['i32.load',    $this->readMemArg($r)]; break;
-            case 0x29: $code[] = ['i64.load',    $this->readMemArg($r)]; break;
-            case 0x2A: $code[] = ['f32.load',    $this->readMemArg($r)]; break;
-            case 0x2B: $code[] = ['f64.load',    $this->readMemArg($r)]; break;
-            case 0x2C: $code[] = ['i32.load8_s', $this->readMemArg($r)]; break;
-            case 0x2D: $code[] = ['i32.load8_u', $this->readMemArg($r)]; break;
-            case 0x2E: $code[] = ['i32.load16_s',$this->readMemArg($r)]; break;
-            case 0x2F: $code[] = ['i32.load16_u',$this->readMemArg($r)]; break;
-            case 0x30: $code[] = ['i64.load8_s', $this->readMemArg($r)]; break;
-            case 0x31: $code[] = ['i64.load8_u', $this->readMemArg($r)]; break;
-            case 0x32: $code[] = ['i64.load16_s',$this->readMemArg($r)]; break;
-            case 0x33: $code[] = ['i64.load16_u',$this->readMemArg($r)]; break;
-            case 0x34: $code[] = ['i64.load32_s',$this->readMemArg($r)]; break;
-            case 0x35: $code[] = ['i64.load32_u',$this->readMemArg($r)]; break;
+            case 0x28: $code[] = Op::I32_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x29: $code[] = Op::I64_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x2A: $code[] = Op::F32_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x2B: $code[] = Op::F64_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x2C: $code[] = Op::I32_LOAD8_S;  $code[] = $this->readMemArg($r); break;
+            case 0x2D: $code[] = Op::I32_LOAD8_U;  $code[] = $this->readMemArg($r); break;
+            case 0x2E: $code[] = Op::I32_LOAD16_S; $code[] = $this->readMemArg($r); break;
+            case 0x2F: $code[] = Op::I32_LOAD16_U; $code[] = $this->readMemArg($r); break;
+            case 0x30: $code[] = Op::I64_LOAD8_S;  $code[] = $this->readMemArg($r); break;
+            case 0x31: $code[] = Op::I64_LOAD8_U;  $code[] = $this->readMemArg($r); break;
+            case 0x32: $code[] = Op::I64_LOAD16_S; $code[] = $this->readMemArg($r); break;
+            case 0x33: $code[] = Op::I64_LOAD16_U; $code[] = $this->readMemArg($r); break;
+            case 0x34: $code[] = Op::I64_LOAD32_S; $code[] = $this->readMemArg($r); break;
+            case 0x35: $code[] = Op::I64_LOAD32_U; $code[] = $this->readMemArg($r); break;
 
             // ---- Memory store ----
-            case 0x36: $code[] = ['i32.store',   $this->readMemArg($r)]; break;
-            case 0x37: $code[] = ['i64.store',   $this->readMemArg($r)]; break;
-            case 0x38: $code[] = ['f32.store',   $this->readMemArg($r)]; break;
-            case 0x39: $code[] = ['f64.store',   $this->readMemArg($r)]; break;
-            case 0x3A: $code[] = ['i32.store8',  $this->readMemArg($r)]; break;
-            case 0x3B: $code[] = ['i32.store16', $this->readMemArg($r)]; break;
-            case 0x3C: $code[] = ['i64.store8',  $this->readMemArg($r)]; break;
-            case 0x3D: $code[] = ['i64.store16', $this->readMemArg($r)]; break;
-            case 0x3E: $code[] = ['i64.store32', $this->readMemArg($r)]; break;
+            case 0x36: $code[] = Op::I32_STORE;   $code[] = $this->readMemArg($r); break;
+            case 0x37: $code[] = Op::I64_STORE;   $code[] = $this->readMemArg($r); break;
+            case 0x38: $code[] = Op::F32_STORE;   $code[] = $this->readMemArg($r); break;
+            case 0x39: $code[] = Op::F64_STORE;   $code[] = $this->readMemArg($r); break;
+            case 0x3A: $code[] = Op::I32_STORE8;  $code[] = $this->readMemArg($r); break;
+            case 0x3B: $code[] = Op::I32_STORE16; $code[] = $this->readMemArg($r); break;
+            case 0x3C: $code[] = Op::I64_STORE8;  $code[] = $this->readMemArg($r); break;
+            case 0x3D: $code[] = Op::I64_STORE16; $code[] = $this->readMemArg($r); break;
+            case 0x3E: $code[] = Op::I64_STORE32; $code[] = $this->readMemArg($r); break;
 
             // ---- Memory management ----
             case 0x3F:
                 $r->readByte(); // memory index (0x00)
-                $code[] = ['memory.size'];
+                $code[] = Op::MEMORY_SIZE;
                 break;
             case 0x40:
                 $r->readByte(); // memory index (0x00)
-                $code[] = ['memory.grow'];
+                $code[] = Op::MEMORY_GROW;
                 break;
 
             // ---- Constants ----
-            case 0x41: $code[] = ['i32.const', $r->readS32()]; break;
-            case 0x42: $code[] = ['i64.const', $r->readS64()]; break;
-            case 0x43:
-                $v = $r->readF32();
-                $code[] = ['f32.const', $v]; // int for NaN, float otherwise
-                break;
-            case 0x44: $code[] = ['f64.const', $r->readF64()]; break;
+            case 0x41: $code[] = Op::I32_CONST; $code[] = $r->readS32(); break;
+            case 0x42: $code[] = Op::I64_CONST; $code[] = $r->readS64(); break;
+            case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
+            case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
             // ---- i32 comparison ----
-            case 0x45: $code[] = ['i32.eqz']; break;
-            case 0x46: $code[] = ['i32.eq']; break;
-            case 0x47: $code[] = ['i32.ne']; break;
-            case 0x48: $code[] = ['i32.lt_s']; break;
-            case 0x49: $code[] = ['i32.lt_u']; break;
-            case 0x4A: $code[] = ['i32.gt_s']; break;
-            case 0x4B: $code[] = ['i32.gt_u']; break;
-            case 0x4C: $code[] = ['i32.le_s']; break;
-            case 0x4D: $code[] = ['i32.le_u']; break;
-            case 0x4E: $code[] = ['i32.ge_s']; break;
-            case 0x4F: $code[] = ['i32.ge_u']; break;
+            case 0x45: $code[] = Op::I32_EQZ; break;
+            case 0x46: $code[] = Op::I32_EQ; break;
+            case 0x47: $code[] = Op::I32_NE; break;
+            case 0x48: $code[] = Op::I32_LT_S; break;
+            case 0x49: $code[] = Op::I32_LT_U; break;
+            case 0x4A: $code[] = Op::I32_GT_S; break;
+            case 0x4B: $code[] = Op::I32_GT_U; break;
+            case 0x4C: $code[] = Op::I32_LE_S; break;
+            case 0x4D: $code[] = Op::I32_LE_U; break;
+            case 0x4E: $code[] = Op::I32_GE_S; break;
+            case 0x4F: $code[] = Op::I32_GE_U; break;
 
             // ---- i64 comparison ----
-            case 0x50: $code[] = ['i64.eqz']; break;
-            case 0x51: $code[] = ['i64.eq']; break;
-            case 0x52: $code[] = ['i64.ne']; break;
-            case 0x53: $code[] = ['i64.lt_s']; break;
-            case 0x54: $code[] = ['i64.lt_u']; break;
-            case 0x55: $code[] = ['i64.gt_s']; break;
-            case 0x56: $code[] = ['i64.gt_u']; break;
-            case 0x57: $code[] = ['i64.le_s']; break;
-            case 0x58: $code[] = ['i64.le_u']; break;
-            case 0x59: $code[] = ['i64.ge_s']; break;
-            case 0x5A: $code[] = ['i64.ge_u']; break;
+            case 0x50: $code[] = Op::I64_EQZ; break;
+            case 0x51: $code[] = Op::I64_EQ; break;
+            case 0x52: $code[] = Op::I64_NE; break;
+            case 0x53: $code[] = Op::I64_LT_S; break;
+            case 0x54: $code[] = Op::I64_LT_U; break;
+            case 0x55: $code[] = Op::I64_GT_S; break;
+            case 0x56: $code[] = Op::I64_GT_U; break;
+            case 0x57: $code[] = Op::I64_LE_S; break;
+            case 0x58: $code[] = Op::I64_LE_U; break;
+            case 0x59: $code[] = Op::I64_GE_S; break;
+            case 0x5A: $code[] = Op::I64_GE_U; break;
 
             // ---- f32 comparison ----
-            case 0x5B: $code[] = ['f32.eq']; break;
-            case 0x5C: $code[] = ['f32.ne']; break;
-            case 0x5D: $code[] = ['f32.lt']; break;
-            case 0x5E: $code[] = ['f32.gt']; break;
-            case 0x5F: $code[] = ['f32.le']; break;
-            case 0x60: $code[] = ['f32.ge']; break;
+            case 0x5B: $code[] = Op::F32_EQ; break;
+            case 0x5C: $code[] = Op::F32_NE; break;
+            case 0x5D: $code[] = Op::F32_LT; break;
+            case 0x5E: $code[] = Op::F32_GT; break;
+            case 0x5F: $code[] = Op::F32_LE; break;
+            case 0x60: $code[] = Op::F32_GE; break;
 
             // ---- f64 comparison ----
-            case 0x61: $code[] = ['f64.eq']; break;
-            case 0x62: $code[] = ['f64.ne']; break;
-            case 0x63: $code[] = ['f64.lt']; break;
-            case 0x64: $code[] = ['f64.gt']; break;
-            case 0x65: $code[] = ['f64.le']; break;
-            case 0x66: $code[] = ['f64.ge']; break;
+            case 0x61: $code[] = Op::F64_EQ; break;
+            case 0x62: $code[] = Op::F64_NE; break;
+            case 0x63: $code[] = Op::F64_LT; break;
+            case 0x64: $code[] = Op::F64_GT; break;
+            case 0x65: $code[] = Op::F64_LE; break;
+            case 0x66: $code[] = Op::F64_GE; break;
 
             // ---- i32 arithmetic ----
-            case 0x67: $code[] = ['i32.clz']; break;
-            case 0x68: $code[] = ['i32.ctz']; break;
-            case 0x69: $code[] = ['i32.popcnt']; break;
-            case 0x6A: $code[] = ['i32.add']; break;
-            case 0x6B: $code[] = ['i32.sub']; break;
-            case 0x6C: $code[] = ['i32.mul']; break;
-            case 0x6D: $code[] = ['i32.div_s']; break;
-            case 0x6E: $code[] = ['i32.div_u']; break;
-            case 0x6F: $code[] = ['i32.rem_s']; break;
-            case 0x70: $code[] = ['i32.rem_u']; break;
-            case 0x71: $code[] = ['i32.and']; break;
-            case 0x72: $code[] = ['i32.or']; break;
-            case 0x73: $code[] = ['i32.xor']; break;
-            case 0x74: $code[] = ['i32.shl']; break;
-            case 0x75: $code[] = ['i32.shr_s']; break;
-            case 0x76: $code[] = ['i32.shr_u']; break;
-            case 0x77: $code[] = ['i32.rotl']; break;
-            case 0x78: $code[] = ['i32.rotr']; break;
+            case 0x67: $code[] = Op::I32_CLZ; break;
+            case 0x68: $code[] = Op::I32_CTZ; break;
+            case 0x69: $code[] = Op::I32_POPCNT; break;
+            case 0x6A: $code[] = Op::I32_ADD; break;
+            case 0x6B: $code[] = Op::I32_SUB; break;
+            case 0x6C: $code[] = Op::I32_MUL; break;
+            case 0x6D: $code[] = Op::I32_DIV_S; break;
+            case 0x6E: $code[] = Op::I32_DIV_U; break;
+            case 0x6F: $code[] = Op::I32_REM_S; break;
+            case 0x70: $code[] = Op::I32_REM_U; break;
+            case 0x71: $code[] = Op::I32_AND; break;
+            case 0x72: $code[] = Op::I32_OR; break;
+            case 0x73: $code[] = Op::I32_XOR; break;
+            case 0x74: $code[] = Op::I32_SHL; break;
+            case 0x75: $code[] = Op::I32_SHR_S; break;
+            case 0x76: $code[] = Op::I32_SHR_U; break;
+            case 0x77: $code[] = Op::I32_ROTL; break;
+            case 0x78: $code[] = Op::I32_ROTR; break;
 
             // ---- i64 arithmetic ----
-            case 0x79: $code[] = ['i64.clz']; break;
-            case 0x7A: $code[] = ['i64.ctz']; break;
-            case 0x7B: $code[] = ['i64.popcnt']; break;
-            case 0x7C: $code[] = ['i64.add']; break;
-            case 0x7D: $code[] = ['i64.sub']; break;
-            case 0x7E: $code[] = ['i64.mul']; break;
-            case 0x7F: $code[] = ['i64.div_s']; break;
-            case 0x80: $code[] = ['i64.div_u']; break;
-            case 0x81: $code[] = ['i64.rem_s']; break;
-            case 0x82: $code[] = ['i64.rem_u']; break;
-            case 0x83: $code[] = ['i64.and']; break;
-            case 0x84: $code[] = ['i64.or']; break;
-            case 0x85: $code[] = ['i64.xor']; break;
-            case 0x86: $code[] = ['i64.shl']; break;
-            case 0x87: $code[] = ['i64.shr_s']; break;
-            case 0x88: $code[] = ['i64.shr_u']; break;
-            case 0x89: $code[] = ['i64.rotl']; break;
-            case 0x8A: $code[] = ['i64.rotr']; break;
+            case 0x79: $code[] = Op::I64_CLZ; break;
+            case 0x7A: $code[] = Op::I64_CTZ; break;
+            case 0x7B: $code[] = Op::I64_POPCNT; break;
+            case 0x7C: $code[] = Op::I64_ADD; break;
+            case 0x7D: $code[] = Op::I64_SUB; break;
+            case 0x7E: $code[] = Op::I64_MUL; break;
+            case 0x7F: $code[] = Op::I64_DIV_S; break;
+            case 0x80: $code[] = Op::I64_DIV_U; break;
+            case 0x81: $code[] = Op::I64_REM_S; break;
+            case 0x82: $code[] = Op::I64_REM_U; break;
+            case 0x83: $code[] = Op::I64_AND; break;
+            case 0x84: $code[] = Op::I64_OR; break;
+            case 0x85: $code[] = Op::I64_XOR; break;
+            case 0x86: $code[] = Op::I64_SHL; break;
+            case 0x87: $code[] = Op::I64_SHR_S; break;
+            case 0x88: $code[] = Op::I64_SHR_U; break;
+            case 0x89: $code[] = Op::I64_ROTL; break;
+            case 0x8A: $code[] = Op::I64_ROTR; break;
 
             // ---- f32 arithmetic ----
-            case 0x8B: $code[] = ['f32.abs']; break;
-            case 0x8C: $code[] = ['f32.neg']; break;
-            case 0x8D: $code[] = ['f32.ceil']; break;
-            case 0x8E: $code[] = ['f32.floor']; break;
-            case 0x8F: $code[] = ['f32.trunc']; break;
-            case 0x90: $code[] = ['f32.nearest']; break;
-            case 0x91: $code[] = ['f32.sqrt']; break;
-            case 0x92: $code[] = ['f32.add']; break;
-            case 0x93: $code[] = ['f32.sub']; break;
-            case 0x94: $code[] = ['f32.mul']; break;
-            case 0x95: $code[] = ['f32.div']; break;
-            case 0x96: $code[] = ['f32.min']; break;
-            case 0x97: $code[] = ['f32.max']; break;
-            case 0x98: $code[] = ['f32.copysign']; break;
+            case 0x8B: $code[] = Op::F32_ABS; break;
+            case 0x8C: $code[] = Op::F32_NEG; break;
+            case 0x8D: $code[] = Op::F32_CEIL; break;
+            case 0x8E: $code[] = Op::F32_FLOOR; break;
+            case 0x8F: $code[] = Op::F32_TRUNC; break;
+            case 0x90: $code[] = Op::F32_NEAREST; break;
+            case 0x91: $code[] = Op::F32_SQRT; break;
+            case 0x92: $code[] = Op::F32_ADD; break;
+            case 0x93: $code[] = Op::F32_SUB; break;
+            case 0x94: $code[] = Op::F32_MUL; break;
+            case 0x95: $code[] = Op::F32_DIV; break;
+            case 0x96: $code[] = Op::F32_MIN; break;
+            case 0x97: $code[] = Op::F32_MAX; break;
+            case 0x98: $code[] = Op::F32_COPYSIGN; break;
 
             // ---- f64 arithmetic ----
-            case 0x99: $code[] = ['f64.abs']; break;
-            case 0x9A: $code[] = ['f64.neg']; break;
-            case 0x9B: $code[] = ['f64.ceil']; break;
-            case 0x9C: $code[] = ['f64.floor']; break;
-            case 0x9D: $code[] = ['f64.trunc']; break;
-            case 0x9E: $code[] = ['f64.nearest']; break;
-            case 0x9F: $code[] = ['f64.sqrt']; break;
-            case 0xA0: $code[] = ['f64.add']; break;
-            case 0xA1: $code[] = ['f64.sub']; break;
-            case 0xA2: $code[] = ['f64.mul']; break;
-            case 0xA3: $code[] = ['f64.div']; break;
-            case 0xA4: $code[] = ['f64.min']; break;
-            case 0xA5: $code[] = ['f64.max']; break;
-            case 0xA6: $code[] = ['f64.copysign']; break;
+            case 0x99: $code[] = Op::F64_ABS; break;
+            case 0x9A: $code[] = Op::F64_NEG; break;
+            case 0x9B: $code[] = Op::F64_CEIL; break;
+            case 0x9C: $code[] = Op::F64_FLOOR; break;
+            case 0x9D: $code[] = Op::F64_TRUNC; break;
+            case 0x9E: $code[] = Op::F64_NEAREST; break;
+            case 0x9F: $code[] = Op::F64_SQRT; break;
+            case 0xA0: $code[] = Op::F64_ADD; break;
+            case 0xA1: $code[] = Op::F64_SUB; break;
+            case 0xA2: $code[] = Op::F64_MUL; break;
+            case 0xA3: $code[] = Op::F64_DIV; break;
+            case 0xA4: $code[] = Op::F64_MIN; break;
+            case 0xA5: $code[] = Op::F64_MAX; break;
+            case 0xA6: $code[] = Op::F64_COPYSIGN; break;
 
             // ---- Conversions ----
-            case 0xA7: $code[] = ['i32.wrap_i64']; break;
-            case 0xA8: $code[] = ['i32.trunc_f32_s']; break;
-            case 0xA9: $code[] = ['i32.trunc_f32_u']; break;
-            case 0xAA: $code[] = ['i32.trunc_f64_s']; break;
-            case 0xAB: $code[] = ['i32.trunc_f64_u']; break;
-            case 0xAC: $code[] = ['i64.extend_i32_s']; break;
-            case 0xAD: $code[] = ['i64.extend_i32_u']; break;
-            case 0xAE: $code[] = ['i64.trunc_f32_s']; break;
-            case 0xAF: $code[] = ['i64.trunc_f32_u']; break;
-            case 0xB0: $code[] = ['i64.trunc_f64_s']; break;
-            case 0xB1: $code[] = ['i64.trunc_f64_u']; break;
-            case 0xB2: $code[] = ['f32.convert_i32_s']; break;
-            case 0xB3: $code[] = ['f32.convert_i32_u']; break;
-            case 0xB4: $code[] = ['f32.convert_i64_s']; break;
-            case 0xB5: $code[] = ['f32.convert_i64_u']; break;
-            case 0xB6: $code[] = ['f32.demote_f64']; break;
-            case 0xB7: $code[] = ['f64.convert_i32_s']; break;
-            case 0xB8: $code[] = ['f64.convert_i32_u']; break;
-            case 0xB9: $code[] = ['f64.convert_i64_s']; break;
-            case 0xBA: $code[] = ['f64.convert_i64_u']; break;
-            case 0xBB: $code[] = ['f64.promote_f32']; break;
+            case 0xA7: $code[] = Op::I32_WRAP_I64; break;
+            case 0xA8: $code[] = Op::I32_TRUNC_F32_S; break;
+            case 0xA9: $code[] = Op::I32_TRUNC_F32_U; break;
+            case 0xAA: $code[] = Op::I32_TRUNC_F64_S; break;
+            case 0xAB: $code[] = Op::I32_TRUNC_F64_U; break;
+            case 0xAC: $code[] = Op::I64_EXTEND_I32_S; break;
+            case 0xAD: $code[] = Op::I64_EXTEND_I32_U; break;
+            case 0xAE: $code[] = Op::I64_TRUNC_F32_S; break;
+            case 0xAF: $code[] = Op::I64_TRUNC_F32_U; break;
+            case 0xB0: $code[] = Op::I64_TRUNC_F64_S; break;
+            case 0xB1: $code[] = Op::I64_TRUNC_F64_U; break;
+            case 0xB2: $code[] = Op::F32_CONVERT_I32_S; break;
+            case 0xB3: $code[] = Op::F32_CONVERT_I32_U; break;
+            case 0xB4: $code[] = Op::F32_CONVERT_I64_S; break;
+            case 0xB5: $code[] = Op::F32_CONVERT_I64_U; break;
+            case 0xB6: $code[] = Op::F32_DEMOTE_F64; break;
+            case 0xB7: $code[] = Op::F64_CONVERT_I32_S; break;
+            case 0xB8: $code[] = Op::F64_CONVERT_I32_U; break;
+            case 0xB9: $code[] = Op::F64_CONVERT_I64_S; break;
+            case 0xBA: $code[] = Op::F64_CONVERT_I64_U; break;
+            case 0xBB: $code[] = Op::F64_PROMOTE_F32; break;
 
             // ---- Reinterpret ----
-            case 0xBC: $code[] = ['i32.reinterpret_f32']; break;
-            case 0xBD: $code[] = ['i64.reinterpret_f64']; break;
-            case 0xBE: $code[] = ['f32.reinterpret_i32']; break;
-            case 0xBF: $code[] = ['f64.reinterpret_i64']; break;
+            case 0xBC: $code[] = Op::I32_REINTERPRET_F32; break;
+            case 0xBD: $code[] = Op::I64_REINTERPRET_F64; break;
+            case 0xBE: $code[] = Op::F32_REINTERPRET_I32; break;
+            case 0xBF: $code[] = Op::F64_REINTERPRET_I64; break;
 
             // ---- Sign extension ----
-            case 0xC0: $code[] = ['i32.extend8_s']; break;
-            case 0xC1: $code[] = ['i32.extend16_s']; break;
-            case 0xC2: $code[] = ['i64.extend8_s']; break;
-            case 0xC3: $code[] = ['i64.extend16_s']; break;
-            case 0xC4: $code[] = ['i64.extend32_s']; break;
+            case 0xC0: $code[] = Op::I32_EXTEND8_S; break;
+            case 0xC1: $code[] = Op::I32_EXTEND16_S; break;
+            case 0xC2: $code[] = Op::I64_EXTEND8_S; break;
+            case 0xC3: $code[] = Op::I64_EXTEND16_S; break;
+            case 0xC4: $code[] = Op::I64_EXTEND32_S; break;
 
             // ---- References ----
             case 0xD0: // ref.null
-                $this->readHeapType($r); // heap type
-                $code[] = ['ref.null'];
+                $this->readHeapType($r);
+                $code[] = Op::REF_NULL;
                 break;
-            case 0xD1: $code[] = ['ref.is_null']; break;
-            case 0xD2: $code[] = ['ref.func', $r->readU32()]; break;
+            case 0xD1: $code[] = Op::REF_IS_NULL; break;
+            case 0xD2: $code[] = Op::REF_FUNC; $code[] = $r->readU32(); break;
 
             // ---- Multi-byte prefix (0xFC) ----
             case 0xFC:
@@ -1068,21 +1086,21 @@ final class Decoder
     }
 
     /**
-     * Decode 0xFC-prefixed opcodes (saturating truncation, bulk memory, table ops).
+     * Decode 0xFC-prefixed opcodes into flat bytecode.
      */
     private function decodeFCPrefixed(BinaryReader $r, array &$code): void
     {
         $sub = $r->readU32();
         match ($sub) {
             // Saturating truncation
-            0  => $code[] = ['i32.trunc_sat_f32_s'],
-            1  => $code[] = ['i32.trunc_sat_f32_u'],
-            2  => $code[] = ['i32.trunc_sat_f64_s'],
-            3  => $code[] = ['i32.trunc_sat_f64_u'],
-            4  => $code[] = ['i64.trunc_sat_f32_s'],
-            5  => $code[] = ['i64.trunc_sat_f32_u'],
-            6  => $code[] = ['i64.trunc_sat_f64_s'],
-            7  => $code[] = ['i64.trunc_sat_f64_u'],
+            0  => $code[] = Op::I32_TRUNC_SAT_F32_S,
+            1  => $code[] = Op::I32_TRUNC_SAT_F32_U,
+            2  => $code[] = Op::I32_TRUNC_SAT_F64_S,
+            3  => $code[] = Op::I32_TRUNC_SAT_F64_U,
+            4  => $code[] = Op::I64_TRUNC_SAT_F32_S,
+            5  => $code[] = Op::I64_TRUNC_SAT_F32_U,
+            6  => $code[] = Op::I64_TRUNC_SAT_F64_S,
+            7  => $code[] = Op::I64_TRUNC_SAT_F64_U,
 
             // Bulk memory operations
             8  => $this->decodeMemoryInit($r, $code),
@@ -1105,70 +1123,63 @@ final class Decoder
     private function decodeMemoryInit(BinaryReader $r, array &$code): void
     {
         $segIdx = $r->readU32();
-        $memIdx = $r->readByte(); // must be 0x00
-        $code[] = ['memory.init', $segIdx];
+        $r->readByte(); // must be 0x00
+        $code[] = Op::MEMORY_INIT; $code[] = $segIdx;
     }
 
     private function decodeDataDrop(BinaryReader $r, array &$code): void
     {
-        $segIdx = $r->readU32();
-        $code[] = ['data.drop', $segIdx];
+        $code[] = Op::DATA_DROP; $code[] = $r->readU32();
     }
 
     private function decodeMemoryCopy(BinaryReader $r, array &$code): void
     {
-        $r->readByte(); // dst memory (0x00)
-        $r->readByte(); // src memory (0x00)
-        $code[] = ['memory.copy'];
+        $r->readByte(); $r->readByte();
+        $code[] = Op::MEMORY_COPY;
     }
 
     private function decodeMemoryFill(BinaryReader $r, array &$code): void
     {
-        $r->readByte(); // memory index (0x00)
-        $code[] = ['memory.fill'];
+        $r->readByte();
+        $code[] = Op::MEMORY_FILL;
     }
 
     private function decodeTableInit(BinaryReader $r, array &$code): void
     {
         $elemIdx  = $r->readU32();
         $tableIdx = $r->readU32();
-        $code[] = ['table.init', $tableIdx, $elemIdx];
+        $code[] = Op::TABLE_INIT; $code[] = $tableIdx; $code[] = $elemIdx;
     }
 
     private function decodeElemDrop(BinaryReader $r, array &$code): void
     {
-        $elemIdx = $r->readU32();
-        $code[] = ['elem.drop', $elemIdx];
+        $code[] = Op::ELEM_DROP; $code[] = $r->readU32();
     }
 
     private function decodeTableCopy(BinaryReader $r, array &$code): void
     {
         $dstTable = $r->readU32();
         $srcTable = $r->readU32();
-        $code[] = ['table.copy', $dstTable, $srcTable];
+        $code[] = Op::TABLE_COPY; $code[] = $dstTable; $code[] = $srcTable;
     }
 
     private function decodeTableGrow(BinaryReader $r, array &$code): void
     {
-        $tableIdx = $r->readU32();
-        $code[] = ['table.grow', $tableIdx];
+        $code[] = Op::TABLE_GROW; $code[] = $r->readU32();
     }
 
     private function decodeTableSize(BinaryReader $r, array &$code): void
     {
-        $tableIdx = $r->readU32();
-        $code[] = ['table.size', $tableIdx];
+        $code[] = Op::TABLE_SIZE; $code[] = $r->readU32();
     }
 
     private function decodeTableFill(BinaryReader $r, array &$code): void
     {
-        $tableIdx = $r->readU32();
-        $code[] = ['table.fill', $tableIdx];
+        $code[] = Op::TABLE_FILL; $code[] = $r->readU32();
     }
 
     /**
      * Read memory argument (align + offset), return only offset.
-     * The Executor only uses offset; alignment is for optimization hints.
      */
     private function readMemArg(BinaryReader $r): int
     {

@@ -1,0 +1,259 @@
+<?php
+
+declare(strict_types=1);
+
+namespace WasmRuntime;
+
+/**
+ * Integer opcode constants for the flat bytecode stream.
+ *
+ * Decoder emits these into a flat array: Op::XXX, immediate1, immediate2, ...
+ * Executor dispatches on the integer directly (no string comparison).
+ */
+final class Op
+{
+    // ---- Control ----
+    public const UNREACHABLE = 1;
+    public const NOP = 2;
+    public const BLOCK = 3;        // blockType, endIp
+    public const LOOP = 4;         // blockType, contIp, endIp
+    public const IF_ = 5;          // blockType, elseIp, endIp
+    public const ELSE_ = 6;        // endIp
+    public const END = 7;
+    public const BR = 8;           // depth
+    public const BR_IF = 9;        // depth
+    public const BR_TABLE = 10;    // count, label0..labelN, default
+    public const RETURN_ = 11;
+    public const CALL = 12;        // funcIdx
+    public const CALL_INDIRECT = 13; // typeIdx, tableIdx
+    public const RETURN_CALL = 14; // funcIdx
+    public const RETURN_CALL_INDIRECT = 15; // typeIdx, tableIdx
+
+    // ---- Parametric ----
+    public const DROP = 20;
+    public const SELECT = 21;
+
+    // ---- Variable ----
+    public const LOCAL_GET = 30;   // localIdx
+    public const LOCAL_SET = 31;   // localIdx
+    public const LOCAL_TEE = 32;   // localIdx
+    public const GLOBAL_GET = 33;  // globalIdx
+    public const GLOBAL_SET = 34;  // globalIdx
+
+    // ---- Table ----
+    public const TABLE_GET = 40;   // tableIdx
+    public const TABLE_SET = 41;   // tableIdx
+    public const TABLE_SIZE = 42;  // tableIdx
+    public const TABLE_GROW = 43;  // tableIdx
+    public const TABLE_FILL = 44;  // tableIdx
+    public const TABLE_COPY = 45;  // dstTableIdx, srcTableIdx
+    public const TABLE_INIT = 46;  // tableIdx, elemIdx
+    public const ELEM_DROP = 47;   // elemIdx
+
+    // ---- Memory load ----
+    public const I32_LOAD = 50;       // offset
+    public const I64_LOAD = 51;       // offset
+    public const F32_LOAD = 52;       // offset
+    public const F64_LOAD = 53;       // offset
+    public const I32_LOAD8_S = 54;    // offset
+    public const I32_LOAD8_U = 55;    // offset
+    public const I32_LOAD16_S = 56;   // offset
+    public const I32_LOAD16_U = 57;   // offset
+    public const I64_LOAD8_S = 58;    // offset
+    public const I64_LOAD8_U = 59;    // offset
+    public const I64_LOAD16_S = 60;   // offset
+    public const I64_LOAD16_U = 61;   // offset
+    public const I64_LOAD32_S = 62;   // offset
+    public const I64_LOAD32_U = 63;   // offset
+
+    // ---- Memory store ----
+    public const I32_STORE = 70;      // offset
+    public const I64_STORE = 71;      // offset
+    public const F32_STORE = 72;      // offset
+    public const F64_STORE = 73;      // offset
+    public const I32_STORE8 = 74;     // offset
+    public const I32_STORE16 = 75;    // offset
+    public const I64_STORE8 = 76;     // offset
+    public const I64_STORE16 = 77;    // offset
+    public const I64_STORE32 = 78;    // offset
+
+    // ---- Memory management ----
+    public const MEMORY_SIZE = 80;
+    public const MEMORY_GROW = 81;
+    public const MEMORY_FILL = 82;
+    public const MEMORY_COPY = 83;
+    public const MEMORY_INIT = 84;    // segIdx
+    public const DATA_DROP = 85;      // segIdx
+
+    // ---- Constants ----
+    public const I32_CONST = 90;  // value
+    public const I64_CONST = 91;  // value
+    public const F32_CONST = 92;  // value
+    public const F64_CONST = 93;  // value
+
+    // ---- i32 comparison ----
+    public const I32_EQZ = 100;
+    public const I32_EQ = 101;
+    public const I32_NE = 102;
+    public const I32_LT_S = 103;
+    public const I32_LT_U = 104;
+    public const I32_GT_S = 105;
+    public const I32_GT_U = 106;
+    public const I32_LE_S = 107;
+    public const I32_LE_U = 108;
+    public const I32_GE_S = 109;
+    public const I32_GE_U = 110;
+
+    // ---- i64 comparison ----
+    public const I64_EQZ = 111;
+    public const I64_EQ = 112;
+    public const I64_NE = 113;
+    public const I64_LT_S = 114;
+    public const I64_LT_U = 115;
+    public const I64_GT_S = 116;
+    public const I64_GT_U = 117;
+    public const I64_LE_S = 118;
+    public const I64_LE_U = 119;
+    public const I64_GE_S = 120;
+    public const I64_GE_U = 121;
+
+    // ---- f32 comparison ----
+    public const F32_EQ = 130;
+    public const F32_NE = 131;
+    public const F32_LT = 132;
+    public const F32_GT = 133;
+    public const F32_LE = 134;
+    public const F32_GE = 135;
+
+    // ---- f64 comparison ----
+    public const F64_EQ = 140;
+    public const F64_NE = 141;
+    public const F64_LT = 142;
+    public const F64_GT = 143;
+    public const F64_LE = 144;
+    public const F64_GE = 145;
+
+    // ---- i32 arithmetic ----
+    public const I32_CLZ = 150;
+    public const I32_CTZ = 151;
+    public const I32_POPCNT = 152;
+    public const I32_ADD = 153;
+    public const I32_SUB = 154;
+    public const I32_MUL = 155;
+    public const I32_DIV_S = 156;
+    public const I32_DIV_U = 157;
+    public const I32_REM_S = 158;
+    public const I32_REM_U = 159;
+    public const I32_AND = 160;
+    public const I32_OR = 161;
+    public const I32_XOR = 162;
+    public const I32_SHL = 163;
+    public const I32_SHR_S = 164;
+    public const I32_SHR_U = 165;
+    public const I32_ROTL = 166;
+    public const I32_ROTR = 167;
+
+    // ---- i64 arithmetic ----
+    public const I64_CLZ = 170;
+    public const I64_CTZ = 171;
+    public const I64_POPCNT = 172;
+    public const I64_ADD = 173;
+    public const I64_SUB = 174;
+    public const I64_MUL = 175;
+    public const I64_DIV_S = 176;
+    public const I64_DIV_U = 177;
+    public const I64_REM_S = 178;
+    public const I64_REM_U = 179;
+    public const I64_AND = 180;
+    public const I64_OR = 181;
+    public const I64_XOR = 182;
+    public const I64_SHL = 183;
+    public const I64_SHR_S = 184;
+    public const I64_SHR_U = 185;
+    public const I64_ROTL = 186;
+    public const I64_ROTR = 187;
+
+    // ---- f32 arithmetic ----
+    public const F32_ABS = 190;
+    public const F32_NEG = 191;
+    public const F32_CEIL = 192;
+    public const F32_FLOOR = 193;
+    public const F32_TRUNC = 194;
+    public const F32_NEAREST = 195;
+    public const F32_SQRT = 196;
+    public const F32_ADD = 197;
+    public const F32_SUB = 198;
+    public const F32_MUL = 199;
+    public const F32_DIV = 200;
+    public const F32_MIN = 201;
+    public const F32_MAX = 202;
+    public const F32_COPYSIGN = 203;
+
+    // ---- f64 arithmetic ----
+    public const F64_ABS = 210;
+    public const F64_NEG = 211;
+    public const F64_CEIL = 212;
+    public const F64_FLOOR = 213;
+    public const F64_TRUNC = 214;
+    public const F64_NEAREST = 215;
+    public const F64_SQRT = 216;
+    public const F64_ADD = 217;
+    public const F64_SUB = 218;
+    public const F64_MUL = 219;
+    public const F64_DIV = 220;
+    public const F64_MIN = 221;
+    public const F64_MAX = 222;
+    public const F64_COPYSIGN = 223;
+
+    // ---- Conversions ----
+    public const I32_WRAP_I64 = 230;
+    public const I32_TRUNC_F32_S = 231;
+    public const I32_TRUNC_F32_U = 232;
+    public const I32_TRUNC_F64_S = 233;
+    public const I32_TRUNC_F64_U = 234;
+    public const I64_EXTEND_I32_S = 235;
+    public const I64_EXTEND_I32_U = 236;
+    public const I64_TRUNC_F32_S = 237;
+    public const I64_TRUNC_F32_U = 238;
+    public const I64_TRUNC_F64_S = 239;
+    public const I64_TRUNC_F64_U = 240;
+    public const F32_CONVERT_I32_S = 241;
+    public const F32_CONVERT_I32_U = 242;
+    public const F32_CONVERT_I64_S = 243;
+    public const F32_CONVERT_I64_U = 244;
+    public const F32_DEMOTE_F64 = 245;
+    public const F64_CONVERT_I32_S = 246;
+    public const F64_CONVERT_I32_U = 247;
+    public const F64_CONVERT_I64_S = 248;
+    public const F64_CONVERT_I64_U = 249;
+    public const F64_PROMOTE_F32 = 250;
+
+    // ---- Reinterpret ----
+    public const I32_REINTERPRET_F32 = 260;
+    public const I64_REINTERPRET_F64 = 261;
+    public const F32_REINTERPRET_I32 = 262;
+    public const F64_REINTERPRET_I64 = 263;
+
+    // ---- Sign extension ----
+    public const I32_EXTEND8_S = 270;
+    public const I32_EXTEND16_S = 271;
+    public const I64_EXTEND8_S = 272;
+    public const I64_EXTEND16_S = 273;
+    public const I64_EXTEND32_S = 274;
+
+    // ---- References ----
+    public const REF_NULL = 280;
+    public const REF_IS_NULL = 281;
+    public const REF_FUNC = 282;       // funcIdx
+    public const REF_AS_NON_NULL = 283;
+
+    // ---- Saturating truncation ----
+    public const I32_TRUNC_SAT_F32_S = 290;
+    public const I32_TRUNC_SAT_F32_U = 291;
+    public const I32_TRUNC_SAT_F64_S = 292;
+    public const I32_TRUNC_SAT_F64_U = 293;
+    public const I64_TRUNC_SAT_F32_S = 294;
+    public const I64_TRUNC_SAT_F32_U = 295;
+    public const I64_TRUNC_SAT_F64_S = 296;
+    public const I64_TRUNC_SAT_F64_U = 297;
+}

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace WasmRuntime;
 
+use WasmRuntime\Op;
+
 /**
  * WebAssembly module type validator.
  *
@@ -128,46 +130,47 @@ final class Validator
 
         $code = $body['code'];
         $n    = count($code);
+        $ip   = 0;
 
-        for ($ip = 0; $ip < $n; $ip++) {
-            $instr = $code[$ip];
-            $op    = $instr[0];
+        while ($ip < $n) {
+            $op = $code[$ip++];
 
             switch ($op) {
 
-
                 // ---- Unreachable / nop ----
-                case 'unreachable':
+                case Op::UNREACHABLE:
                     $this->markUnreachable();
                     break;
-                case 'nop':
+                case Op::NOP:
                     break;
 
                 // ---- Block / loop / if / else / end ----
-                case 'block': {
-                    $bt = $instr[1]; // FuncType|null
+                case Op::BLOCK: {
+                    $bt = $code[$ip++]; // FuncType|null
+                    $ip++; // endIp
                     [$pin, $pout] = $this->blockTypes($bt);
                     $this->popTypes($pin);
                     $this->pushCtrl('block', $pout, $pout, $pin);
                     $this->pushTypes($pin);
                     break;
                 }
-                case 'loop': {
-                    $bt = $instr[1];
+                case Op::LOOP: {
+                    $bt = $code[$ip++];
+                    $ip++; // contIp
+                    $ip++; // endIp
                     [$pin, $pout] = $this->blockTypes($bt);
                     $this->popTypes($pin);
-                    $this->pushCtrl('loop', $pin, $pout, $pin);  // label_types = params for loop
+                    $this->pushCtrl('loop', $pin, $pout, $pin);
                     $this->pushTypes($pin);
                     break;
                 }
-                case 'if': {
-                    $bt      = $instr[1];
-                    $elseIp  = $instr[2];
-                    $endIp   = $instr[3];
+                case Op::IF_: {
+                    $bt     = $code[$ip++];
+                    $elseIp = $code[$ip++];
+                    $endIp  = $code[$ip++];
                     [$pin, $pout] = $this->blockTypes($bt);
-                    $this->pop(ValType::I32); // condition
+                    $this->pop(ValType::I32);
                     $this->popTypes($pin);
-                    // if without else is only valid when result type is empty
                     if ($elseIp === $endIp && !empty($pout)) {
                         throw new WasmError('type mismatch');
                     }
@@ -175,53 +178,55 @@ final class Validator
                     $this->pushTypes($pin);
                     break;
                 }
-                case 'else': {
+                case Op::ELSE_: {
+                    $ip++; // endIp
                     $frame = $this->popCtrl();
                     if ($frame['opcode'] !== 'if') {
                         throw new WasmError('type mismatch');
                     }
-                    // else starts fresh with the if's param types (not result types)
                     $this->pushCtrl('else', $frame['label_types'], $frame['end_types'], $frame['in_types']);
                     $this->pushTypes($frame['in_types']);
                     break;
                 }
-                case 'end': {
+                case Op::END: {
                     $frame = $this->popCtrl();
                     $this->pushTypes($frame['end_types']);
                     break;
                 }
 
                 // ---- Branches / return ----
-                case 'return': {
+                case Op::RETURN_: {
                     $ft2 = $this->ctrlStack[0];
                     $this->popTypes($ft2['end_types']);
                     $this->markUnreachable();
                     break;
                 }
-                case 'br': {
-                    $depth = (int)$instr[1];
+                case Op::BR: {
+                    $depth = $code[$ip++];
                     $label = $this->labelAt($depth);
                     $this->popTypes($label['label_types']);
                     $this->markUnreachable();
                     break;
                 }
-                case 'br_if': {
-                    $depth = (int)$instr[1];
+                case Op::BR_IF: {
+                    $depth = $code[$ip++];
                     $label = $this->labelAt($depth);
                     $this->pop(ValType::I32);
                     $this->popTypes($label['label_types']);
                     $this->pushTypes($label['label_types']);
                     break;
                 }
-                case 'br_table': {
-                    $cnt     = count($instr) - 1;
-                    $targets = array_slice($instr, 1, $cnt - 1);
-                    $default = (int)$instr[$cnt];
+                case Op::BR_TABLE: {
+                    $cnt = $code[$ip++]; // label count
+                    $targets = [];
+                    for ($j = 0; $j < $cnt; $j++) {
+                        $targets[] = $code[$ip++];
+                    }
+                    $default = $code[$ip++];
                     $this->pop(ValType::I32);
                     $defLabel = $this->labelAt($default);
                     foreach ($targets as $t) {
                         $label = $this->labelAt((int)$t);
-                        // All targets must have same arity as default
                         if (count($label['label_types']) !== count($defLabel['label_types'])) {
                             throw new WasmError('type mismatch');
                         }
@@ -232,15 +237,14 @@ final class Validator
                 }
 
                 // ---- Call ----
-                case 'call': {
-                    $cft = $this->mod->funcType((int)$instr[1]);
+                case Op::CALL: {
+                    $cft = $this->mod->funcType($code[$ip++]);
                     $this->popTypes($cft->params);
                     $this->pushTypes($cft->results);
                     break;
                 }
-                case 'return_call': {
-                    // Tail call: callee's result types must match enclosing function's result types
-                    $cft = $this->mod->funcType((int)$instr[1]);
+                case Op::RETURN_CALL: {
+                    $cft = $this->mod->funcType($code[$ip++]);
                     $this->popTypes($cft->params);
                     if ($cft->results !== $this->currentFt->results) {
                         throw new WasmError('type mismatch');
@@ -248,23 +252,21 @@ final class Validator
                     $this->markUnreachable();
                     break;
                 }
-                case 'call_indirect': {
-                    $typeIdx  = (int)$instr[1];
-                    $tableIdx = (int)($instr[2] ?? 0);
+                case Op::CALL_INDIRECT: {
+                    $typeIdx  = $code[$ip++];
+                    $tableIdx = $code[$ip++];
                     $cft      = $this->mod->types[$typeIdx] ?? null;
                     if ($cft === null) throw new WasmError('unknown type');
-                    // call_indirect requires a funcref table (not externref)
                     $elemType = $this->tableElemType($tableIdx);
                     if ($elemType !== ValType::FUNCREF) throw new WasmError('type mismatch');
-                    $this->pop(ValType::I32); // table index
+                    $this->pop(ValType::I32);
                     $this->popTypes($cft->params);
                     $this->pushTypes($cft->results);
                     break;
                 }
-                case 'return_call_indirect': {
-                    // Tail indirect call: callee's result types must match enclosing function's result types
-                    $typeIdx  = (int)$instr[1];
-                    $tableIdx = (int)($instr[2] ?? 0);
+                case Op::RETURN_CALL_INDIRECT: {
+                    $typeIdx  = $code[$ip++];
+                    $tableIdx = $code[$ip++];
                     $cft      = $this->mod->types[$typeIdx] ?? null;
                     if ($cft === null) throw new WasmError('unknown type');
                     $elemType = $this->tableElemType($tableIdx);
@@ -279,14 +281,13 @@ final class Validator
                 }
 
                 // ---- Parametric ----
-                case 'drop':
+                case Op::DROP:
                     $this->pop(null);
                     break;
-                case 'select': {
+                case Op::SELECT: {
                     $this->pop(ValType::I32);
                     $t2 = $this->pop(null);
                     $t1 = $this->pop(null);
-                    // Untyped select is only valid for numeric types (not ref types)
                     $refTypes = [ValType::FUNCREF, ValType::EXTERNREF];
                     if ($t1 !== null && in_array($t1, $refTypes, true)) {
                         throw new WasmError('type mismatch');
@@ -302,18 +303,12 @@ final class Validator
                 }
 
                 // ---- Locals ----
-                case 'local.get': {
-                    $idx = (int)$instr[1];
-                    $this->push($this->localType($idx));
-                    break;
-                }
-                case 'local.set': {
-                    $idx = (int)$instr[1];
-                    $this->pop($this->localType($idx));
-                    break;
-                }
-                case 'local.tee': {
-                    $idx = (int)$instr[1];
+                case Op::LOCAL_GET:
+                    $this->push($this->localType($code[$ip++])); break;
+                case Op::LOCAL_SET:
+                    $this->pop($this->localType($code[$ip++])); break;
+                case Op::LOCAL_TEE: {
+                    $idx = $code[$ip++];
                     $t = $this->localType($idx);
                     $this->pop($t);
                     $this->push($t);
@@ -321,203 +316,188 @@ final class Validator
                 }
 
                 // ---- Globals ----
-                case 'global.get': {
-                    $t = $this->globalType((int)$instr[1]);
-                    $this->push($t);
-                    break;
-                }
-                case 'global.set': {
-                    $t = $this->globalType((int)$instr[1]);
-                    $this->pop($t);
-                    break;
-                }
+                case Op::GLOBAL_GET:
+                    $this->push($this->globalType($code[$ip++])); break;
+                case Op::GLOBAL_SET:
+                    $this->pop($this->globalType($code[$ip++])); break;
 
                 // ---- Constants ----
-                case 'i32.const': $this->push(ValType::I32); break;
-                case 'i64.const': $this->push(ValType::I64); break;
-                case 'f32.const': $this->push(ValType::F32); break;
-                case 'f64.const': $this->push(ValType::F64); break;
+                case Op::I32_CONST: $ip++; $this->push(ValType::I32); break;
+                case Op::I64_CONST: $ip++; $this->push(ValType::I64); break;
+                case Op::F32_CONST: $ip++; $this->push(ValType::F32); break;
+                case Op::F64_CONST: $ip++; $this->push(ValType::F64); break;
 
                 // ---- i32 arithmetic / comparison ----
-                case 'i32.clz': case 'i32.ctz': case 'i32.popcnt':
+                case Op::I32_CLZ: case Op::I32_CTZ: case Op::I32_POPCNT:
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'i32.add': case 'i32.sub': case 'i32.mul':
-                case 'i32.div_s': case 'i32.div_u': case 'i32.rem_s': case 'i32.rem_u':
-                case 'i32.and': case 'i32.or': case 'i32.xor':
-                case 'i32.shl': case 'i32.shr_s': case 'i32.shr_u':
-                case 'i32.rotl': case 'i32.rotr':
+                case Op::I32_ADD: case Op::I32_SUB: case Op::I32_MUL:
+                case Op::I32_DIV_S: case Op::I32_DIV_U: case Op::I32_REM_S: case Op::I32_REM_U:
+                case Op::I32_AND: case Op::I32_OR: case Op::I32_XOR:
+                case Op::I32_SHL: case Op::I32_SHR_S: case Op::I32_SHR_U:
+                case Op::I32_ROTL: case Op::I32_ROTR:
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'i32.eqz':
+                case Op::I32_EQZ:
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'i32.eq': case 'i32.ne':
-                case 'i32.lt_s': case 'i32.lt_u': case 'i32.gt_s': case 'i32.gt_u':
-                case 'i32.le_s': case 'i32.le_u': case 'i32.ge_s': case 'i32.ge_u':
+                case Op::I32_EQ: case Op::I32_NE:
+                case Op::I32_LT_S: case Op::I32_LT_U: case Op::I32_GT_S: case Op::I32_GT_U:
+                case Op::I32_LE_S: case Op::I32_LE_U: case Op::I32_GE_S: case Op::I32_GE_U:
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->push(ValType::I32); break;
 
                 // ---- i64 arithmetic / comparison ----
-                case 'i64.clz': case 'i64.ctz': case 'i64.popcnt':
+                case Op::I64_CLZ: case Op::I64_CTZ: case Op::I64_POPCNT:
                     $this->pop(ValType::I64); $this->push(ValType::I64); break;
-                case 'i64.add': case 'i64.sub': case 'i64.mul':
-                case 'i64.div_s': case 'i64.div_u': case 'i64.rem_s': case 'i64.rem_u':
-                case 'i64.and': case 'i64.or': case 'i64.xor':
-                case 'i64.shl': case 'i64.shr_s': case 'i64.shr_u':
-                case 'i64.rotl': case 'i64.rotr':
+                case Op::I64_ADD: case Op::I64_SUB: case Op::I64_MUL:
+                case Op::I64_DIV_S: case Op::I64_DIV_U: case Op::I64_REM_S: case Op::I64_REM_U:
+                case Op::I64_AND: case Op::I64_OR: case Op::I64_XOR:
+                case Op::I64_SHL: case Op::I64_SHR_S: case Op::I64_SHR_U:
+                case Op::I64_ROTL: case Op::I64_ROTR:
                     $this->pop(ValType::I64); $this->pop(ValType::I64); $this->push(ValType::I64); break;
-                case 'i64.eqz':
+                case Op::I64_EQZ:
                     $this->pop(ValType::I64); $this->push(ValType::I32); break;
-                case 'i64.eq': case 'i64.ne':
-                case 'i64.lt_s': case 'i64.lt_u': case 'i64.gt_s': case 'i64.gt_u':
-                case 'i64.le_s': case 'i64.le_u': case 'i64.ge_s': case 'i64.ge_u':
+                case Op::I64_EQ: case Op::I64_NE:
+                case Op::I64_LT_S: case Op::I64_LT_U: case Op::I64_GT_S: case Op::I64_GT_U:
+                case Op::I64_LE_S: case Op::I64_LE_U: case Op::I64_GE_S: case Op::I64_GE_U:
                     $this->pop(ValType::I64); $this->pop(ValType::I64); $this->push(ValType::I32); break;
 
                 // ---- f32 arithmetic / comparison ----
-                case 'f32.abs': case 'f32.neg': case 'f32.ceil': case 'f32.floor':
-                case 'f32.trunc': case 'f32.nearest': case 'f32.sqrt':
+                case Op::F32_ABS: case Op::F32_NEG: case Op::F32_CEIL: case Op::F32_FLOOR:
+                case Op::F32_TRUNC: case Op::F32_NEAREST: case Op::F32_SQRT:
                     $this->pop(ValType::F32); $this->push(ValType::F32); break;
-                case 'f32.add': case 'f32.sub': case 'f32.mul': case 'f32.div':
-                case 'f32.min': case 'f32.max': case 'f32.copysign':
+                case Op::F32_ADD: case Op::F32_SUB: case Op::F32_MUL: case Op::F32_DIV:
+                case Op::F32_MIN: case Op::F32_MAX: case Op::F32_COPYSIGN:
                     $this->pop(ValType::F32); $this->pop(ValType::F32); $this->push(ValType::F32); break;
-                case 'f32.eq': case 'f32.ne':
-                case 'f32.lt': case 'f32.gt': case 'f32.le': case 'f32.ge':
+                case Op::F32_EQ: case Op::F32_NE:
+                case Op::F32_LT: case Op::F32_GT: case Op::F32_LE: case Op::F32_GE:
                     $this->pop(ValType::F32); $this->pop(ValType::F32); $this->push(ValType::I32); break;
 
                 // ---- f64 arithmetic / comparison ----
-                case 'f64.abs': case 'f64.neg': case 'f64.ceil': case 'f64.floor':
-                case 'f64.trunc': case 'f64.nearest': case 'f64.sqrt':
+                case Op::F64_ABS: case Op::F64_NEG: case Op::F64_CEIL: case Op::F64_FLOOR:
+                case Op::F64_TRUNC: case Op::F64_NEAREST: case Op::F64_SQRT:
                     $this->pop(ValType::F64); $this->push(ValType::F64); break;
-                case 'f64.add': case 'f64.sub': case 'f64.mul': case 'f64.div':
-                case 'f64.min': case 'f64.max': case 'f64.copysign':
+                case Op::F64_ADD: case Op::F64_SUB: case Op::F64_MUL: case Op::F64_DIV:
+                case Op::F64_MIN: case Op::F64_MAX: case Op::F64_COPYSIGN:
                     $this->pop(ValType::F64); $this->pop(ValType::F64); $this->push(ValType::F64); break;
-                case 'f64.eq': case 'f64.ne':
-                case 'f64.lt': case 'f64.gt': case 'f64.le': case 'f64.ge':
+                case Op::F64_EQ: case Op::F64_NE:
+                case Op::F64_LT: case Op::F64_GT: case Op::F64_LE: case Op::F64_GE:
                     $this->pop(ValType::F64); $this->pop(ValType::F64); $this->push(ValType::I32); break;
 
                 // ---- Conversions ----
-                case 'i32.wrap_i64':
+                case Op::I32_WRAP_I64:
                     $this->pop(ValType::I64); $this->push(ValType::I32); break;
-                case 'i32.trunc_f32_s': case 'i32.trunc_f32_u': case 'i32.trunc_sat_f32_s': case 'i32.trunc_sat_f32_u':
+                case Op::I32_TRUNC_F32_S: case Op::I32_TRUNC_F32_U: case Op::I32_TRUNC_SAT_F32_S: case Op::I32_TRUNC_SAT_F32_U:
                     $this->pop(ValType::F32); $this->push(ValType::I32); break;
-                case 'i32.trunc_f64_s': case 'i32.trunc_f64_u': case 'i32.trunc_sat_f64_s': case 'i32.trunc_sat_f64_u':
+                case Op::I32_TRUNC_F64_S: case Op::I32_TRUNC_F64_U: case Op::I32_TRUNC_SAT_F64_S: case Op::I32_TRUNC_SAT_F64_U:
                     $this->pop(ValType::F64); $this->push(ValType::I32); break;
-                case 'i64.extend_i32_s': case 'i64.extend_i32_u':
+                case Op::I64_EXTEND_I32_S: case Op::I64_EXTEND_I32_U:
                     $this->pop(ValType::I32); $this->push(ValType::I64); break;
-                case 'i64.trunc_f32_s': case 'i64.trunc_f32_u': case 'i64.trunc_sat_f32_s': case 'i64.trunc_sat_f32_u':
+                case Op::I64_TRUNC_F32_S: case Op::I64_TRUNC_F32_U: case Op::I64_TRUNC_SAT_F32_S: case Op::I64_TRUNC_SAT_F32_U:
                     $this->pop(ValType::F32); $this->push(ValType::I64); break;
-                case 'i64.trunc_f64_s': case 'i64.trunc_f64_u': case 'i64.trunc_sat_f64_s': case 'i64.trunc_sat_f64_u':
+                case Op::I64_TRUNC_F64_S: case Op::I64_TRUNC_F64_U: case Op::I64_TRUNC_SAT_F64_S: case Op::I64_TRUNC_SAT_F64_U:
                     $this->pop(ValType::F64); $this->push(ValType::I64); break;
-                case 'f32.convert_i32_s': case 'f32.convert_i32_u':
+                case Op::F32_CONVERT_I32_S: case Op::F32_CONVERT_I32_U:
                     $this->pop(ValType::I32); $this->push(ValType::F32); break;
-                case 'f32.convert_i64_s': case 'f32.convert_i64_u':
+                case Op::F32_CONVERT_I64_S: case Op::F32_CONVERT_I64_U:
                     $this->pop(ValType::I64); $this->push(ValType::F32); break;
-                case 'f32.demote_f64':
+                case Op::F32_DEMOTE_F64:
                     $this->pop(ValType::F64); $this->push(ValType::F32); break;
-                case 'f64.convert_i32_s': case 'f64.convert_i32_u':
+                case Op::F64_CONVERT_I32_S: case Op::F64_CONVERT_I32_U:
                     $this->pop(ValType::I32); $this->push(ValType::F64); break;
-                case 'f64.convert_i64_s': case 'f64.convert_i64_u':
+                case Op::F64_CONVERT_I64_S: case Op::F64_CONVERT_I64_U:
                     $this->pop(ValType::I64); $this->push(ValType::F64); break;
-                case 'f64.promote_f32':
+                case Op::F64_PROMOTE_F32:
                     $this->pop(ValType::F32); $this->push(ValType::F64); break;
-                case 'i32.reinterpret_f32':
+                case Op::I32_REINTERPRET_F32:
                     $this->pop(ValType::F32); $this->push(ValType::I32); break;
-                case 'i64.reinterpret_f64':
+                case Op::I64_REINTERPRET_F64:
                     $this->pop(ValType::F64); $this->push(ValType::I64); break;
-                case 'f32.reinterpret_i32':
+                case Op::F32_REINTERPRET_I32:
                     $this->pop(ValType::I32); $this->push(ValType::F32); break;
-                case 'f64.reinterpret_i64':
+                case Op::F64_REINTERPRET_I64:
                     $this->pop(ValType::I64); $this->push(ValType::F64); break;
-                case 'i32.extend8_s': case 'i32.extend16_s':
+                case Op::I32_EXTEND8_S: case Op::I32_EXTEND16_S:
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'i64.extend8_s': case 'i64.extend16_s': case 'i64.extend32_s':
+                case Op::I64_EXTEND8_S: case Op::I64_EXTEND16_S: case Op::I64_EXTEND32_S:
                     $this->pop(ValType::I64); $this->push(ValType::I64); break;
 
                 // ---- Memory ----
-                case 'i32.load': case 'i32.load8_s': case 'i32.load8_u':
-                case 'i32.load16_s': case 'i32.load16_u':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
+                case Op::I32_LOAD: case Op::I32_LOAD8_S: case Op::I32_LOAD8_U:
+                case Op::I32_LOAD16_S: case Op::I32_LOAD16_U:
+                    $ip++; // skip offset
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'i64.load': case 'i64.load8_s': case 'i64.load8_u':
-                case 'i64.load16_s': case 'i64.load16_u': case 'i64.load32_s': case 'i64.load32_u':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
+                case Op::I64_LOAD: case Op::I64_LOAD8_S: case Op::I64_LOAD8_U:
+                case Op::I64_LOAD16_S: case Op::I64_LOAD16_U: case Op::I64_LOAD32_S: case Op::I64_LOAD32_U:
+                    $ip++; // skip offset
                     $this->pop(ValType::I32); $this->push(ValType::I64); break;
-                case 'f32.load':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::I32); $this->push(ValType::F32); break;
-                case 'f64.load':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::I32); $this->push(ValType::F64); break;
-                case 'i32.store': case 'i32.store8': case 'i32.store16':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::I32); $this->pop(ValType::I32); break;
-                case 'i64.store': case 'i64.store8': case 'i64.store16': case 'i64.store32':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::I64); $this->pop(ValType::I32); break;
-                case 'f32.store':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::F32); $this->pop(ValType::I32); break;
-                case 'f64.store':
-                    $this->checkMemArg($op, (int)($instr[1] ?? 0), (int)($instr[2] ?? 0));
-                    $this->pop(ValType::F64); $this->pop(ValType::I32); break;
-                case 'memory.size':
+                case Op::F32_LOAD:
+                    $ip++; $this->pop(ValType::I32); $this->push(ValType::F32); break;
+                case Op::F64_LOAD:
+                    $ip++; $this->pop(ValType::I32); $this->push(ValType::F64); break;
+                case Op::I32_STORE: case Op::I32_STORE8: case Op::I32_STORE16:
+                    $ip++; $this->pop(ValType::I32); $this->pop(ValType::I32); break;
+                case Op::I64_STORE: case Op::I64_STORE8: case Op::I64_STORE16: case Op::I64_STORE32:
+                    $ip++; $this->pop(ValType::I64); $this->pop(ValType::I32); break;
+                case Op::F32_STORE:
+                    $ip++; $this->pop(ValType::F32); $this->pop(ValType::I32); break;
+                case Op::F64_STORE:
+                    $ip++; $this->pop(ValType::F64); $this->pop(ValType::I32); break;
+                case Op::MEMORY_SIZE:
                     $this->push(ValType::I32); break;
-                case 'memory.grow':
+                case Op::MEMORY_GROW:
                     $this->pop(ValType::I32); $this->push(ValType::I32); break;
-                case 'memory.copy': case 'memory.fill':
+                case Op::MEMORY_COPY: case Op::MEMORY_FILL:
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
-                case 'memory.init':
+                case Op::MEMORY_INIT:
+                    $ip++; // skip segIdx
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
-                case 'data.drop': break;
+                case Op::DATA_DROP: $ip++; break;
 
                 // ---- Table ----
-                case 'table.get': {
-                    $tIdx = (int)($instr[1] ?? 0);
+                case Op::TABLE_GET: {
+                    $tIdx = $code[$ip++];
                     $this->pop(ValType::I32);
                     $this->push($this->tableElemType($tIdx));
                     break;
                 }
-                case 'table.set': {
-                    $tIdx = (int)($instr[1] ?? 0);
+                case Op::TABLE_SET: {
+                    $tIdx = $code[$ip++];
                     $this->pop($this->tableElemType($tIdx));
                     $this->pop(ValType::I32);
                     break;
                 }
-                case 'table.size':
-                    $this->push(ValType::I32); break;
-                case 'table.grow': {
-                    $tIdx = (int)($instr[1] ?? 0);
+                case Op::TABLE_SIZE:
+                    $ip++; $this->push(ValType::I32); break;
+                case Op::TABLE_GROW: {
+                    $tIdx = $code[$ip++];
                     $this->pop(ValType::I32);
                     $this->pop($this->tableElemType($tIdx));
                     $this->push(ValType::I32);
                     break;
                 }
-                case 'table.fill': {
-                    $tIdx = (int)($instr[1] ?? 0);
+                case Op::TABLE_FILL: {
+                    $tIdx = $code[$ip++];
                     $this->pop(ValType::I32);
                     $this->pop($this->tableElemType($tIdx));
                     $this->pop(ValType::I32);
                     break;
                 }
-                case 'table.copy':
+                case Op::TABLE_COPY:
+                    $ip += 2; // dstTable, srcTable
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
-                case 'table.init':
+                case Op::TABLE_INIT:
+                    $ip += 2; // tableIdx, elemIdx
                     $this->pop(ValType::I32); $this->pop(ValType::I32); $this->pop(ValType::I32); break;
-                case 'elem.drop': break;
+                case Op::ELEM_DROP: $ip++; break;
 
                 // ---- Ref types ----
-                case 'ref.null': {
-                    $heapType = (string)($instr[1] ?? 'func');
-                    $refType  = match ($heapType) {
-                        'extern', 'externref' => ValType::EXTERNREF,
-                        default               => ValType::FUNCREF,
-                    };
-                    $this->push($refType);
-                    break;
-                }
-                case 'ref.is_null':
-                    $this->pop(null); $this->push(ValType::I32); break;
-                case 'ref.func':
+                case Op::REF_NULL:
                     $this->push(ValType::FUNCREF); break;
+                case Op::REF_IS_NULL:
+                    $this->pop(null); $this->push(ValType::I32); break;
+                case Op::REF_FUNC:
+                    $ip++; $this->push(ValType::FUNCREF); break;
+                case Op::REF_AS_NON_NULL:
+                    $this->pop(null); $this->push(ValType::FUNCREF); break;
 
-                // ---- Unknown: skip (don't fail on unknown instructions) ----
                 default:
                     break;
             }
@@ -525,7 +505,7 @@ final class Validator
 
         // If the function frame is still open (no explicit 'end'), validate it now
         if (!empty($this->ctrlStack)) {
-            $this->popCtrl(); // reuse the same polymorphic-aware check
+            $this->popCtrl();
         }
     }
 

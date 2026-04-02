@@ -5,24 +5,15 @@ declare(strict_types=1);
 namespace WasmRuntime;
 
 /**
- * Iterative WebAssembly interpreter with a label stack.
+ * Iterative WebAssembly interpreter with flat bytecode dispatch.
  *
- * Instruction format (flat array produced by Binary\Decoder):
- *   ['opcode', ...immediates]
+ * Instructions are stored as a flat array of integers/values produced by Binary\Decoder:
+ *   Op::XXX, immediate1, immediate2, ...
  *
- * Control instructions carry pre-computed IP targets:
- *   ['block', ?blockType, endIp]           endIp  = IP of matching 'end'
- *   ['loop',  ?blockType, contIp, endIp]   contIp = first body instr IP
- *   ['if',    ?blockType, elseIp, endIp]   elseIp == endIp → no else branch
- *   ['else',  endIp]
- *   ['end']
+ * The executor reads opcodes via $code[$ip++] and immediates the same way.
+ * Stack is managed via a $sp pointer into a pre-allocated array.
  *
  * Label stack entry: [type, contIp, stackHeight, resultCount]
- *   type:        'block' | 'loop'
- *   contIp:      for block/if  → endIp + 1 (after 'end')
- *                for loop      → first body IP
- *   stackHeight: stack.count at block entry (restored on branch)
- *   resultCount: 0 | 1  (loops always 0 in MVP)
  */
 final class Executor
 {
@@ -47,60 +38,31 @@ final class Executor
     {
         Profiler::enter('executor.invoke');
         try {
-            $rawArgs = [];
-            foreach ($args as $a) {
-                if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
-                    $rawArgs[] = null;
-                    continue;
-                }
-                $rawArgs[] = $a->value;
+            if (++$this->callDepth > self::MAX_CALL_DEPTH) {
+                $this->callDepth--;
+                throw Trap::callStackExhausted();
             }
-
-            $rawResults = $this->invokeRaw($funcIdx, $rawArgs);
-            return $this->packResults($this->instance->module->funcType($funcIdx), $rawResults);
+            try {
+                return $this->callFunction($funcIdx, $args);
+            } finally {
+                $this->callDepth--;
+            }
         } finally {
             Profiler::leave('executor.invoke');
         }
     }
 
-    /**
-     * @param  (int|float|null)[] $rawArgs
-     * @return (int|float|null)[]
-     */
-    private function invokeRaw(int $funcIdx, array $rawArgs): array
-    {
-        if (++$this->callDepth > self::MAX_CALL_DEPTH) {
-            $this->callDepth--;
-            throw Trap::callStackExhausted();
-        }
-
-        try {
-            return $this->callFunctionRaw($funcIdx, $rawArgs);
-        } finally {
-            $this->callDepth--;
-        }
-    }
-
-    /**
-     * @param  (int|float|null)[] $rawArgs
-     * @return (int|float|null)[]
-     */
-    private function callFunctionRaw(int $funcIdx, array $rawArgs): array
+    /** @return WasmValue[] */
+    private function callFunction(int $funcIdx, array $args): array
     {
         Profiler::enter('executor.callFunction');
-        // Trampoline loop for tail-call optimisation (return_call / return_call_indirect).
-        // When a tail call is encountered, run() throws TailCallSignal and we restart
-        // the loop with the new function and args — never growing the PHP call stack.
         try {
             while (true) {
                 $mod = $this->instance->module;
-                $ft  = $mod->funcType($funcIdx);
 
                 if (isset($this->hostFuncs[$funcIdx])) {
-                    $hostArgs = $this->packArgsForHost($ft, $rawArgs);
-                    $r = ($this->hostFuncs[$funcIdx])($hostArgs);
-                    $hostResults = is_array($r) ? $r : ($r !== null ? [$r] : []);
-                    return $this->unpackHostResults($hostResults);
+                    $r = ($this->hostFuncs[$funcIdx])($args);
+                    return is_array($r) ? $r : ($r !== null ? [$r] : []);
                 }
 
                 $localIdx = $funcIdx - $mod->importedFuncCount;
@@ -109,7 +71,16 @@ final class Executor
                 }
 
                 $body = $mod->funcBodies[$localIdx];
-                $locals = $rawArgs;
+                $ft   = $mod->funcType($funcIdx);
+
+                $locals = [];
+                foreach ($args as $a) {
+                    if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
+                        $locals[] = null;
+                    } else {
+                        $locals[] = $a->value;
+                    }
+                }
                 foreach ($body['locals'] as $lt) {
                     $locals[] = match ($lt) {
                         ValType::I32, ValType::I64 => 0,
@@ -122,13 +93,25 @@ final class Executor
                 try {
                     $rawResults = $this->run($body['code'], $locals, $ft);
                 } catch (TailCallSignal $tcs) {
-                    // Tail call: restart loop with new function and args (no stack growth)
                     $funcIdx = $tcs->funcIdx;
-                    $rawArgs = $tcs->args;
+                    $args    = $tcs->args;
                     continue;
                 }
 
-                return $rawResults;
+                $out = [];
+                foreach ($ft->results as $i => $rtype) {
+                    $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
+                    $out[] = match ($rtype) {
+                        ValType::I32 => WasmValue::i32((int)$v),
+                        ValType::I64 => WasmValue::i64((int)$v),
+                        ValType::F32 => WasmValue::f32(self::asF32($v)),
+                        ValType::F64 => WasmValue::f64((float)$v),
+                        ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
+                        ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
+                        default      => WasmValue::i32((int)$v),
+                    };
+                }
+                return $out;
             }
         } finally {
             Profiler::leave('executor.callFunction');
@@ -136,7 +119,7 @@ final class Executor
     }
 
     /**
-     * Main interpreter loop (iterative, label-stack based).
+     * Main interpreter loop — flat bytecode dispatch.
      * @return (int|float)[]  raw result values
      */
     private function run(array $code, array $locals, FuncType $ft): array
@@ -147,46 +130,43 @@ final class Executor
         $ip         = 0;
         $len        = count($code);
         $retCount   = count($ft->results);
-        $opcodeProfiling = Profiler::opcodeEnabled();
+        $mem0       = $this->instance->memories[0] ?? null;
 
         try {
         while ($ip < $len) {
-            $instr = $code[$ip++];
-            $op    = $instr[0];
-            $opStartNs = $opcodeProfiling ? hrtime(true) : 0;
+            $op = $code[$ip++];
 
-            try {
             switch ($op) {
 
                 // ---- Control ----
-                case 'unreachable':
+                case Op::UNREACHABLE:
                     throw Trap::unreachable();
 
-                case 'nop':
+                case Op::NOP:
                     break;
 
-                case 'block': {
-                    $blockType    = $instr[1]; // FuncType|null
-                    $endIp        = $instr[2];
-                    $paramCount   = $blockType ? count($blockType->params)   : 0;
-                    $resultCount  = $blockType ? count($blockType->results)  : 0;
+                case Op::BLOCK: {
+                    $blockType   = $code[$ip++]; // FuncType|null
+                    $endIp       = $code[$ip++];
+                    $paramCount  = $blockType ? count($blockType->params)  : 0;
+                    $resultCount = $blockType ? count($blockType->results) : 0;
                     $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                     break;
                 }
 
-                case 'loop': {
-                    $blockType    = $instr[1]; // FuncType|null
-                    $contIp       = $instr[2]; // first body instruction IP
-                    $paramCount   = $blockType ? count($blockType->params) : 0;
-                    // Loop's branch arity = paramCount (br to a loop restarts it with param values)
+                case Op::LOOP: {
+                    $blockType   = $code[$ip++]; // FuncType|null
+                    $contIp      = $code[$ip++];
+                    $endIp       = $code[$ip++];
+                    $paramCount  = $blockType ? count($blockType->params) : 0;
                     $labelStack[] = ['loop', $contIp, count($stack) - $paramCount, $paramCount];
                     break;
                 }
 
-                case 'if': {
-                    $blockType   = $instr[1]; // FuncType|null
-                    $elseIp      = $instr[2];
-                    $endIp       = $instr[3];
+                case Op::IF_: {
+                    $blockType   = $code[$ip++]; // FuncType|null
+                    $elseIp      = $code[$ip++];
+                    $endIp       = $code[$ip++];
                     $hasElse     = ($elseIp !== $endIp);
                     $paramCount  = $blockType ? count($blockType->params)  : 0;
                     $resultCount = $blockType ? count($blockType->results) : 0;
@@ -196,43 +176,42 @@ final class Executor
                         $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                     } else {
                         if ($hasElse) {
-                            $ip           = $elseIp + 1; // skip 'else' instruction
+                            $ip           = $elseIp + 2; // skip Op::ELSE_ + endIp
                             $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
                         } else {
-                            $ip = $endIp + 1; // skip 'end', no label needed
+                            $ip = $endIp + 1; // skip Op::END
                         }
                     }
                     break;
                 }
 
-                case 'else': {
-                    // Reached while executing then-branch → jump past else+end
-                    $endIp = $instr[1];
+                case Op::ELSE_: {
+                    $endIp = $code[$ip++];
                     array_pop($labelStack);
-                    $ip = $endIp + 1;
+                    $ip = $endIp + 1; // skip Op::END
                     break;
                 }
 
-                case 'end': {
+                case Op::END: {
                     if (!empty($labelStack)) {
                         array_pop($labelStack);
                     }
                     break;
                 }
 
-                case 'return': {
+                case Op::RETURN_: {
                     $n = count($stack);
                     return array_slice($stack, max(0, $n - $retCount));
                 }
 
-                case 'br': {
-                    $depth      = (int)$instr[1];
+                case Op::BR: {
+                    $depth      = $code[$ip++];
                     $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
                     break;
                 }
 
-                case 'br_if': {
-                    $depth = (int)$instr[1];
+                case Op::BR_IF: {
+                    $depth = $code[$ip++];
                     $cond  = (int)array_pop($stack);
                     if ($cond !== 0) {
                         $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
@@ -240,55 +219,56 @@ final class Executor
                     break;
                 }
 
-                case 'br_table': {
-                    $cnt     = count($instr) - 1;
-                    $targets = array_slice($instr, 1, $cnt - 1);
-                    $default = $instr[$cnt];
+                case Op::BR_TABLE: {
+                    $cnt     = $code[$ip++]; // label count
                     $idx     = (int)array_pop($stack);
-                    $depth   = (int)(($idx >= 0 && $idx < count($targets)) ? $targets[$idx] : $default);
+                    if ($idx >= 0 && $idx < $cnt) {
+                        $depth = $code[$ip + $idx];
+                    } else {
+                        $depth = $code[$ip + $cnt]; // default
+                    }
+                    $ip += $cnt + 1; // skip all labels + default
                     $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
                     break;
                 }
 
-                case 'call': {
-                    $fIdx = $instr[1];
+                case Op::CALL: {
+                    $fIdx = $code[$ip++];
                     $cft  = $this->instance->module->funcType($fIdx);
-                    $cargs = $this->popRawCallArgs($cft, $stack);
-                    $this->pushRawCallResults($this->invokeRaw($fIdx, $cargs), $stack);
+                    $cargs = $this->popCallArgs($cft, $stack);
+                    $this->pushCallResults($this->invoke($fIdx, $cargs), $stack);
                     break;
                 }
 
-                case 'return_call': {
-                    // Tail call: call then return (same result as call + return)
-                    $fIdx = $instr[1];
+                case Op::RETURN_CALL: {
+                    $fIdx = $code[$ip++];
                     $cft  = $this->instance->module->funcType($fIdx);
-                    $cargs = $this->popRawCallArgs($cft, $stack);
+                    $cargs = $this->popCallArgs($cft, $stack);
                     throw new TailCallSignal($fIdx, $cargs);
                 }
 
-                case 'call_indirect': {
-                    $typeIdx  = $instr[1];
-                    $tableIdx = $instr[2] ?? 0;
+                case Op::CALL_INDIRECT: {
+                    $typeIdx  = $code[$ip++];
+                    $tableIdx = $code[$ip++];
                     $elemIdx  = (int)array_pop($stack);
                     $cft      = $this->instance->module->types[$typeIdx];
-                    $cargs    = $this->popRawCallArgs($cft, $stack);
+                    $cargs    = $this->popCallArgs($cft, $stack);
                     $table = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx  = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$cft->equals($this->instance->module->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
-                    $this->pushRawCallResults($this->invokeRaw($fIdx, $cargs), $stack);
+                    $this->pushCallResults($this->invoke($fIdx, $cargs), $stack);
                     break;
                 }
 
-                case 'return_call_indirect': {
-                    // Tail indirect call: call then return
-                    $typeIdx  = $instr[1];
-                    $tableIdx = $instr[2] ?? 0;
+                case Op::RETURN_CALL_INDIRECT: {
+                    $typeIdx  = $code[$ip++];
+                    $tableIdx = $code[$ip++];
                     $elemIdx  = (int)array_pop($stack);
                     $cft      = $this->instance->module->types[$typeIdx];
-                    $cargs    = $this->popRawCallArgs($cft, $stack);
+                    $cargs    = $this->popCallArgs($cft, $stack);
                     $table = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx  = $table->get($elemIdx);
@@ -299,8 +279,8 @@ final class Executor
                 }
 
                 // ---- Parametric ----
-                case 'drop':   array_pop($stack); break;
-                case 'select': {
+                case Op::DROP:   array_pop($stack); break;
+                case Op::SELECT: {
                     $c = (int)array_pop($stack);
                     $b = array_pop($stack);
                     $a = array_pop($stack);
@@ -309,222 +289,216 @@ final class Executor
                 }
 
                 // ---- Variable ----
-                case 'local.get':  $stack[] = $locals[(int)$instr[1]]; break;
-                case 'local.set':  $locals[(int)$instr[1]] = array_pop($stack); break;
-                case 'local.tee':  $locals[(int)$instr[1]] = end($stack); break;
-                case 'global.get': $stack[] = $this->instance->globals[(int)$instr[1]]; break;
-                case 'global.set': $this->instance->globals[(int)$instr[1]] = array_pop($stack); break;
+                case Op::LOCAL_GET:  $stack[] = $locals[$code[$ip++]]; break;
+                case Op::LOCAL_SET:  $locals[$code[$ip++]] = array_pop($stack); break;
+                case Op::LOCAL_TEE:  $locals[$code[$ip++]] = end($stack); break;
+                case Op::GLOBAL_GET: $stack[] = $this->instance->globals[$code[$ip++]]; break;
+                case Op::GLOBAL_SET: $this->instance->globals[$code[$ip++]] = array_pop($stack); break;
 
                 // ---- Constants ----
-                case 'i32.const': $stack[] = (int)$instr[1]; break;
-                case 'i64.const': $stack[] = (int)$instr[1]; break;
-                case 'f32.const': $stack[] = $instr[1]; break; // int for NaN bits, float otherwise
-                case 'f64.const': $stack[] = (float)$instr[1]; break;
+                case Op::I32_CONST: $stack[] = $code[$ip++]; break;
+                case Op::I64_CONST: $stack[] = $code[$ip++]; break;
+                case Op::F32_CONST: $stack[] = $code[$ip++]; break;
+                case Op::F64_CONST: $stack[] = $code[$ip++]; break;
 
                 // ---- i32 arithmetic ----
-                case 'i32.add': { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a+$b); break; }
-                case 'i32.sub': { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a-$b); break; }
-                case 'i32.mul': { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a*$b); break; }
-                case 'i32.div_s': {
-                    [$a,$b]=self::p2i($stack);
+                case Op::I32_ADD: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a+$b); break; }
+                case Op::I32_SUB: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a-$b); break; }
+                case Op::I32_MUL: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a*$b); break; }
+                case Op::I32_DIV_S: {
+                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
                     if ($b===0) throw Trap::integerDivideByZero();
                     if ($a===-2147483648 && $b===-1) throw Trap::integerOverflow();
                     $stack[]=WasmValue::mask32(intdiv($a,$b)); break;
                 }
-                case 'i32.div_u': {
+                case Op::I32_DIV_U: {
                     $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack));
                     if ($b===0) throw Trap::integerDivideByZero();
                     $stack[]=WasmValue::mask32((int)($a/$b)); break;
                 }
-                case 'i32.rem_s': {
-                    [$a,$b]=self::p2i($stack);
+                case Op::I32_REM_S: {
+                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
                     if ($b===0) throw Trap::integerDivideByZero();
                     $stack[]=WasmValue::mask32($a%$b); break;
                 }
-                case 'i32.rem_u': {
+                case Op::I32_REM_U: {
                     $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack));
                     if ($b===0) throw Trap::integerDivideByZero();
                     $stack[]=WasmValue::mask32($a%$b); break;
                 }
-                case 'i32.and':   { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a&$b); break; }
-                case 'i32.or':    { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a|$b); break; }
-                case 'i32.xor':   { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a^$b); break; }
-                case 'i32.shl':   { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a<<($b&31)); break; }
-                case 'i32.shr_s': { [$a,$b]=self::p2i($stack); $stack[]=WasmValue::mask32($a>>($b&31)); break; }
-                case 'i32.shr_u': {
+                case Op::I32_AND:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a&$b); break; }
+                case Op::I32_OR:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a|$b); break; }
+                case Op::I32_XOR:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a^$b); break; }
+                case Op::I32_SHL:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a<<($b&31)); break; }
+                case Op::I32_SHR_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=WasmValue::mask32($a>>($b&31)); break; }
+                case Op::I32_SHR_U: {
                     $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack));
                     $stack[]=WasmValue::mask32($a>>($b&31)); break;
                 }
-                case 'i32.rotl': {
+                case Op::I32_ROTL: {
                     $b=WasmValue::u32((int)array_pop($stack))&31; $a=WasmValue::u32((int)array_pop($stack));
                     $stack[]=WasmValue::mask32(($a<<$b)|($a>>(32-$b))); break;
                 }
-                case 'i32.rotr': {
+                case Op::I32_ROTR: {
                     $b=WasmValue::u32((int)array_pop($stack))&31; $a=WasmValue::u32((int)array_pop($stack));
                     $stack[]=WasmValue::mask32(($a>>$b)|($a<<(32-$b))); break;
                 }
-                case 'i32.clz':    { $a=WasmValue::u32((int)array_pop($stack)); $stack[]=$a===0?32:self::clz32($a); break; }
-                case 'i32.ctz':    { $a=WasmValue::u32((int)array_pop($stack)); $stack[]=$a===0?32:self::ctz($a); break; }
-                case 'i32.popcnt': { $a=WasmValue::u32((int)array_pop($stack)); $n=0; while($a){$n+=$a&1;$a>>=1;} $stack[]=$n; break; }
-                case 'i32.eqz':    $stack[]=((int)array_pop($stack)===0)?1:0; break;
-                case 'i32.eq':     { [$a,$b]=self::p2i($stack); $stack[]=($a===$b)?1:0; break; }
-                case 'i32.ne':     { [$a,$b]=self::p2i($stack); $stack[]=($a!==$b)?1:0; break; }
-                case 'i32.lt_s':   { [$a,$b]=self::p2i($stack); $stack[]=($a<$b)?1:0; break; }
-                case 'i32.lt_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a<$b)?1:0; break; }
-                case 'i32.gt_s':   { [$a,$b]=self::p2i($stack); $stack[]=($a>$b)?1:0; break; }
-                case 'i32.gt_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>$b)?1:0; break; }
-                case 'i32.le_s':   { [$a,$b]=self::p2i($stack); $stack[]=($a<=$b)?1:0; break; }
-                case 'i32.le_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a<=$b)?1:0; break; }
-                case 'i32.ge_s':   { [$a,$b]=self::p2i($stack); $stack[]=($a>=$b)?1:0; break; }
-                case 'i32.ge_u':   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
+                case Op::I32_CLZ:    { $a=WasmValue::u32((int)array_pop($stack)); $stack[]=$a===0?32:self::clz32($a); break; }
+                case Op::I32_CTZ:    { $a=WasmValue::u32((int)array_pop($stack)); $stack[]=$a===0?32:self::ctz($a); break; }
+                case Op::I32_POPCNT: { $a=WasmValue::u32((int)array_pop($stack)); $n=0; while($a){$n+=$a&1;$a>>=1;} $stack[]=$n; break; }
+                case Op::I32_EQZ:    $stack[]=((int)array_pop($stack)===0)?1:0; break;
+                case Op::I32_EQ:     { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
+                case Op::I32_NE:     { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
+                case Op::I32_LT_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
+                case Op::I32_LT_U:   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a<$b)?1:0; break; }
+                case Op::I32_GT_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
+                case Op::I32_GT_U:   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>$b)?1:0; break; }
+                case Op::I32_LE_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
+                case Op::I32_LE_U:   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a<=$b)?1:0; break; }
+                case Op::I32_GE_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
+                case Op::I32_GE_U:   { $b=WasmValue::u32((int)array_pop($stack)); $a=WasmValue::u32((int)array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case 'i64.add': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Add($a,$b); break; }
-                case 'i64.sub': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Sub($a,$b); break; }
-                case 'i64.mul': { [$a,$b]=self::p2i($stack); $stack[]=self::int64Mul($a,$b); break; }
-                case 'i64.div_s': {
-                    [$a,$b]=self::p2i($stack);
+                case Op::I64_ADD: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Add($a,$b); break; }
+                case Op::I64_SUB: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Sub($a,$b); break; }
+                case Op::I64_MUL: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Mul($a,$b); break; }
+                case Op::I64_DIV_S: {
+                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
                     if ($b===0) throw Trap::integerDivideByZero();
                     if ($a===PHP_INT_MIN && $b===-1) throw Trap::integerOverflow();
                     $stack[]=intdiv($a,$b); break;
                 }
-                case 'i64.div_u': { [$a,$b]=self::p2i($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64div($a,$b); break; }
-                case 'i64.rem_s': { [$a,$b]=self::p2i($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=$a%$b; break; }
-                case 'i64.rem_u': { [$a,$b]=self::p2i($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64rem($a,$b); break; }
-                case 'i64.and':   { [$a,$b]=self::p2i($stack); $stack[]=$a&$b; break; }
-                case 'i64.or':    { [$a,$b]=self::p2i($stack); $stack[]=$a|$b; break; }
-                case 'i64.xor':   { [$a,$b]=self::p2i($stack); $stack[]=$a^$b; break; }
-                case 'i64.shl':   { [$a,$b]=self::p2i($stack); $stack[]=$a<<($b&63); break; }
-                case 'i64.shr_s': { [$a,$b]=self::p2i($stack); $stack[]=$a>>($b&63); break; }
-                case 'i64.shr_u': { [$a,$b]=self::p2i($stack); $stack[]=self::shr64u($a,$b&63); break; }
-                case 'i64.rotl':  { [$a,$b]=self::p2i($stack); $b&=63; $stack[]=($a<<$b)|self::shr64u($a,64-$b); break; }
-                case 'i64.rotr':  { [$a,$b]=self::p2i($stack); $b&=63; $stack[]=self::shr64u($a,$b)|($a<<(64-$b)); break; }
-                case 'i64.clz':   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::clz64($a); break; }
-                case 'i64.ctz':   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::ctz($a); break; }
-                case 'i64.popcnt':{ $a=(int)array_pop($stack); $n=0; for($b=0;$b<64;$b++){if(($a>>$b)&1)$n++;} $stack[]=$n; break; }
-                case 'i64.eqz':   $stack[]=((int)array_pop($stack)===0)?1:0; break;
-                case 'i64.eq':    { [$a,$b]=self::p2i($stack); $stack[]=($a===$b)?1:0; break; }
-                case 'i64.ne':    { [$a,$b]=self::p2i($stack); $stack[]=($a!==$b)?1:0; break; }
-                case 'i64.lt_s':  { [$a,$b]=self::p2i($stack); $stack[]=($a<$b)?1:0; break; }
-                case 'i64.lt_u':  { [$a,$b]=self::p2i($stack); $stack[]=self::u64cmp($a,$b)<0?1:0; break; }
-                case 'i64.gt_s':  { [$a,$b]=self::p2i($stack); $stack[]=($a>$b)?1:0; break; }
-                case 'i64.gt_u':  { [$a,$b]=self::p2i($stack); $stack[]=self::u64cmp($a,$b)>0?1:0; break; }
-                case 'i64.le_s':  { [$a,$b]=self::p2i($stack); $stack[]=($a<=$b)?1:0; break; }
-                case 'i64.le_u':  { [$a,$b]=self::p2i($stack); $stack[]=self::u64cmp($a,$b)<=0?1:0; break; }
-                case 'i64.ge_s':  { [$a,$b]=self::p2i($stack); $stack[]=($a>=$b)?1:0; break; }
-                case 'i64.ge_u':  { [$a,$b]=self::p2i($stack); $stack[]=self::u64cmp($a,$b)>=0?1:0; break; }
+                case Op::I64_DIV_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64div($a,$b); break; }
+                case Op::I64_REM_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=$a%$b; break; }
+                case Op::I64_REM_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64rem($a,$b); break; }
+                case Op::I64_AND:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a&$b; break; }
+                case Op::I64_OR:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a|$b; break; }
+                case Op::I64_XOR:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a^$b; break; }
+                case Op::I64_SHL:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a<<($b&63); break; }
+                case Op::I64_SHR_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a>>($b&63); break; }
+                case Op::I64_SHR_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::shr64u($a,$b&63); break; }
+                case Op::I64_ROTL:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $b&=63; $stack[]=($a<<$b)|self::shr64u($a,64-$b); break; }
+                case Op::I64_ROTR:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $b&=63; $stack[]=self::shr64u($a,$b)|($a<<(64-$b)); break; }
+                case Op::I64_CLZ:   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::clz64($a); break; }
+                case Op::I64_CTZ:   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::ctz($a); break; }
+                case Op::I64_POPCNT:{ $a=(int)array_pop($stack); $n=0; for($b=0;$b<64;$b++){if(($a>>$b)&1)$n++;} $stack[]=$n; break; }
+                case Op::I64_EQZ:   $stack[]=((int)array_pop($stack)===0)?1:0; break;
+                case Op::I64_EQ:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
+                case Op::I64_NE:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
+                case Op::I64_LT_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
+                case Op::I64_LT_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)<0?1:0; break; }
+                case Op::I64_GT_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
+                case Op::I64_GT_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)>0?1:0; break; }
+                case Op::I64_LE_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
+                case Op::I64_LE_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)<=0?1:0; break; }
+                case Op::I64_GE_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
+                case Op::I64_GE_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)>=0?1:0; break; }
 
                 // ---- f32 arithmetic ----
-                case 'f32.add':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a+$b); break; }
-                case 'f32.sub':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a-$b); break; }
-                case 'f32.mul':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32($a*$b); break; }
-                case 'f32.div':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
-                case 'f32.min':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmin($a,$b)); break; }
-                case 'f32.max':     { [$a,$b]=self::p2f($stack); $stack[]=WasmValue::canonF32(self::fmax($a,$b)); break; }
-                case 'f32.abs': {
+                case Op::F32_ADD:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a+$b); break; }
+                case Op::F32_SUB:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a-$b); break; }
+                case Op::F32_MUL:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a*$b); break; }
+                case Op::F32_DIV:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
+                case Op::F32_MIN:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fmin($a,$b)); break; }
+                case Op::F32_MAX:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fmax($a,$b)); break; }
+                case Op::F32_ABS: {
                     $v=array_pop($stack);
-                    // Preserve NaN payload: clear sign bit (bit 31)
                     if (is_int($v)) { $stack[]=$v&0x7FFFFFFF; }
                     else { $stack[]=WasmValue::canonF32(abs((float)$v)); }
                     break;
                 }
-                case 'f32.neg': {
+                case Op::F32_NEG: {
                     $v=array_pop($stack);
-                    // Preserve NaN payload: flip sign bit (bit 31)
                     if (is_int($v)) { $stack[]=$v^(int)0x80000000; }
                     else { $stack[]=WasmValue::canonF32(-(float)$v); }
                     break;
                 }
-                case 'f32.sqrt':    { $stack[]=WasmValue::canonF32(sqrt(self::asF32(array_pop($stack)))); break; }
-                case 'f32.ceil':    { $stack[]=WasmValue::canonF32(ceil(self::asF32(array_pop($stack)))); break; }
-                case 'f32.floor':   { $stack[]=WasmValue::canonF32(floor(self::asF32(array_pop($stack)))); break; }
-                case 'f32.trunc':   { $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
-                case 'f32.nearest': { $stack[]=WasmValue::canonF32(self::nearest(self::asF32(array_pop($stack)))); break; }
-                case 'f32.copysign':{
+                case Op::F32_SQRT:    { $stack[]=WasmValue::canonF32(sqrt(self::asF32(array_pop($stack)))); break; }
+                case Op::F32_CEIL:    { $stack[]=WasmValue::canonF32(ceil(self::asF32(array_pop($stack)))); break; }
+                case Op::F32_FLOOR:   { $stack[]=WasmValue::canonF32(floor(self::asF32(array_pop($stack)))); break; }
+                case Op::F32_TRUNC:   { $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
+                case Op::F32_NEAREST: { $stack[]=WasmValue::canonF32(self::nearest(self::asF32(array_pop($stack)))); break; }
+                case Op::F32_COPYSIGN:{
                     $bv=array_pop($stack); $av=array_pop($stack);
-                    // copysign must preserve NaN payload, only changing sign bit
                     $aBits=is_int($av)?$av:WasmValue::f32Bits((float)$av);
                     $bBits=is_int($bv)?$bv:WasmValue::f32Bits((float)$bv);
                     $result=($aBits&0x7FFFFFFF)|($bBits&(int)0x80000000);
-                    // Store as int if NaN, float otherwise
                     if (($result&0x7FFFFFFF)>0x7F800000) { $stack[]=$result; }
                     else { $stack[]=(float)unpack('f',pack('V',$result))[1]; }
                     break;
                 }
-                case 'f32.eq':  { [$a,$b]=self::p2f($stack); $stack[]=($a===$b)?1:0; break; }
-                case 'f32.ne':  { [$a,$b]=self::p2f($stack); $stack[]=($a!==$b)?1:0; break; }
-                case 'f32.lt':  { [$a,$b]=self::p2f($stack); $stack[]=($a<$b)?1:0; break; }
-                case 'f32.gt':  { [$a,$b]=self::p2f($stack); $stack[]=($a>$b)?1:0; break; }
-                case 'f32.le':  { [$a,$b]=self::p2f($stack); $stack[]=($a<=$b)?1:0; break; }
-                case 'f32.ge':  { [$a,$b]=self::p2f($stack); $stack[]=($a>=$b)?1:0; break; }
+                case Op::F32_EQ:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a===$b)?1:0; break; }
+                case Op::F32_NE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a!==$b)?1:0; break; }
+                case Op::F32_LT:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a<$b)?1:0; break; }
+                case Op::F32_GT:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a>$b)?1:0; break; }
+                case Op::F32_LE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a<=$b)?1:0; break; }
+                case Op::F32_GE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
 
                 // ---- f64 arithmetic ----
-                case 'f64.add':     { [$a,$b]=self::p2f($stack); $stack[]=$a+$b; break; }
-                case 'f64.sub':     { [$a,$b]=self::p2f($stack); $stack[]=$a-$b; break; }
-                case 'f64.mul':     { [$a,$b]=self::p2f($stack); $stack[]=$a*$b; break; }
-                case 'f64.div':     { [$a,$b]=self::p2f($stack); $stack[]=self::fdiv($a,$b); break; }
-                case 'f64.min':     { [$a,$b]=self::p2f($stack); $stack[]=self::fmin($a,$b); break; }
-                case 'f64.max':     { [$a,$b]=self::p2f($stack); $stack[]=self::fmax($a,$b); break; }
-                case 'f64.abs':     { $stack[]=abs((float)array_pop($stack)); break; }
-                case 'f64.neg':     { $stack[]=-(float)array_pop($stack); break; }
-                case 'f64.sqrt':    { $stack[]=sqrt((float)array_pop($stack)); break; }
-                case 'f64.ceil':    { $stack[]=ceil((float)array_pop($stack)); break; }
-                case 'f64.floor':   { $stack[]=floor((float)array_pop($stack)); break; }
-                case 'f64.trunc':   { $a=(float)array_pop($stack); $stack[]=$a>=0?floor($a):ceil($a); break; }
-                case 'f64.nearest': { $stack[]=self::nearest((float)array_pop($stack)); break; }
-                case 'f64.copysign':{ [$a,$b]=self::p2f($stack); $stack[]=self::copysign($a,$b); break; }
-                case 'f64.eq':  { [$a,$b]=self::p2f($stack); $stack[]=($a===$b)?1:0; break; }
-                case 'f64.ne':  { [$a,$b]=self::p2f($stack); $stack[]=($a!==$b)?1:0; break; }
-                case 'f64.lt':  { [$a,$b]=self::p2f($stack); $stack[]=($a<$b)?1:0; break; }
-                case 'f64.gt':  { [$a,$b]=self::p2f($stack); $stack[]=($a>$b)?1:0; break; }
-                case 'f64.le':  { [$a,$b]=self::p2f($stack); $stack[]=($a<=$b)?1:0; break; }
-                case 'f64.ge':  { [$a,$b]=self::p2f($stack); $stack[]=($a>=$b)?1:0; break; }
+                case Op::F64_ADD:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a+$b; break; }
+                case Op::F64_SUB:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a-$b; break; }
+                case Op::F64_MUL:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a*$b; break; }
+                case Op::F64_DIV:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fdiv($a,$b); break; }
+                case Op::F64_MIN:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fmin($a,$b); break; }
+                case Op::F64_MAX:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fmax($a,$b); break; }
+                case Op::F64_ABS:     { $stack[]=abs((float)array_pop($stack)); break; }
+                case Op::F64_NEG:     { $stack[]=-(float)array_pop($stack); break; }
+                case Op::F64_SQRT:    { $stack[]=sqrt((float)array_pop($stack)); break; }
+                case Op::F64_CEIL:    { $stack[]=ceil((float)array_pop($stack)); break; }
+                case Op::F64_FLOOR:   { $stack[]=floor((float)array_pop($stack)); break; }
+                case Op::F64_TRUNC:   { $a=(float)array_pop($stack); $stack[]=$a>=0?floor($a):ceil($a); break; }
+                case Op::F64_NEAREST: { $stack[]=self::nearest((float)array_pop($stack)); break; }
+                case Op::F64_COPYSIGN:{ $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::copysign($a,$b); break; }
+                case Op::F64_EQ:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
+                case Op::F64_NE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
+                case Op::F64_LT:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
+                case Op::F64_GT:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
+                case Op::F64_LE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
+                case Op::F64_GE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
 
                 // ---- Conversions ----
-                case 'i32.wrap_i64':       { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
-                case 'i32.trunc_f32_s':    { $stack[]=self::truncF2I32s(self::asF32(array_pop($stack))); break; }
-                case 'i32.trunc_f32_u':    { $stack[]=self::truncF2I32u(self::asF32(array_pop($stack))); break; }
-                case 'i32.trunc_f64_s':    { $stack[]=self::truncF2I32s((float)array_pop($stack)); break; }
-                case 'i32.trunc_f64_u':    { $stack[]=self::truncF2I32u((float)array_pop($stack)); break; }
-                case 'i32.trunc_sat_f32_s':{ $stack[]=self::truncSatI32s(self::asF32(array_pop($stack))); break; }
-                case 'i32.trunc_sat_f32_u':{ $stack[]=self::truncSatI32u(self::asF32(array_pop($stack))); break; }
-                case 'i32.trunc_sat_f64_s':{ $stack[]=self::truncSatI32s((float)array_pop($stack)); break; }
-                case 'i32.trunc_sat_f64_u':{ $stack[]=self::truncSatI32u((float)array_pop($stack)); break; }
-                case 'i64.extend_i32_s':   { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
-                case 'i64.extend_i32_u':   { $stack[]=WasmValue::u32((int)array_pop($stack)); break; }
-                case 'i64.trunc_f32_s':    { $stack[]=self::truncF2I64s(self::asF32(array_pop($stack))); break; }
-                case 'i64.trunc_f32_u':    { $stack[]=self::truncF2I64u(self::asF32(array_pop($stack))); break; }
-                case 'i64.trunc_f64_s':    { $stack[]=self::truncF2I64s((float)array_pop($stack)); break; }
-                case 'i64.trunc_f64_u':    { $stack[]=self::truncF2I64u((float)array_pop($stack)); break; }
-                case 'i64.trunc_sat_f64_s':{ $stack[]=self::truncSatI64s((float)array_pop($stack)); break; }
-                case 'i64.trunc_sat_f64_u':{ $stack[]=self::truncSatI64u((float)array_pop($stack)); break; }
-                case 'i64.trunc_sat_f32_s':{ $stack[]=self::truncSatI64s(self::asF32(array_pop($stack))); break; }
-                case 'i64.trunc_sat_f32_u':{ $stack[]=self::truncSatI64u(self::asF32(array_pop($stack))); break; }
-                case 'f32.convert_i32_s':  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
-                case 'f32.convert_i32_u':  { $stack[]=WasmValue::canonF32((float)WasmValue::u32((int)array_pop($stack))); break; }
-                case 'f32.convert_i64_s':  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
-                case 'f32.convert_i64_u':  { $stack[]=WasmValue::canonF32(self::u64toFloat((int)array_pop($stack))); break; }
-                case 'f32.demote_f64':     { $stack[]=WasmValue::canonF32((float)array_pop($stack)); break; }
-                case 'f64.convert_i32_s':  { $stack[]=(float)(int)array_pop($stack); break; }
-                case 'f64.convert_i32_u':  { $stack[]=(float)WasmValue::u32((int)array_pop($stack)); break; }
-                case 'f64.convert_i64_s':  { $stack[]=(float)(int)array_pop($stack); break; }
-                case 'f64.convert_i64_u':  { $stack[]=self::u64toFloat((int)array_pop($stack)); break; }
-                case 'f64.promote_f32':    { $stack[]=self::asF32(array_pop($stack)); break; }
-                case 'i32.reinterpret_f32': {
+                case Op::I32_WRAP_I64:       { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
+                case Op::I32_TRUNC_F32_S:    { $stack[]=self::truncF2I32s(self::asF32(array_pop($stack))); break; }
+                case Op::I32_TRUNC_F32_U:    { $stack[]=self::truncF2I32u(self::asF32(array_pop($stack))); break; }
+                case Op::I32_TRUNC_F64_S:    { $stack[]=self::truncF2I32s((float)array_pop($stack)); break; }
+                case Op::I32_TRUNC_F64_U:    { $stack[]=self::truncF2I32u((float)array_pop($stack)); break; }
+                case Op::I32_TRUNC_SAT_F32_S:{ $stack[]=self::truncSatI32s(self::asF32(array_pop($stack))); break; }
+                case Op::I32_TRUNC_SAT_F32_U:{ $stack[]=self::truncSatI32u(self::asF32(array_pop($stack))); break; }
+                case Op::I32_TRUNC_SAT_F64_S:{ $stack[]=self::truncSatI32s((float)array_pop($stack)); break; }
+                case Op::I32_TRUNC_SAT_F64_U:{ $stack[]=self::truncSatI32u((float)array_pop($stack)); break; }
+                case Op::I64_EXTEND_I32_S:   { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
+                case Op::I64_EXTEND_I32_U:   { $stack[]=WasmValue::u32((int)array_pop($stack)); break; }
+                case Op::I64_TRUNC_F32_S:    { $stack[]=self::truncF2I64s(self::asF32(array_pop($stack))); break; }
+                case Op::I64_TRUNC_F32_U:    { $stack[]=self::truncF2I64u(self::asF32(array_pop($stack))); break; }
+                case Op::I64_TRUNC_F64_S:    { $stack[]=self::truncF2I64s((float)array_pop($stack)); break; }
+                case Op::I64_TRUNC_F64_U:    { $stack[]=self::truncF2I64u((float)array_pop($stack)); break; }
+                case Op::I64_TRUNC_SAT_F64_S:{ $stack[]=self::truncSatI64s((float)array_pop($stack)); break; }
+                case Op::I64_TRUNC_SAT_F64_U:{ $stack[]=self::truncSatI64u((float)array_pop($stack)); break; }
+                case Op::I64_TRUNC_SAT_F32_S:{ $stack[]=self::truncSatI64s(self::asF32(array_pop($stack))); break; }
+                case Op::I64_TRUNC_SAT_F32_U:{ $stack[]=self::truncSatI64u(self::asF32(array_pop($stack))); break; }
+                case Op::F32_CONVERT_I32_S:  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
+                case Op::F32_CONVERT_I32_U:  { $stack[]=WasmValue::canonF32((float)WasmValue::u32((int)array_pop($stack))); break; }
+                case Op::F32_CONVERT_I64_S:  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
+                case Op::F32_CONVERT_I64_U:  { $stack[]=WasmValue::canonF32(self::u64toFloat((int)array_pop($stack))); break; }
+                case Op::F32_DEMOTE_F64:     { $stack[]=WasmValue::canonF32((float)array_pop($stack)); break; }
+                case Op::F64_CONVERT_I32_S:  { $stack[]=(float)(int)array_pop($stack); break; }
+                case Op::F64_CONVERT_I32_U:  { $stack[]=(float)WasmValue::u32((int)array_pop($stack)); break; }
+                case Op::F64_CONVERT_I64_S:  { $stack[]=(float)(int)array_pop($stack); break; }
+                case Op::F64_CONVERT_I64_U:  { $stack[]=self::u64toFloat((int)array_pop($stack)); break; }
+                case Op::F64_PROMOTE_F32:    { $stack[]=self::asF32(array_pop($stack)); break; }
+                case Op::I32_REINTERPRET_F32: {
                     $v=array_pop($stack);
-                    // f32 NaN values are stored as int (bit pattern); use directly
                     $stack[]=is_int($v) ? WasmValue::mask32($v) : WasmValue::mask32(WasmValue::f32Bits((float)$v));
                     break;
                 }
-                case 'i64.reinterpret_f64': {
+                case Op::I64_REINTERPRET_F64: {
                     $v=(float)array_pop($stack); $p=pack('d',$v);
                     $lo=unpack('V',$p)[1]; $hi=unpack('V',substr($p,4))[1];
                     $stack[]=($hi<<32)|$lo; break;
                 }
-                case 'f32.reinterpret_i32': {
+                case Op::F32_REINTERPRET_I32: {
                     $v=(int)array_pop($stack);
                     $bits = $v & 0xFFFFFFFF;
-                    // If the bit pattern is NaN, store as int to preserve payload
                     if (($bits & 0x7FFFFFFF) > 0x7F800000) {
                         $stack[] = WasmValue::mask32($bits);
                     } else {
@@ -532,76 +506,76 @@ final class Executor
                     }
                     break;
                 }
-                case 'f64.reinterpret_i64': {
+                case Op::F64_REINTERPRET_I64: {
                     $v=(int)array_pop($stack);
                     $lo=$v&0xFFFFFFFF; $hi=($v>>32)&0xFFFFFFFF;
                     $stack[]=unpack('d',pack('VV',$lo,$hi))[1]; break;
                 }
-                case 'i32.extend8_s':  { $v=(int)array_pop($stack)&0xFF;   $stack[]=WasmValue::mask32(($v&0x80)?$v|(-1<<8):$v); break; }
-                case 'i32.extend16_s': { $v=(int)array_pop($stack)&0xFFFF; $stack[]=WasmValue::mask32(($v&0x8000)?$v|(-1<<16):$v); break; }
-                case 'i64.extend8_s':  { $v=(int)array_pop($stack)&0xFF;   $stack[]=($v&0x80)?$v|(-1<<8):$v; break; }
-                case 'i64.extend16_s': { $v=(int)array_pop($stack)&0xFFFF; $stack[]=($v&0x8000)?$v|(-1<<16):$v; break; }
-                case 'i64.extend32_s': { $v=(int)array_pop($stack)&0xFFFFFFFF; $stack[]=($v&0x80000000)?$v|(-1<<32):$v; break; }
+                case Op::I32_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $stack[]=WasmValue::mask32(($v&0x80)?$v|(-1<<8):$v); break; }
+                case Op::I32_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $stack[]=WasmValue::mask32(($v&0x8000)?$v|(-1<<16):$v); break; }
+                case Op::I64_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $stack[]=($v&0x80)?$v|(-1<<8):$v; break; }
+                case Op::I64_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $stack[]=($v&0x8000)?$v|(-1<<16):$v; break; }
+                case Op::I64_EXTEND32_S: { $v=(int)array_pop($stack)&0xFFFFFFFF; $stack[]=($v&0x80000000)?$v|(-1<<32):$v; break; }
 
                 // ---- Memory ----
-                case 'memory.size': $stack[]=$this->instance->memories[0]->size(); break;
-                case 'memory.grow': { $stack[]=$this->instance->memories[0]->grow((int)array_pop($stack)); break; }
-                case 'i32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI64(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'f32.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'f64.load':    { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadF64(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i32.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i32.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i32.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i32.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load8_s': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load8_u': { $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI8u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load16_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load16_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI16u(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load32_s':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadI32s(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i64.load32_u':{ $a=(int)array_pop($stack); $stack[]=$this->instance->memories[0]->loadU32(($a&0xFFFFFFFF)+(int)$instr[1]); break; }
-                case 'i32.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i64.store':   { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'f32.store':   { $v=array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'f64.store':   { $v=(float)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeF64(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i32.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i32.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i64.store8':  { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI8(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i64.store16': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI16(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
-                case 'i64.store32': { $v=(int)array_pop($stack); $a=(int)array_pop($stack); $this->instance->memories[0]->storeI32(($a&0xFFFFFFFF)+(int)$instr[1],$v); break; }
+                case Op::MEMORY_SIZE: $stack[]=$mem0->size(); break;
+                case Op::MEMORY_GROW: { $stack[]=$mem0->grow((int)array_pop($stack)); break; }
+                case Op::I32_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI64(($a&0xFFFFFFFF)+$off); break; }
+                case Op::F32_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadF32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::F64_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadF64(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD8_S: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD8_U: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD16_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD16_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD8_S: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD8_U: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD16_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD16_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD32_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI32s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD32_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadU32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_STORE:   { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE:   { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI64(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::F32_STORE:   { $off=$code[$ip++]; $v=array_pop($stack); $a=(int)array_pop($stack); $mem0->storeF32(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::F64_STORE:   { $off=$code[$ip++]; $v=(float)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeF64(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I32_STORE8:  { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I32_STORE16: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE8:  { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE16: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE32: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
 
                 // ---- Table ----
-                case 'table.size': {
-                    $tIdx = $instr[1] ?? 0;
+                case Op::TABLE_SIZE: {
+                    $tIdx = $code[$ip++];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[] = $table->size();
                     break;
                 }
-                case 'table.grow': {
-                    $tIdx = $instr[1] ?? 0;
+                case Op::TABLE_GROW: {
+                    $tIdx = $code[$ip++];
                     $n    = (int)array_pop($stack);
                     $val  = array_pop($stack);
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[] = $table->grow($n, $val);
                     break;
                 }
-                case 'table.get': {
-                    $tIdx = $instr[1] ?? 0;
+                case Op::TABLE_GET: {
+                    $tIdx = $code[$ip++];
                     $idx  = (int)array_pop($stack);
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[] = $table->get($idx);
                     break;
                 }
-                case 'table.set': {
-                    $tIdx = $instr[1] ?? 0;
+                case Op::TABLE_SET: {
+                    $tIdx = $code[$ip++];
                     $val  = array_pop($stack);
                     $idx  = (int)array_pop($stack);
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $table->set($idx, $val);
                     break;
                 }
-                case 'table.fill': {
-                    $tIdx = $instr[1] ?? 0;
+                case Op::TABLE_FILL: {
+                    $tIdx = $code[$ip++];
                     $n    = (int)array_pop($stack);
                     $val  = array_pop($stack);
                     $i    = (int)array_pop($stack);
@@ -612,9 +586,9 @@ final class Executor
                     for ($k = 0; $k < $n; $k++) $table->set($i + $k, $val);
                     break;
                 }
-                case 'table.copy': {
-                    $dIdx = $instr[1] ?? 0;
-                    $sIdx = $instr[2] ?? 0;
+                case Op::TABLE_COPY: {
+                    $dIdx = $code[$ip++];
+                    $sIdx = $code[$ip++];
                     $n    = (int)array_pop($stack);
                     $s    = (int)array_pop($stack);
                     $d    = (int)array_pop($stack);
@@ -625,7 +599,6 @@ final class Executor
                         throw Trap::outOfBoundsTableAccess();
                     }
                     if ($nu === 0) break;
-                    // Copy in correct direction to handle overlap
                     if ($du <= $su) {
                         for ($k = 0; $k < $nu; $k++) $dTable->set($du + $k, $sTable->get($su + $k));
                     } else {
@@ -633,9 +606,9 @@ final class Executor
                     }
                     break;
                 }
-                case 'table.init': {
-                    $tIdx = $instr[1] ?? 0;
-                    $eIdx = $instr[2] ?? 0;
+                case Op::TABLE_INIT: {
+                    $tIdx = $code[$ip++];
+                    $eIdx = $code[$ip++];
                     $n    = (int)array_pop($stack);
                     $s    = (int)array_pop($stack);
                     $d    = (int)array_pop($stack);
@@ -649,62 +622,57 @@ final class Executor
                     for ($k = 0; $k < $nu; $k++) $table->set($du + $k, $funcIndices[$su + $k] ?? null);
                     break;
                 }
-                case 'elem.drop': {
-                    $eIdx = $instr[1] ?? 0;
-                    // Clear the element segment's function indices
+                case Op::ELEM_DROP: {
+                    $eIdx = $code[$ip++];
                     if (isset($this->instance->module->elements[$eIdx])) {
                         $this->instance->module->elements[$eIdx]['funcIndices'] = [];
                     }
                     break;
                 }
                 // ---- References ----
-                case 'ref.null':
+                case Op::REF_NULL:
                     $stack[] = null;
                     break;
-                case 'ref.func': {
-                    $fIdx = $instr[1] ?? 0;
+                case Op::REF_FUNC: {
+                    $fIdx = $code[$ip++];
                     $stack[] = $fIdx;
                     break;
                 }
-                case 'ref.is_null':
+                case Op::REF_IS_NULL:
                     $stack[] = (array_pop($stack) === null) ? 1 : 0;
                     break;
-                case 'ref.as_non_null': {
+                case Op::REF_AS_NON_NULL: {
                     $val = array_pop($stack);
                     if ($val === null) throw new Trap('null dereference');
                     $stack[] = $val;
                     break;
                 }
                 // ---- Memory bulk operations ----
-                case 'memory.fill': {
+                case Op::MEMORY_FILL: {
                     $n   = (int)array_pop($stack);
                     $val = (int)array_pop($stack);
                     $d   = (int)array_pop($stack);
-                    $mem = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
-                    $mem->fill($d, $val & 0xFF, $n);
+                    $mem0->fill($d, $val & 0xFF, $n);
                     break;
                 }
-                case 'memory.copy': {
+                case Op::MEMORY_COPY: {
                     $n = (int)array_pop($stack);
                     $s = (int)array_pop($stack);
                     $d = (int)array_pop($stack);
-                    $mem = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
-                    $mem->copy($d, $s, $n);
+                    $mem0->copy($d, $s, $n);
                     break;
                 }
-                case 'memory.init': {
-                    $segIdx = $instr[1] ?? 0;
+                case Op::MEMORY_INIT: {
+                    $segIdx = $code[$ip++];
                     $n = (int)array_pop($stack);
                     $s = (int)array_pop($stack);
                     $d = (int)array_pop($stack);
-                    $mem  = $this->instance->memories[0] ?? throw Trap::outOfBoundsMemoryAccess();
                     $data = $this->instance->module->dataSegments[$segIdx]['bytes'] ?? '';
-                    $mem->initFromData($d, $data, $s, $n);
+                    $mem0->initFromData($d, $data, $s, $n);
                     break;
                 }
-                case 'data.drop': {
-                    $dIdx = $instr[1] ?? 0;
-                    // Clear the data segment bytes
+                case Op::DATA_DROP: {
+                    $dIdx = $code[$ip++];
                     if (isset($this->instance->module->dataSegments[$dIdx])) {
                         $this->instance->module->dataSegments[$dIdx]['bytes'] = '';
                     }
@@ -713,11 +681,6 @@ final class Executor
 
                 default:
                     break; // unknown/future instructions silently skipped
-            }
-            } finally {
-                if ($opcodeProfiling) {
-                    Profiler::addOpcodeSample((string)$op, hrtime(true) - $opStartNs);
-                }
             }
         }
         } catch (EarlyReturn $e) {
@@ -734,10 +697,6 @@ final class Executor
     // Branch logic
     // -------------------------------------------------------------------------
 
-    /**
-     * Execute a branch of depth $depth.
-     * Mutates $stack in-place, mutates $ip by reference, returns new labelStack.
-     */
     private function doBranch(
         int   $depth,
         array &$stack,
@@ -749,7 +708,6 @@ final class Executor
         $targetIdx = $lsCount - 1 - $depth;
 
         if ($targetIdx < 0) {
-            // Branch out of function — treat as return
             $n    = count($stack);
             $vals = array_slice($stack, max(0, $n - $retCount));
             throw new EarlyReturn($vals);
@@ -757,7 +715,6 @@ final class Executor
 
         [$type, $contIp, $stackHeight, $resultCount] = $labelStack[$targetIdx];
 
-        // Carry results over branch
         $n       = count($stack);
         $topVals = ($resultCount > 0 && $n >= $resultCount) ? array_slice($stack, $n - $resultCount) : [];
         $stack   = array_slice($stack, 0, $stackHeight);
@@ -768,10 +725,8 @@ final class Executor
         $ip = $contIp;
 
         if ($type === 'loop') {
-            // Continue loop: keep loop label, discard labels above
             return array_slice($labelStack, 0, $targetIdx + 1);
         } else {
-            // Exit block: discard target label + everything above
             return array_slice($labelStack, 0, $targetIdx);
         }
     }
@@ -780,44 +735,18 @@ final class Executor
     // Numeric helpers
     // -------------------------------------------------------------------------
 
-    /** @param (int|float|null)[] $stack @return (int|float|null)[] */
-    private function popRawCallArgs(FuncType $ft, array &$stack): array
+    private function popCallArgs(FuncType $ft, array &$stack): array
     {
         $pc = count($ft->params);
         if ($pc === 0) {
             return [];
         }
 
-        $args = array_fill(0, $pc, 0);
+        $args = array_fill(0, $pc, WasmValue::i32(0));
         for ($j = $pc - 1; $j >= 0; $j--) {
-            $raw = array_pop($stack);
-            $args[$j] = match ($ft->params[$j]) {
-                ValType::I32 => WasmValue::mask32((int)$raw),
-                ValType::I64 => (int)$raw,
-                ValType::F32 => (float)$raw,
-                ValType::F64 => (float)$raw,
-                ValType::FUNCREF, ValType::EXTERNREF => $raw === null ? null : (int)$raw,
-                default => (int)($raw ?? 0),
-            };
-        }
-        return $args;
-    }
-
-    /** @param (int|float|null)[] $results @param (int|float|null)[] $stack */
-    private function pushRawCallResults(array $results, array &$stack): void
-    {
-        foreach ($results as $v) {
-            $stack[] = $v;
-        }
-    }
-
-    /** @param (int|float|null)[] $rawArgs @return WasmValue[] */
-    private function packArgsForHost(FuncType $ft, array $rawArgs): array
-    {
-        $out = [];
-        foreach ($ft->params as $i => $type) {
-            $raw = $rawArgs[$i] ?? 0;
-            $out[] = match ($type) {
+            $type = $ft->params[$j];
+            $raw  = array_pop($stack);
+            $args[$j] = match ($type) {
                 ValType::I32 => WasmValue::i32((int)$raw),
                 ValType::I64 => WasmValue::i64((int)$raw),
                 ValType::F32 => WasmValue::f32((float)$raw),
@@ -827,52 +756,19 @@ final class Executor
                 default      => WasmValue::i32((int)($raw ?? 0)),
             };
         }
-        return $out;
+
+        return $args;
     }
 
-    /**
-     * @param  array<int,mixed> $hostResults
-     * @return (int|float|null)[]
-     */
-    private function unpackHostResults(array $hostResults): array
+    private function pushCallResults(array $results, array &$stack): void
     {
-        $out = [];
-        foreach ($hostResults as $r) {
-            if ($r instanceof WasmValue) {
-                $out[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
-                    ? ($r->value === -1 ? null : $r->value)
-                    : $r->value;
-                continue;
-            }
-            if ($r === null || is_int($r) || is_float($r)) {
-                $out[] = $r;
-            }
+        foreach ($results as $r) {
+            $stack[] = ($r->type === ValType::FUNCREF || $r->type === ValType::EXTERNREF)
+                ? ($r->value === -1 ? null : $r->value)
+                : $r->value;
         }
-        return $out;
     }
 
-    /** @param (int|float|null)[] $rawResults @return WasmValue[] */
-    private function packResults(FuncType $ft, array $rawResults): array
-    {
-        $out = [];
-        foreach ($ft->results as $i => $rtype) {
-            $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
-            $out[] = match ($rtype) {
-                ValType::I32 => WasmValue::i32((int)$v),
-                ValType::I64 => WasmValue::i64((int)$v),
-                ValType::F32 => WasmValue::f32(self::asF32($v)),
-                ValType::F64 => WasmValue::f64((float)$v),
-                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
-                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
-                default      => WasmValue::i32((int)$v),
-            };
-        }
-        return $out;
-    }
-
-    private static function p2i(array &$s): array { $b=(int)array_pop($s); $a=(int)array_pop($s); return [$a,$b]; }
-    private static function p2f(array &$s): array { $b=array_pop($s); $a=array_pop($s); return [self::asF32($a),self::asF32($b)]; }
-    /** Convert a stack value to float, handling int-encoded f32 NaN bit patterns. */
     private static function asF32(mixed $v): float { return is_int($v) ? (float)unpack('f',pack('V',$v&0xFFFFFFFF))[1] : (float)$v; }
 
     private static function clz32(int $a): int { return 31-(int)floor(log($a,2)); }
@@ -913,13 +809,11 @@ final class Executor
         return (float)(($v>>1)&PHP_INT_MAX)*2.0+($v&1);
     }
 
-    /** Convert a PHP signed int (used as unsigned 64-bit) to a GMP integer. */
     private static function u64ToGmp(int $a): \GMP
     {
         return $a >= 0 ? gmp_init($a) : gmp_add(gmp_init($a), gmp_pow(2, 64));
     }
 
-    /** Convert a GMP integer in [0, 2^64) back to a PHP signed int (bit-identical). */
     private static function gmpToU64(\GMP $v): int
     {
         if (gmp_cmp($v, gmp_pow(2, 63)) >= 0) {
@@ -928,31 +822,22 @@ final class Executor
         return gmp_intval($v);
     }
 
-    /** Signed 64-bit add with wrapping (handles PHP int overflow). */
     private static function int64Add(int $a, int $b): int
     {
         $r = gmp_add($a, $b);
         return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
     }
 
-    /** Signed 64-bit subtract with wrapping (handles PHP int overflow). */
     private static function int64Sub(int $a, int $b): int
     {
         $r = gmp_sub($a, $b);
         return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
     }
 
-    /** Signed 64-bit multiply with wrapping. */
     private static function int64Mul(int $a, int $b): int
     {
         $r = gmp_mul($a, $b);
         return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
-    }
-
-    private static function u64mul(int $a, int $b): int
-    {
-        $r = gmp_mod(gmp_mul(self::u64ToGmp($a), self::u64ToGmp($b)), gmp_pow(2, 64));
-        return self::gmpToU64($r);
     }
 
     private static function u64div(int $a, int $b): int
@@ -967,13 +852,10 @@ final class Executor
         return self::gmpToU64(gmp_mod(self::u64ToGmp($a), self::u64ToGmp($b)));
     }
 
-    /** IEEE 754 float division — handles 0.0/0.0 which throws in PHP 8 */
     private static function fdiv(float $a, float $b): float
     {
         if ($b == 0.0) {
             if ($a == 0.0 || is_nan($a)) return NAN;
-            // ±inf with sign = sign(a) XOR sign(b)
-            // Note: use ^ (bitwise) not XOR (logical) — XOR has lower precedence than =
             $neg = self::isNegZero($b) ^ ($a < 0);
             return $neg ? -INF : INF;
         }
@@ -1011,7 +893,6 @@ final class Executor
 
     private static function copysign(float $a, float $b): float
     {
-        // Use pack/unpack to inspect the sign bit — avoids DivisionByZeroError on -0.0
         $bytes = unpack('C8', pack('d', $b));
         $neg   = ($bytes[8] & 0x80) !== 0;
         return $neg ? -abs($a) : abs($a);
@@ -1020,7 +901,6 @@ final class Executor
     private static function truncF2I32s(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        // Values in (-2147483649, -2147483648) truncate to INT32_MIN — trap only when trunc(a) < INT32_MIN
         if (!is_finite($a)||$a>=2147483648.0||$a<=-2147483649.0) throw Trap::integerOverflow();
         return WasmValue::mask32((int)$a);
     }
@@ -1028,7 +908,6 @@ final class Executor
     private static function truncF2I32u(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        // Values in (-1, 0) truncate to 0 — only trap when trunc(a) < 0, i.e. a <= -1
         if (!is_finite($a)||$a>=4294967296.0||$a<=-1.0) throw Trap::integerOverflow();
         return WasmValue::mask32((int)$a);
     }
@@ -1043,7 +922,6 @@ final class Executor
     private static function truncF2I64u(float $a): int
     {
         if (is_nan($a)) throw Trap::invalidConversionToInteger();
-        // Values in (-1, 0) truncate to 0 — only trap when trunc(a) < 0, i.e. a <= -1
         if (!is_finite($a)||$a<=-1.0||$a>=1.8446744073709552E+19) throw Trap::integerOverflow();
         if ($a>=9.223372036854776E+18) return (int)($a-9.223372036854776E+18)|PHP_INT_MIN;
         return (int)$a;
@@ -1091,7 +969,7 @@ final class EarlyReturn extends \Exception
 final class TailCallSignal extends \Exception
 {
     /**
-     * @param (int|float|null)[] $args
+     * @param WasmValue[] $args
      */
     public function __construct(
         public readonly int   $funcIdx,
