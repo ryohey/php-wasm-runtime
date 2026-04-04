@@ -36,85 +36,75 @@ final class Executor
      */
     public function invoke(int $funcIdx, array $args): array
     {
-        Profiler::enter('executor.invoke');
+        if (++$this->callDepth > self::MAX_CALL_DEPTH) {
+            $this->callDepth--;
+            throw Trap::callStackExhausted();
+        }
         try {
-            if (++$this->callDepth > self::MAX_CALL_DEPTH) {
-                $this->callDepth--;
-                throw Trap::callStackExhausted();
-            }
-            try {
-                return $this->callFunction($funcIdx, $args);
-            } finally {
-                $this->callDepth--;
-            }
+            return $this->callFunction($funcIdx, $args);
         } finally {
-            Profiler::leave('executor.invoke');
+            $this->callDepth--;
         }
     }
 
     /** @return WasmValue[] */
     private function callFunction(int $funcIdx, array $args): array
     {
-        Profiler::enter('executor.callFunction');
-        try {
-            while (true) {
-                $mod = $this->instance->module;
+        while (true) {
+            $mod = $this->instance->module;
 
-                if (isset($this->hostFuncs[$funcIdx])) {
-                    $r = ($this->hostFuncs[$funcIdx])($args);
-                    return is_array($r) ? $r : ($r !== null ? [$r] : []);
-                }
-
-                $localIdx = $funcIdx - $mod->importedFuncCount;
-                if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
-                    throw new Trap("Invalid function index: $funcIdx");
-                }
-
-                $body = $mod->funcBodies[$localIdx];
-                $ft   = $mod->funcType($funcIdx);
-
-                $locals = [];
-                foreach ($args as $a) {
-                    if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
-                        $locals[] = null;
-                    } else {
-                        $locals[] = $a->value;
-                    }
-                }
-                foreach ($body['locals'] as $lt) {
-                    $locals[] = match ($lt) {
-                        ValType::I32, ValType::I64 => 0,
-                        ValType::F32, ValType::F64 => 0.0,
-                        ValType::FUNCREF, ValType::EXTERNREF => null,
-                        default => 0,
-                    };
-                }
-
-                try {
-                    $rawResults = $this->run($body['code'], $locals, $ft);
-                } catch (TailCallSignal $tcs) {
-                    $funcIdx = $tcs->funcIdx;
-                    $args    = $tcs->args;
-                    continue;
-                }
-
-                $out = [];
-                foreach ($ft->results as $i => $rtype) {
-                    $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
-                    $out[] = match ($rtype) {
-                        ValType::I32 => WasmValue::i32((int)$v),
-                        ValType::I64 => WasmValue::i64((int)$v),
-                        ValType::F32 => WasmValue::f32(self::asF32($v)),
-                        ValType::F64 => WasmValue::f64((float)$v),
-                        ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
-                        ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
-                        default      => WasmValue::i32((int)$v),
-                    };
-                }
-                return $out;
+            if (isset($this->hostFuncs[$funcIdx])) {
+                $r = ($this->hostFuncs[$funcIdx])($args);
+                return is_array($r) ? $r : ($r !== null ? [$r] : []);
             }
-        } finally {
-            Profiler::leave('executor.callFunction');
+
+            $localIdx = $funcIdx - $mod->importedFuncCount;
+            if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
+                throw new Trap("Invalid function index: $funcIdx");
+            }
+
+            $body = $mod->funcBodies[$localIdx];
+            $ft   = $mod->funcType($funcIdx);
+
+            $locals = [];
+            foreach ($args as $a) {
+                if (($a->type === ValType::FUNCREF || $a->type === ValType::EXTERNREF) && $a->value === -1) {
+                    $locals[] = null;
+                } else {
+                    $locals[] = $a->value;
+                }
+            }
+            foreach ($body['locals'] as $lt) {
+                $locals[] = match ($lt) {
+                    ValType::I32, ValType::I64 => 0,
+                    ValType::F32, ValType::F64 => 0.0,
+                    ValType::FUNCREF, ValType::EXTERNREF => null,
+                    default => 0,
+                };
+            }
+
+            try {
+                $rawResults = $this->run($body['code'], $locals, $ft);
+            } catch (TailCallSignal $tcs) {
+                $funcIdx = $tcs->funcIdx;
+                $args    = $tcs->args;
+                continue;
+            }
+
+            $out = [];
+            foreach ($ft->results as $i => $rtype) {
+                $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
+                $out[] = match ($rtype) {
+                    ValType::I32 => WasmValue::i32((int)$v),
+                    ValType::I64 => WasmValue::i64((int)$v),
+                    ValType::F32 => WasmValue::f32(self::asF32($v)),
+                    ValType::F64 => WasmValue::f64((float)$v),
+                    ValType::FUNCREF   => new WasmValue(ValType::FUNCREF, $v === null ? -1 : (int)$v),
+                    ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $v === null ? -1 : (int)$v),
+                    default      => WasmValue::i32((int)$v),
+                };
+            }
+            return $out;
         }
     }
 
@@ -124,7 +114,6 @@ final class Executor
      */
     private function run(array $code, array $locals, FuncType $ft): array
     {
-        Profiler::enter('executor.run');
         $stack      = [];
         $labelStack = [];   // [[type, contIp, stackHeight, resultCount]]
         $ip         = 0;
@@ -685,8 +674,6 @@ final class Executor
         }
         } catch (EarlyReturn $e) {
             return $e->values;
-        } finally {
-            Profiler::leave('executor.run');
         }
 
         $n = count($stack);

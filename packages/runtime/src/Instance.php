@@ -36,9 +36,7 @@ final class Instance
      */
     public static function instantiate(Module $mod, array $imports = []): self
     {
-        Profiler::enter('instance.instantiate');
-        try {
-            $inst = new self($mod);
+        $inst = new self($mod);
 
             // ---- Process imports ----
             $impFuncIdx = 0;
@@ -145,9 +143,6 @@ final class Instance
             }
 
             return $inst;
-        } finally {
-            Profiler::leave('instance.instantiate');
-        }
     }
 
     /**
@@ -158,16 +153,11 @@ final class Instance
      */
     public function callExport(string $name, array $args = []): array
     {
-        Profiler::enter('instance.callExport');
-        try {
-            $exp = $this->module->exports[$name] ?? throw new WasmError("No export '$name'");
-            if ($exp['kind'] !== 'func') {
-                throw new WasmError("Export '$name' is not a function");
-            }
-            return $this->executor->invoke($exp['index'], $args);
-        } finally {
-            Profiler::leave('instance.callExport');
+        $exp = $this->module->exports[$name] ?? throw new WasmError("No export '$name'");
+        if ($exp['kind'] !== 'func') {
+            throw new WasmError("Export '$name' is not a function");
         }
+        return $this->executor->invoke($exp['index'], $args);
     }
 
     /**
