@@ -143,6 +143,8 @@ final class Executor
         $retCount   = count($ft->results);
         $mem0       = $this->instance->memories[0] ?? null;
         $mod        = $this->instance->module;
+        $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
+        $tables     = &$this->instance->tables;
 
         try {
         while ($ip < $len) {
@@ -316,8 +318,7 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
-                    $cft      = $mod->types[$typeIdx];
-                    $pc       = count($cft->params);
+                    $pc       = $mod->typeParamCounts[$typeIdx];
                     if ($pc > 0) {
                         $rawArgs = [];
                         $__base = $sp - $pc;
@@ -326,11 +327,11 @@ final class Executor
                     } else {
                         $rawArgs = [];
                     }
-                    $table    = $this->instance->tables[$tableIdx]
+                    $table    = $tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$cft->equals($mod->funcType($fIdx)))
+                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[$sp++] = $v;
                     break;
@@ -340,8 +341,7 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
-                    $cft      = $mod->types[$typeIdx];
-                    $pc       = count($cft->params);
+                    $pc       = $mod->typeParamCounts[$typeIdx];
                     if ($pc > 0) {
                         $rawArgs = [];
                         $__base = $sp - $pc;
@@ -350,11 +350,11 @@ final class Executor
                     } else {
                         $rawArgs = [];
                     }
-                    $table    = $this->instance->tables[$tableIdx]
+                    $table    = $tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$cft->equals($mod->funcType($fIdx)))
+                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     throw new TailCallSignal($fIdx, $rawArgs);
                 }
@@ -370,8 +370,8 @@ final class Executor
                 case Op::LOCAL_GET:  $stack[$sp++] = $locals[$code[$ip++]]; break;
                 case Op::LOCAL_SET:  $locals[$code[$ip++]] = $stack[--$sp]; break;
                 case Op::LOCAL_TEE:  $locals[$code[$ip++]] = $stack[$sp-1]; break;
-                case Op::GLOBAL_GET: $stack[$sp++] = $this->instance->globals[$code[$ip++]]; break;
-                case Op::GLOBAL_SET: $this->instance->globals[$code[$ip++]] = $stack[--$sp]; break;
+                case Op::GLOBAL_GET: $stack[$sp++] = $globals[$code[$ip++]]; break;
+                case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
 
                 // ---- Constants ----
                 case Op::I32_CONST: $stack[$sp++] = $code[$ip++]; break;
@@ -626,7 +626,7 @@ final class Executor
                 // ---- Table ----
                 case Op::TABLE_SIZE: {
                     $tIdx = $code[$ip++];
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[$sp++] = $table->size();
                     break;
                 }
@@ -634,14 +634,14 @@ final class Executor
                     $tIdx = $code[$ip++];
                     $n    = (int)$stack[--$sp];
                     $val  = $stack[--$sp];
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[$sp++] = $table->grow($n, $val);
                     break;
                 }
                 case Op::TABLE_GET: {
                     $tIdx = $code[$ip++];
                     $idx  = (int)$stack[--$sp];
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[$sp++] = $table->get($idx);
                     break;
                 }
@@ -649,7 +649,7 @@ final class Executor
                     $tIdx = $code[$ip++];
                     $val  = $stack[--$sp];
                     $idx  = (int)$stack[--$sp];
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $table->set($idx, $val);
                     break;
                 }
@@ -658,7 +658,7 @@ final class Executor
                     $n    = (int)$stack[--$sp];
                     $val  = $stack[--$sp];
                     $i    = (int)$stack[--$sp];
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($i < 0 || $n < 0 || ($i & 0xFFFFFFFF) + ($n & 0xFFFFFFFF) > $table->size()) {
                         throw Trap::outOfBoundsTableAccess();
                     }
@@ -672,8 +672,8 @@ final class Executor
                     $s    = (int)$stack[--$sp];
                     $d    = (int)$stack[--$sp];
                     $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
-                    $dTable = $this->instance->tables[$dIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    $sTable = $this->instance->tables[$sIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $dTable = $tables[$dIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $sTable = $tables[$sIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($su + $nu > $sTable->size() || $du + $nu > $dTable->size()) {
                         throw Trap::outOfBoundsTableAccess();
                     }
@@ -692,7 +692,7 @@ final class Executor
                     $s    = (int)$stack[--$sp];
                     $d    = (int)$stack[--$sp];
                     $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
-                    $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $elem  = $mod->elements[$eIdx] ?? null;
                     $funcIndices = ($elem && !empty($elem['funcIndices'])) ? $elem['funcIndices'] : [];
                     if ($su + $nu > count($funcIndices) || $du + $nu > $table->size()) {

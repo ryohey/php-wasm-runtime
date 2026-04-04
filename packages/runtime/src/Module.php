@@ -100,6 +100,13 @@ final class Module
      */
     public array $paramCounts = [];
 
+    /**
+     * Flat cache: type index → param count.
+     * Built by buildIndex() — avoids count() calls on every CALL_INDIRECT instruction.
+     * @var int[]
+     */
+    public array $typeParamCounts = [];
+
     public function totalFuncCount(): int
     {
         return $this->importedFuncCount + count($this->funcTypeIndices);
@@ -138,5 +145,12 @@ final class Module
         }
         $this->funcTypeFlat = $flat;
         $this->paramCounts  = $counts;
+
+        // Pre-compute param counts per type index for CALL_INDIRECT
+        $typeCounts = [];
+        foreach ($this->types as $i => $ft) {
+            $typeCounts[$i] = count($ft->params);
+        }
+        $this->typeParamCounts = $typeCounts;
     }
 }
