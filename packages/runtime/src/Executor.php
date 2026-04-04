@@ -47,7 +47,7 @@ final class Executor
         $rawResults = $this->callFunctionRaw($funcIdx, $rawArgs);
 
         // Wrap raw results back into WasmValue[]
-        $ft  = $this->instance->module->funcType($funcIdx);
+        $ft  = $this->instance->module->funcTypeFlat[$funcIdx];
         $out = [];
         foreach ($ft->results as $i => $rtype) {
             $v     = array_key_exists($i, $rawResults) ? $rawResults[$i] : 0;
@@ -79,7 +79,7 @@ final class Executor
             while (true) {
                 if (isset($this->hostFuncs[$funcIdx])) {
                     // Host functions still use WasmValue convention — wrap and unwrap.
-                    $ft    = $this->instance->module->funcType($funcIdx);
+                    $ft    = $this->instance->module->funcTypeFlat[$funcIdx];
                     $wargs = [];
                     foreach ($rawArgs as $i => $raw) {
                         $type    = $ft->params[$i] ?? ValType::I32;
@@ -110,7 +110,7 @@ final class Executor
                 }
 
                 $body   = $mod->funcBodies[$localIdx];
-                $ft     = $mod->funcType($funcIdx);
+                $ft     = $mod->funcTypeFlat[$funcIdx];
                 $locals = $rawArgs; // raw args become the first locals directly
                 foreach ($body['locals'] as $lt) {
                     $locals[] = match ($lt) {
@@ -249,7 +249,7 @@ final class Executor
 
                 case Op::CALL: {
                     $fIdx    = $code[$ip++];
-                    $pc      = count($mod->funcType($fIdx)->params);
+                    $pc      = $mod->paramCounts[$fIdx];
                     $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
                     foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[] = $v;
                     break;
@@ -257,7 +257,7 @@ final class Executor
 
                 case Op::RETURN_CALL: {
                     $fIdx    = $code[$ip++];
-                    $pc      = count($mod->funcType($fIdx)->params);
+                    $pc      = $mod->paramCounts[$fIdx];
                     $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
                     throw new TailCallSignal($fIdx, $rawArgs);
                 }

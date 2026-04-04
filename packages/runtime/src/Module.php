@@ -86,6 +86,20 @@ final class Module
     public int $importedMemoryCount = 0;
     public int $importedGlobalCount = 0;
 
+    /**
+     * Flat cache: absolute function index → FuncType.
+     * Built by buildIndex() after all sections are decoded.
+     * @var FuncType[]
+     */
+    public array $funcTypeFlat = [];
+
+    /**
+     * Flat cache: absolute function index → param count.
+     * Built by buildIndex() — avoids count() calls on every CALL instruction.
+     * @var int[]
+     */
+    public array $paramCounts = [];
+
     public function totalFuncCount(): int
     {
         return $this->importedFuncCount + count($this->funcTypeIndices);
@@ -93,11 +107,36 @@ final class Module
 
     public function funcType(int $absIndex): FuncType
     {
-        if ($absIndex < $this->importedFuncCount) {
-            $imp = $this->imports[$absIndex];
-            return $this->types[$imp['typeIndex']];
+        return $this->funcTypeFlat[$absIndex]
+            ?? ($absIndex < $this->importedFuncCount
+                ? $this->types[$this->imports[$absIndex]['typeIndex']]
+                : $this->types[$this->funcTypeIndices[$absIndex - $this->importedFuncCount]]);
+    }
+
+    /**
+     * Pre-compute funcTypeFlat and paramCounts after all sections are decoded.
+     * Called by Decoder once the module is fully built.
+     */
+    public function buildIndex(): void
+    {
+        $flat   = [];
+        $counts = [];
+        $impIdx = 0;
+        foreach ($this->imports as $imp) {
+            if ($imp['kind'] === 'func') {
+                $ft              = $this->types[$imp['typeIndex']];
+                $flat[$impIdx]   = $ft;
+                $counts[$impIdx] = count($ft->params);
+                $impIdx++;
+            }
         }
-        $localIndex = $absIndex - $this->importedFuncCount;
-        return $this->types[$this->funcTypeIndices[$localIndex]];
+        foreach ($this->funcTypeIndices as $i => $typeIdx) {
+            $ft         = $this->types[$typeIdx];
+            $absIdx     = $this->importedFuncCount + $i;
+            $flat[$absIdx]   = $ft;
+            $counts[$absIdx] = count($ft->params);
+        }
+        $this->funcTypeFlat = $flat;
+        $this->paramCounts  = $counts;
     }
 }

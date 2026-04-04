@@ -61,6 +61,7 @@ final class Decoder
             };
         }
 
+        $this->mod->buildIndex();
         return $this->mod;
     }
 
