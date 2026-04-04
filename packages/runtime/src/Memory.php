@@ -52,7 +52,7 @@ final class Memory
         return $old;
     }
 
-    /** Validate bounds and lazily zero-extend the byte buffer. */
+    /** Validate bounds and lazily zero-extend the byte buffer (used by bulk ops). */
     private function check(int $addr, int $len): void
     {
         if ($addr < 0 || $addr + $len > $this->limit) {
@@ -65,74 +65,105 @@ final class Memory
         }
     }
 
-    // ---- load (ord()-based to avoid substr() allocations) ----
+    // ---- load: inline bounds check + unpack($fmt, $data, $offset) to avoid substr() ----
+
     public function loadI32(int $addr, int $align = 0): int
     {
-        $this->check($addr, 4);
-        $v = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
-           | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
+        if ($addr < 0 || $addr + 4 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 4 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 4 - $this->allocated);
+            $this->allocated = $addr + 4;
+        }
+        $v = unpack('V', $this->bytes, $addr)[1];
         return ($v & 0x80000000) ? ($v | (-1 << 32)) : $v;
     }
 
     public function loadU32(int $addr): int
     {
-        $this->check($addr, 4);
-        return ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
-             | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
+        if ($addr < 0 || $addr + 4 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 4 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 4 - $this->allocated);
+            $this->allocated = $addr + 4;
+        }
+        return unpack('V', $this->bytes, $addr)[1];
     }
 
     public function loadI64(int $addr): int
     {
-        $this->check($addr, 8);
-        $lo = ord($this->bytes[$addr])   | (ord($this->bytes[$addr+1]) << 8)
-            | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
-        $hi = ord($this->bytes[$addr+4]) | (ord($this->bytes[$addr+5]) << 8)
-            | (ord($this->bytes[$addr+6]) << 16) | (ord($this->bytes[$addr+7]) << 24);
-        return ($hi << 32) | ($lo & 0xFFFFFFFF);
+        if ($addr < 0 || $addr + 8 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 8 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 8 - $this->allocated);
+            $this->allocated = $addr + 8;
+        }
+        $r = unpack('V2', $this->bytes, $addr);
+        return ($r[2] << 32) | ($r[1] & 0xFFFFFFFF);
     }
 
     public function loadF32(int $addr): int|float
     {
-        $this->check($addr, 4);
-        $bits = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
-              | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
+        if ($addr < 0 || $addr + 4 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 4 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 4 - $this->allocated);
+            $this->allocated = $addr + 4;
+        }
+        $bits = unpack('V', $this->bytes, $addr)[1];
         // Return NaN as int bit pattern to preserve payload
         if (($bits & 0x7FFFFFFF) > 0x7F800000) {
             return \WasmRuntime\WasmValue::mask32($bits);
         }
-        return unpack('f', substr($this->bytes, $addr, 4))[1];
+        return unpack('f', $this->bytes, $addr)[1];
     }
 
     public function loadF64(int $addr): float
     {
-        $this->check($addr, 8);
-        return unpack('d', substr($this->bytes, $addr, 8))[1];
+        if ($addr < 0 || $addr + 8 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 8 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 8 - $this->allocated);
+            $this->allocated = $addr + 8;
+        }
+        return unpack('d', $this->bytes, $addr)[1];
     }
 
     public function loadI8s(int $addr): int
     {
-        $this->check($addr, 1);
+        if ($addr < 0 || $addr + 1 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 1 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 1 - $this->allocated);
+            $this->allocated = $addr + 1;
+        }
         $b = ord($this->bytes[$addr]);
         return ($b & 0x80) ? ($b | (-1 << 8)) : $b;
     }
 
     public function loadI8u(int $addr): int
     {
-        $this->check($addr, 1);
+        if ($addr < 0 || $addr + 1 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 1 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 1 - $this->allocated);
+            $this->allocated = $addr + 1;
+        }
         return ord($this->bytes[$addr]);
     }
 
     public function loadI16s(int $addr): int
     {
-        $this->check($addr, 2);
-        $v = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8);
+        if ($addr < 0 || $addr + 2 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 2 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 2 - $this->allocated);
+            $this->allocated = $addr + 2;
+        }
+        $v = unpack('v', $this->bytes, $addr)[1];
         return ($v & 0x8000) ? ($v | (-1 << 16)) : $v;
     }
 
     public function loadI16u(int $addr): int
     {
-        $this->check($addr, 2);
-        return ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8);
+        if ($addr < 0 || $addr + 2 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 2 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 2 - $this->allocated);
+            $this->allocated = $addr + 2;
+        }
+        return unpack('v', $this->bytes, $addr)[1];
     }
 
     public function loadI32s(int $addr): int  // sign-extend for i64.load32_s
@@ -141,10 +172,15 @@ final class Memory
         return ($v & 0x80000000) ? ($v | (-1 << 32)) : $v;
     }
 
-    // ---- store (direct byte writes — avoids O(n) substr_replace copies) ----
+    // ---- store: inline bounds check + direct byte writes (O(1)) ----
+
     public function storeI32(int $addr, int $v): void
     {
-        $this->check($addr, 4);
+        if ($addr < 0 || $addr + 4 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 4 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 4 - $this->allocated);
+            $this->allocated = $addr + 4;
+        }
         $this->bytes[$addr]   = chr($v & 0xFF);
         $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
         $this->bytes[$addr+2] = chr(($v >> 16) & 0xFF);
@@ -153,7 +189,11 @@ final class Memory
 
     public function storeI64(int $addr, int $v): void
     {
-        $this->check($addr, 8);
+        if ($addr < 0 || $addr + 8 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 8 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 8 - $this->allocated);
+            $this->allocated = $addr + 8;
+        }
         $this->bytes[$addr]   = chr($v & 0xFF);
         $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
         $this->bytes[$addr+2] = chr(($v >> 16) & 0xFF);
@@ -166,7 +206,11 @@ final class Memory
 
     public function storeF32(int $addr, int|float $v): void
     {
-        $this->check($addr, 4);
+        if ($addr < 0 || $addr + 4 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 4 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 4 - $this->allocated);
+            $this->allocated = $addr + 4;
+        }
         $bits = is_int($v) ? $v : \WasmRuntime\WasmValue::f32Bits($v);
         $this->bytes[$addr]   = chr($bits & 0xFF);
         $this->bytes[$addr+1] = chr(($bits >> 8) & 0xFF);
@@ -176,7 +220,11 @@ final class Memory
 
     public function storeF64(int $addr, float $v): void
     {
-        $this->check($addr, 8);
+        if ($addr < 0 || $addr + 8 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 8 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 8 - $this->allocated);
+            $this->allocated = $addr + 8;
+        }
         $p = pack('d', $v);
         $this->bytes[$addr]   = $p[0];
         $this->bytes[$addr+1] = $p[1];
@@ -190,13 +238,21 @@ final class Memory
 
     public function storeI8(int $addr, int $v): void
     {
-        $this->check($addr, 1);
+        if ($addr < 0 || $addr + 1 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 1 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 1 - $this->allocated);
+            $this->allocated = $addr + 1;
+        }
         $this->bytes[$addr] = chr($v & 0xFF);
     }
 
     public function storeI16(int $addr, int $v): void
     {
-        $this->check($addr, 2);
+        if ($addr < 0 || $addr + 2 > $this->limit) throw Trap::outOfBoundsMemoryAccess();
+        if ($addr + 2 > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $addr + 2 - $this->allocated);
+            $this->allocated = $addr + 2;
+        }
         $this->bytes[$addr]   = chr($v & 0xFF);
         $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
     }
