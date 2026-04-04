@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace WasmRuntime;
 
-/** WebAssembly linear memory (page = 65536 bytes). Allocated lazily. */
+/** WebAssembly linear memory (page = 65536 bytes). */
 final class Memory
 {
     public const PAGE_SIZE = 65536;
     public const MAX_PAGES = 65536;
 
-    /** Actually-allocated bytes (lazily grown on first access). */
+    /** Raw byte buffer, lazily grown on access. */
     private string $bytes = '';
+    /** Tracks strlen($this->bytes) to avoid repeated strlen() calls. */
+    private int $allocated = 0;
     private int $pages;
     private ?int $maxPages;
 
@@ -25,7 +27,6 @@ final class Memory
         }
         $this->pages    = $minPages;
         $this->maxPages = $maxPages;
-        // Lazy: bytes are zero-initialized on demand in ensureAllocated()
     }
 
     public function size(): int
@@ -44,23 +45,19 @@ final class Memory
             return -1;
         }
         $this->pages = $new;
-        // Actual byte allocation happens lazily in ensureAllocated()
         return $old;
     }
 
-    /**
-     * Ensure $this->bytes is at least $upTo bytes long (zero-padded).
-     * Also validates $addr + $len is within the logical page boundary.
-     */
+    /** Validate bounds and lazily zero-extend the byte buffer. */
     private function check(int $addr, int $len): void
     {
-        $limit = $this->pages * self::PAGE_SIZE;
-        if ($addr < 0 || $addr + $len > $limit) {
+        if ($addr < 0 || $addr + $len > $this->pages * self::PAGE_SIZE) {
             throw Trap::outOfBoundsMemoryAccess();
         }
         $needed = $addr + $len;
-        if ($needed > strlen($this->bytes)) {
-            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
+        if ($needed > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
+            $this->allocated = $needed;
         }
     }
 
@@ -135,36 +132,51 @@ final class Memory
         return ($v & 0x80000000) ? ($v | (-1 << 32)) : $v;
     }
 
-    // ---- store ----
+    // ---- store (direct byte writes — avoids O(n) substr_replace copies) ----
     public function storeI32(int $addr, int $v): void
     {
         $this->check($addr, 4);
-        $this->bytes = substr_replace($this->bytes, pack('V', $v & 0xFFFFFFFF), $addr, 4);
+        $this->bytes[$addr]   = chr($v & 0xFF);
+        $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
+        $this->bytes[$addr+2] = chr(($v >> 16) & 0xFF);
+        $this->bytes[$addr+3] = chr(($v >> 24) & 0xFF);
     }
 
     public function storeI64(int $addr, int $v): void
     {
         $this->check($addr, 8);
-        $lo = $v & 0xFFFFFFFF;
-        $hi = ($v >> 32) & 0xFFFFFFFF;
-        $this->bytes = substr_replace($this->bytes, pack('VV', $lo, $hi), $addr, 8);
+        $this->bytes[$addr]   = chr($v & 0xFF);
+        $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
+        $this->bytes[$addr+2] = chr(($v >> 16) & 0xFF);
+        $this->bytes[$addr+3] = chr(($v >> 24) & 0xFF);
+        $this->bytes[$addr+4] = chr(($v >> 32) & 0xFF);
+        $this->bytes[$addr+5] = chr(($v >> 40) & 0xFF);
+        $this->bytes[$addr+6] = chr(($v >> 48) & 0xFF);
+        $this->bytes[$addr+7] = chr(($v >> 56) & 0xFF);
     }
 
     public function storeF32(int $addr, int|float $v): void
     {
         $this->check($addr, 4);
-        // f32 NaN values are stored as int (bit pattern); use directly
-        if (is_int($v)) {
-            $this->bytes = substr_replace($this->bytes, pack('V', $v), $addr, 4);
-        } else {
-            $this->bytes = substr_replace($this->bytes, pack('V', \WasmRuntime\WasmValue::f32Bits($v)), $addr, 4);
-        }
+        $bits = is_int($v) ? $v : \WasmRuntime\WasmValue::f32Bits($v);
+        $this->bytes[$addr]   = chr($bits & 0xFF);
+        $this->bytes[$addr+1] = chr(($bits >> 8) & 0xFF);
+        $this->bytes[$addr+2] = chr(($bits >> 16) & 0xFF);
+        $this->bytes[$addr+3] = chr(($bits >> 24) & 0xFF);
     }
 
     public function storeF64(int $addr, float $v): void
     {
         $this->check($addr, 8);
-        $this->bytes = substr_replace($this->bytes, pack('d', $v), $addr, 8);
+        $p = pack('d', $v);
+        $this->bytes[$addr]   = $p[0];
+        $this->bytes[$addr+1] = $p[1];
+        $this->bytes[$addr+2] = $p[2];
+        $this->bytes[$addr+3] = $p[3];
+        $this->bytes[$addr+4] = $p[4];
+        $this->bytes[$addr+5] = $p[5];
+        $this->bytes[$addr+6] = $p[6];
+        $this->bytes[$addr+7] = $p[7];
     }
 
     public function storeI8(int $addr, int $v): void
@@ -176,9 +188,11 @@ final class Memory
     public function storeI16(int $addr, int $v): void
     {
         $this->check($addr, 2);
-        $this->bytes = substr_replace($this->bytes, pack('v', $v & 0xFFFF), $addr, 2);
+        $this->bytes[$addr]   = chr($v & 0xFF);
+        $this->bytes[$addr+1] = chr(($v >> 8) & 0xFF);
     }
 
+    // ---- bulk operations (substr_replace is fine for large chunks) ----
     public function init(int $addr, string $data): void
     {
         $len = strlen($data);
@@ -193,10 +207,10 @@ final class Memory
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
-        // Ensure buffer covers the target range (lazy allocation)
         $needed = $addr + $n;
-        if ($needed > strlen($this->bytes)) {
-            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
+        if ($needed > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
+            $this->allocated = $needed;
         }
         $this->bytes = substr_replace($this->bytes, str_repeat(chr($byte & 0xFF), $n), $addr, $n);
     }
@@ -208,10 +222,10 @@ final class Memory
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
-        // Ensure bytes are allocated
         $needed = max($dst + $n, $src + $n);
-        if ($needed > strlen($this->bytes)) {
-            $this->bytes .= str_repeat("\0", $needed - strlen($this->bytes));
+        if ($needed > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
+            $this->allocated = $needed;
         }
         $chunk = substr($this->bytes, $src, $n);
         $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
@@ -225,6 +239,11 @@ final class Memory
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
+        $needed = $dst + $n;
+        if ($needed > $this->allocated) {
+            $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
+            $this->allocated = $needed;
+        }
         $chunk = substr($data, $src, $n);
         $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
     }
