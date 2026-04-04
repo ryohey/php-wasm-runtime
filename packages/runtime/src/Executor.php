@@ -145,8 +145,8 @@ final class Executor
         $mod        = $this->instance->module;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
+        $earlyReturn = null; // non-null signals an early return (replaces EarlyReturn exception)
 
-        try {
         while ($ip < $len) {
             $op = $code[$ip++];
 
@@ -219,8 +219,8 @@ final class Executor
                     $depth = $code[$ip++];
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
-                        throw new EarlyReturn($vals);
+                        $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                        break 2; // break out of switch AND while
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
                     if ($lsResultCount > 0 && $sp > $lsStackHeight) {
@@ -241,8 +241,8 @@ final class Executor
                     if ($cond !== 0) {
                         $targetLsp = $lsp - ($depth + 1) * 4;
                         if ($targetLsp < 0) {
-                            $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
-                            throw new EarlyReturn($vals);
+                            $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                            break 2;
                         }
                         $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
                         if ($lsResultCount > 0 && $sp > $lsStackHeight) {
@@ -269,8 +269,8 @@ final class Executor
                     $ip += $cnt + 1; // skip all labels + default
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
-                        throw new EarlyReturn($vals);
+                        $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                        break 2;
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
                     if ($lsResultCount > 0 && $sp > $lsStackHeight) {
@@ -762,10 +762,8 @@ final class Executor
                     break; // unknown/future instructions silently skipped
             }
         }
-        } catch (EarlyReturn $e) {
-            return $e->values;
-        }
 
+        if ($earlyReturn !== null) return $earlyReturn;
         return $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
     }
 
@@ -961,12 +959,6 @@ final class Executor
         if ($a>=9.223372036854776E+18) return (int)($a-9.223372036854776E+18)|PHP_INT_MIN;
         return (int)$a;
     }
-}
-
-/** @internal Used to propagate early-return through doBranch */
-final class EarlyReturn extends \Exception
-{
-    public function __construct(public readonly array $values) { parent::__construct(); }
 }
 
 /** @internal Signals a tail call (return_call / return_call_indirect) for TCO */
