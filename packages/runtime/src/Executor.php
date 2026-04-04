@@ -140,6 +140,7 @@ final class Executor
     private function run(array $code, array $locals, FuncType $ft): array
     {
         $stack    = [];
+        $sp       = 0;
         // Flat label stack: 4 slots per label [type(0=block,1=loop), contIp, stackHeight, resultCount]
         $ls  = [];   // flat storage
         $lsp = 0;    // next free slot index (always a multiple of 4)
@@ -167,7 +168,7 @@ final class Executor
                     $endIp       = $code[$ip++];
                     $paramCount  = $blockType ? count($blockType->params)  : 0;
                     $resultCount = $blockType ? count($blockType->results) : 0;
-                    $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                    $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                     break;
                 }
 
@@ -176,7 +177,7 @@ final class Executor
                     $contIp      = $code[$ip++];
                     $endIp       = $code[$ip++];
                     $paramCount  = $blockType ? count($blockType->params) : 0;
-                    $ls[$lsp]=1; $ls[$lsp+1]=$contIp; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$paramCount; $lsp+=4;
+                    $ls[$lsp]=1; $ls[$lsp+1]=$contIp; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$paramCount; $lsp+=4;
                     break;
                 }
 
@@ -187,14 +188,14 @@ final class Executor
                     $hasElse     = ($elseIp !== $endIp);
                     $paramCount  = $blockType ? count($blockType->params)  : 0;
                     $resultCount = $blockType ? count($blockType->results) : 0;
-                    $cond        = (int)array_pop($stack);
+                    $cond        = (int)$stack[--$sp];
 
                     if ($cond !== 0) {
-                        $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                        $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                     } else {
                         if ($hasElse) {
                             $ip = $elseIp + 2; // skip Op::ELSE_ + endIp
-                            $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                            $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                         } else {
                             $ip = $endIp + 1; // skip Op::END
                         }
@@ -215,26 +216,23 @@ final class Executor
                 }
 
                 case Op::RETURN_: {
-                    $n = count($stack);
-                    return array_slice($stack, max(0, $n - $retCount));
+                    return $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
                 }
 
                 case Op::BR: {
                     $depth = $code[$ip++];
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $n = count($stack);
-                        $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                        $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
                         throw new EarlyReturn($vals);
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                    $n = count($stack);
-                    if ($lsResultCount > 0 && $n > $lsStackHeight) {
-                        $topVals = array_slice($stack, $n - $lsResultCount);
-                        array_splice($stack, $lsStackHeight);
-                        foreach ($topVals as $v) $stack[] = $v;
+                    if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                        $srcBase = $sp - $lsResultCount;
+                        for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                        $sp = $lsStackHeight + $lsResultCount;
                     } else {
-                        array_splice($stack, $lsStackHeight);
+                        $sp = $lsStackHeight;
                     }
                     $ip  = $lsContIp;
                     $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
@@ -243,22 +241,20 @@ final class Executor
 
                 case Op::BR_IF: {
                     $depth = $code[$ip++];
-                    $cond  = (int)array_pop($stack);
+                    $cond  = (int)$stack[--$sp];
                     if ($cond !== 0) {
                         $targetLsp = $lsp - ($depth + 1) * 4;
                         if ($targetLsp < 0) {
-                            $n = count($stack);
-                            $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                            $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
                             throw new EarlyReturn($vals);
                         }
                         $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                        $n = count($stack);
-                        if ($lsResultCount > 0 && $n > $lsStackHeight) {
-                            $topVals = array_slice($stack, $n - $lsResultCount);
-                            array_splice($stack, $lsStackHeight);
-                            foreach ($topVals as $v) $stack[] = $v;
+                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                            $srcBase = $sp - $lsResultCount;
+                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                            $sp = $lsStackHeight + $lsResultCount;
                         } else {
-                            array_splice($stack, $lsStackHeight);
+                            $sp = $lsStackHeight;
                         }
                         $ip  = $lsContIp;
                         $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
@@ -268,7 +264,7 @@ final class Executor
 
                 case Op::BR_TABLE: {
                     $cnt     = $code[$ip++]; // label count
-                    $idx     = (int)array_pop($stack);
+                    $idx     = (int)$stack[--$sp];
                     if ($idx >= 0 && $idx < $cnt) {
                         $depth = $code[$ip + $idx];
                     } else {
@@ -277,18 +273,16 @@ final class Executor
                     $ip += $cnt + 1; // skip all labels + default
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $n = count($stack);
-                        $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                        $vals = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
                         throw new EarlyReturn($vals);
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                    $n = count($stack);
-                    if ($lsResultCount > 0 && $n > $lsStackHeight) {
-                        $topVals = array_slice($stack, $n - $lsResultCount);
-                        array_splice($stack, $lsStackHeight);
-                        foreach ($topVals as $v) $stack[] = $v;
+                    if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                        $srcBase = $sp - $lsResultCount;
+                        for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                        $sp = $lsStackHeight + $lsResultCount;
                     } else {
-                        array_splice($stack, $lsStackHeight);
+                        $sp = $lsStackHeight;
                     }
                     $ip  = $lsContIp;
                     $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
@@ -298,42 +292,70 @@ final class Executor
                 case Op::CALL: {
                     $fIdx    = $code[$ip++];
                     $pc      = $mod->paramCounts[$fIdx];
-                    $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
-                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[] = $v;
+                    if ($pc > 0) {
+                        $rawArgs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
+                        $sp -= $pc;
+                    } else {
+                        $rawArgs = [];
+                    }
+                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[$sp++] = $v;
                     break;
                 }
 
                 case Op::RETURN_CALL: {
                     $fIdx    = $code[$ip++];
                     $pc      = $mod->paramCounts[$fIdx];
-                    $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
+                    if ($pc > 0) {
+                        $rawArgs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
+                        $sp -= $pc;
+                    } else {
+                        $rawArgs = [];
+                    }
                     throw new TailCallSignal($fIdx, $rawArgs);
                 }
 
                 case Op::CALL_INDIRECT: {
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
-                    $elemIdx  = (int)array_pop($stack);
+                    $elemIdx  = (int)$stack[--$sp];
                     $cft      = $mod->types[$typeIdx];
                     $pc       = count($cft->params);
-                    $rawArgs  = $pc > 0 ? array_splice($stack, -$pc) : [];
+                    if ($pc > 0) {
+                        $rawArgs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
+                        $sp -= $pc;
+                    } else {
+                        $rawArgs = [];
+                    }
                     $table    = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$cft->equals($mod->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
-                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[] = $v;
+                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[$sp++] = $v;
                     break;
                 }
 
                 case Op::RETURN_CALL_INDIRECT: {
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
-                    $elemIdx  = (int)array_pop($stack);
+                    $elemIdx  = (int)$stack[--$sp];
                     $cft      = $mod->types[$typeIdx];
                     $pc       = count($cft->params);
-                    $rawArgs  = $pc > 0 ? array_splice($stack, -$pc) : [];
+                    if ($pc > 0) {
+                        $rawArgs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
+                        $sp -= $pc;
+                    } else {
+                        $rawArgs = [];
+                    }
                     $table    = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
@@ -344,307 +366,304 @@ final class Executor
                 }
 
                 // ---- Parametric ----
-                case Op::DROP:   array_pop($stack); break;
+                case Op::DROP:   --$sp; break;
                 case Op::SELECT: {
-                    $c = (int)array_pop($stack);
-                    $b = array_pop($stack);
-                    $a = array_pop($stack);
-                    $stack[] = $c !== 0 ? $a : $b;
+                    $c = (int)$stack[--$sp]; $b = $stack[--$sp]; $a = $stack[--$sp]; $stack[$sp++] = $c !== 0 ? $a : $b;
                     break;
                 }
 
                 // ---- Variable ----
-                case Op::LOCAL_GET:  $stack[] = $locals[$code[$ip++]]; break;
-                case Op::LOCAL_SET:  $locals[$code[$ip++]] = array_pop($stack); break;
-                case Op::LOCAL_TEE:  $locals[$code[$ip++]] = end($stack); break;
-                case Op::GLOBAL_GET: $stack[] = $this->instance->globals[$code[$ip++]]; break;
-                case Op::GLOBAL_SET: $this->instance->globals[$code[$ip++]] = array_pop($stack); break;
+                case Op::LOCAL_GET:  $stack[$sp++] = $locals[$code[$ip++]]; break;
+                case Op::LOCAL_SET:  $locals[$code[$ip++]] = $stack[--$sp]; break;
+                case Op::LOCAL_TEE:  $locals[$code[$ip++]] = $stack[$sp-1]; break;
+                case Op::GLOBAL_GET: $stack[$sp++] = $this->instance->globals[$code[$ip++]]; break;
+                case Op::GLOBAL_SET: $this->instance->globals[$code[$ip++]] = $stack[--$sp]; break;
 
                 // ---- Constants ----
-                case Op::I32_CONST: $stack[] = $code[$ip++]; break;
-                case Op::I64_CONST: $stack[] = $code[$ip++]; break;
-                case Op::F32_CONST: $stack[] = $code[$ip++]; break;
-                case Op::F64_CONST: $stack[] = $code[$ip++]; break;
+                case Op::I32_CONST: $stack[$sp++] = $code[$ip++]; break;
+                case Op::I64_CONST: $stack[$sp++] = $code[$ip++]; break;
+                case Op::F32_CONST: $stack[$sp++] = $code[$ip++]; break;
+                case Op::F64_CONST: $stack[$sp++] = $code[$ip++]; break;
 
                 // ---- i32 arithmetic ----
                 // mask32 inline: $v=($expr)&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v;
                 // AND/OR/XOR/SHR_S/DIV_S/REM_S of two sign-extended i32s produce sign-extended i32 → no mask32
-                case Op::I32_ADD: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $v=($a+$b)&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break; }
-                case Op::I32_SUB: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $v=($a-$b)&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break; }
-                case Op::I32_MUL: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $v=($a*$b)&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a+$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a-$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a*$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
                 case Op::I32_DIV_S: {
-                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
+                    $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
                     if ($b===0) throw Trap::integerDivideByZero();
                     if ($a===-2147483648 && $b===-1) throw Trap::integerOverflow();
-                    $stack[]=intdiv($a,$b); break;  // result always in i32 range
+                    $stack[$sp++]=intdiv($a,$b); break;  // result always in i32 range
                 }
                 case Op::I32_DIV_U: {
-                    $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF;
+                    $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
                     if ($b===0) throw Trap::integerDivideByZero();
-                    $v=(int)($a/$b); $stack[]=($v&0x80000000)?($v|-4294967296):$v; break;
+                    $v=(int)($a/$b); $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
                 }
                 case Op::I32_REM_S: {
-                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
+                    $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
                     if ($b===0) throw Trap::integerDivideByZero();
-                    $stack[]=$a%$b; break;  // result always in i32 range
+                    $stack[$sp++]=$a%$b; break;  // result always in i32 range
                 }
                 case Op::I32_REM_U: {
-                    $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF;
+                    $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
                     if ($b===0) throw Trap::integerDivideByZero();
-                    $v=$a%$b; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break;
+                    $v=$a%$b; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
                 }
-                case Op::I32_AND:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a&$b; break; }
-                case Op::I32_OR:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a|$b; break; }
-                case Op::I32_XOR:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a^$b; break; }
-                case Op::I32_SHL:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $v=($a<<($b&31))&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break; }
-                case Op::I32_SHR_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a>>($b&31); break; }  // already sign-extended
+                case Op::I32_AND:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a&$b; break; }
+                case Op::I32_OR:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a|$b; break; }
+                case Op::I32_XOR:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a^$b; break; }
+                case Op::I32_SHL:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a<<($b&31))&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_SHR_S: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a>>($b&31); break; }  // already sign-extended
                 case Op::I32_SHR_U: {
-                    $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF;
-                    $v=$a>>($b&31); $stack[]=($v&0x80000000)?($v|-4294967296):$v; break;
+                    $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
+                    $v=$a>>($b&31); $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
                 }
                 case Op::I32_ROTL: {
-                    $b=((int)array_pop($stack))&31; $a=((int)array_pop($stack))&0xFFFFFFFF;
-                    $v=($a<<$b)|($a>>(32-$b)); $v&=0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break;
+                    $b=((int)$stack[--$sp])&31; $a=((int)$stack[--$sp])&0xFFFFFFFF;
+                    $v=($a<<$b)|($a>>(32-$b)); $v&=0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
                 }
                 case Op::I32_ROTR: {
-                    $b=((int)array_pop($stack))&31; $a=((int)array_pop($stack))&0xFFFFFFFF;
-                    $v=($a>>$b)|($a<<(32-$b)); $v&=0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v; break;
+                    $b=((int)$stack[--$sp])&31; $a=((int)$stack[--$sp])&0xFFFFFFFF;
+                    $v=($a>>$b)|($a<<(32-$b)); $v&=0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
                 }
-                case Op::I32_CLZ:    { $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=$a===0?32:self::clz32($a); break; }
-                case Op::I32_CTZ:    { $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=$a===0?32:self::ctz($a); break; }
-                case Op::I32_POPCNT: { $a=((int)array_pop($stack))&0xFFFFFFFF; $n=0; while($a){$n+=$a&1;$a>>=1;} $stack[]=$n; break; }
-                case Op::I32_EQZ:    $stack[]=((int)array_pop($stack)===0)?1:0; break;
-                case Op::I32_EQ:     { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
-                case Op::I32_NE:     { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
-                case Op::I32_LT_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
-                case Op::I32_LT_U:   { $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=($a<$b)?1:0; break; }
-                case Op::I32_GT_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
-                case Op::I32_GT_U:   { $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=($a>$b)?1:0; break; }
-                case Op::I32_LE_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
-                case Op::I32_LE_U:   { $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=($a<=$b)?1:0; break; }
-                case Op::I32_GE_S:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
-                case Op::I32_GE_U:   { $b=((int)array_pop($stack))&0xFFFFFFFF; $a=((int)array_pop($stack))&0xFFFFFFFF; $stack[]=($a>=$b)?1:0; break; }
+                case Op::I32_CLZ:    { $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=$a===0?32:self::clz32($a); break; }
+                case Op::I32_CTZ:    { $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=$a===0?32:self::ctz($a); break; }
+                case Op::I32_POPCNT: { $a=((int)$stack[--$sp])&0xFFFFFFFF; $n=0; while($a){$n+=$a&1;$a>>=1;} $stack[$sp++]=$n; break; }
+                case Op::I32_EQZ:    $stack[$sp-1]=((int)$stack[$sp-1]===0)?1:0; break;
+                case Op::I32_EQ:     { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a===$b)?1:0; break; }
+                case Op::I32_NE:     { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a!==$b)?1:0; break; }
+                case Op::I32_LT_S:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<$b)?1:0; break; }
+                case Op::I32_LT_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a<$b)?1:0; break; }
+                case Op::I32_GT_S:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>$b)?1:0; break; }
+                case Op::I32_GT_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a>$b)?1:0; break; }
+                case Op::I32_LE_S:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<=$b)?1:0; break; }
+                case Op::I32_LE_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a<=$b)?1:0; break; }
+                case Op::I32_GE_S:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>=$b)?1:0; break; }
+                case Op::I32_GE_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case Op::I64_ADD: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Add($a,$b); break; }
-                case Op::I64_SUB: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Sub($a,$b); break; }
-                case Op::I64_MUL: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::int64Mul($a,$b); break; }
+                case Op::I64_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Add($a,$b); break; }
+                case Op::I64_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Sub($a,$b); break; }
+                case Op::I64_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Mul($a,$b); break; }
                 case Op::I64_DIV_S: {
-                    $b=(int)array_pop($stack); $a=(int)array_pop($stack);
+                    $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
                     if ($b===0) throw Trap::integerDivideByZero();
                     if ($a===PHP_INT_MIN && $b===-1) throw Trap::integerOverflow();
-                    $stack[]=intdiv($a,$b); break;
+                    $stack[$sp++]=intdiv($a,$b); break;
                 }
-                case Op::I64_DIV_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64div($a,$b); break; }
-                case Op::I64_REM_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=$a%$b; break; }
-                case Op::I64_REM_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); if($b===0) throw Trap::integerDivideByZero(); $stack[]=self::u64rem($a,$b); break; }
-                case Op::I64_AND:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a&$b; break; }
-                case Op::I64_OR:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a|$b; break; }
-                case Op::I64_XOR:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a^$b; break; }
-                case Op::I64_SHL:   { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a<<($b&63); break; }
-                case Op::I64_SHR_S: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=$a>>($b&63); break; }
-                case Op::I64_SHR_U: { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::shr64u($a,$b&63); break; }
-                case Op::I64_ROTL:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $b&=63; $stack[]=($a<<$b)|self::shr64u($a,64-$b); break; }
-                case Op::I64_ROTR:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $b&=63; $stack[]=self::shr64u($a,$b)|($a<<(64-$b)); break; }
-                case Op::I64_CLZ:   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::clz64($a); break; }
-                case Op::I64_CTZ:   { $a=(int)array_pop($stack); $stack[]=$a===0?64:self::ctz($a); break; }
-                case Op::I64_POPCNT:{ $a=(int)array_pop($stack); $n=0; for($b=0;$b<64;$b++){if(($a>>$b)&1)$n++;} $stack[]=$n; break; }
-                case Op::I64_EQZ:   $stack[]=((int)array_pop($stack)===0)?1:0; break;
-                case Op::I64_EQ:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
-                case Op::I64_NE:    { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
-                case Op::I64_LT_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
-                case Op::I64_LT_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)<0?1:0; break; }
-                case Op::I64_GT_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
-                case Op::I64_GT_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)>0?1:0; break; }
-                case Op::I64_LE_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
-                case Op::I64_LE_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)<=0?1:0; break; }
-                case Op::I64_GE_S:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
-                case Op::I64_GE_U:  { $b=(int)array_pop($stack); $a=(int)array_pop($stack); $stack[]=self::u64cmp($a,$b)>=0?1:0; break; }
+                case Op::I64_DIV_U: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($b===0) throw Trap::integerDivideByZero(); $stack[$sp++]=self::u64div($a,$b); break; }
+                case Op::I64_REM_S: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($b===0) throw Trap::integerDivideByZero(); $stack[$sp++]=$a%$b; break; }
+                case Op::I64_REM_U: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($b===0) throw Trap::integerDivideByZero(); $stack[$sp++]=self::u64rem($a,$b); break; }
+                case Op::I64_AND:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a&$b; break; }
+                case Op::I64_OR:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a|$b; break; }
+                case Op::I64_XOR:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a^$b; break; }
+                case Op::I64_SHL:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a<<($b&63); break; }
+                case Op::I64_SHR_S: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a>>($b&63); break; }
+                case Op::I64_SHR_U: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::shr64u($a,$b&63); break; }
+                case Op::I64_ROTL:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; $stack[$sp++]=($a<<$b)|self::shr64u($a,64-$b); break; }
+                case Op::I64_ROTR:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; $stack[$sp++]=self::shr64u($a,$b)|($a<<(64-$b)); break; }
+                case Op::I64_CLZ:   { $a=(int)$stack[--$sp]; $stack[$sp++]=$a===0?64:self::clz64($a); break; }
+                case Op::I64_CTZ:   { $a=(int)$stack[--$sp]; $stack[$sp++]=$a===0?64:self::ctz($a); break; }
+                case Op::I64_POPCNT:{ $a=(int)$stack[--$sp]; $n=0; for($b=0;$b<64;$b++){if(($a>>$b)&1)$n++;} $stack[$sp++]=$n; break; }
+                case Op::I64_EQZ:   $stack[$sp-1]=((int)$stack[$sp-1]===0)?1:0; break;
+                case Op::I64_EQ:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a===$b)?1:0; break; }
+                case Op::I64_NE:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a!==$b)?1:0; break; }
+                case Op::I64_LT_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<$b)?1:0; break; }
+                case Op::I64_LT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)<0?1:0; break; }
+                case Op::I64_GT_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>$b)?1:0; break; }
+                case Op::I64_GT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)>0?1:0; break; }
+                case Op::I64_LE_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<=$b)?1:0; break; }
+                case Op::I64_LE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)<=0?1:0; break; }
+                case Op::I64_GE_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>=$b)?1:0; break; }
+                case Op::I64_GE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)>=0?1:0; break; }
 
                 // ---- f32 arithmetic ----
-                case Op::F32_ADD:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a+$b); break; }
-                case Op::F32_SUB:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a-$b); break; }
-                case Op::F32_MUL:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a*$b); break; }
-                case Op::F32_DIV:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
-                case Op::F32_MIN:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fmin($a,$b)); break; }
-                case Op::F32_MAX:     { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32(self::fmax($a,$b)); break; }
+                case Op::F32_ADD:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32($a+$b); break; }
+                case Op::F32_SUB:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32($a-$b); break; }
+                case Op::F32_MUL:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32($a*$b); break; }
+                case Op::F32_DIV:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32(self::fdiv($a,$b)); break; }
+                case Op::F32_MIN:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32(self::fmin($a,$b)); break; }
+                case Op::F32_MAX:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32(self::fmax($a,$b)); break; }
                 case Op::F32_ABS: {
-                    $v=array_pop($stack);
-                    if (is_int($v)) { $stack[]=$v&0x7FFFFFFF; }
-                    else { $stack[]=WasmValue::canonF32(abs((float)$v)); }
+                    $v=$stack[--$sp];
+                    if (is_int($v)) { $stack[$sp++]=$v&0x7FFFFFFF; }
+                    else { $stack[$sp++]=WasmValue::canonF32(abs((float)$v)); }
                     break;
                 }
                 case Op::F32_NEG: {
-                    $v=array_pop($stack);
-                    if (is_int($v)) { $stack[]=$v^(int)0x80000000; }
-                    else { $stack[]=WasmValue::canonF32(-(float)$v); }
+                    $v=$stack[--$sp];
+                    if (is_int($v)) { $stack[$sp++]=$v^(int)0x80000000; }
+                    else { $stack[$sp++]=WasmValue::canonF32(-(float)$v); }
                     break;
                 }
-                case Op::F32_SQRT:    { $stack[]=WasmValue::canonF32(sqrt(self::asF32(array_pop($stack)))); break; }
-                case Op::F32_CEIL:    { $stack[]=WasmValue::canonF32(ceil(self::asF32(array_pop($stack)))); break; }
-                case Op::F32_FLOOR:   { $stack[]=WasmValue::canonF32(floor(self::asF32(array_pop($stack)))); break; }
-                case Op::F32_TRUNC:   { $a=self::asF32(array_pop($stack)); $stack[]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
-                case Op::F32_NEAREST: { $stack[]=WasmValue::canonF32(self::nearest(self::asF32(array_pop($stack)))); break; }
+                case Op::F32_SQRT:    { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(sqrt(self::asF32($v))); break; }
+                case Op::F32_CEIL:    { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(ceil(self::asF32($v))); break; }
+                case Op::F32_FLOOR:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(floor(self::asF32($v))); break; }
+                case Op::F32_TRUNC:   { $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32($a>=0?floor($a):ceil($a)); break; }
+                case Op::F32_NEAREST: { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(self::nearest(self::asF32($v))); break; }
                 case Op::F32_COPYSIGN:{
-                    $bv=array_pop($stack); $av=array_pop($stack);
+                    $bv=$stack[--$sp]; $av=$stack[--$sp];
                     $aBits=is_int($av)?$av:WasmValue::f32Bits((float)$av);
                     $bBits=is_int($bv)?$bv:WasmValue::f32Bits((float)$bv);
                     $result=($aBits&0x7FFFFFFF)|($bBits&(int)0x80000000);
-                    if (($result&0x7FFFFFFF)>0x7F800000) { $stack[]=$result; }
-                    else { $stack[]=(float)unpack('f',pack('V',$result))[1]; }
+                    if (($result&0x7FFFFFFF)>0x7F800000) { $stack[$sp++]=$result; }
+                    else { $stack[$sp++]=(float)unpack('f',pack('V',$result))[1]; }
                     break;
                 }
-                case Op::F32_EQ:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a===$b)?1:0; break; }
-                case Op::F32_NE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a!==$b)?1:0; break; }
-                case Op::F32_LT:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a<$b)?1:0; break; }
-                case Op::F32_GT:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a>$b)?1:0; break; }
-                case Op::F32_LE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a<=$b)?1:0; break; }
-                case Op::F32_GE:  { $b=self::asF32(array_pop($stack)); $a=self::asF32(array_pop($stack)); $stack[]=($a>=$b)?1:0; break; }
+                case Op::F32_EQ:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a===$b)?1:0; break; }
+                case Op::F32_NE:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a!==$b)?1:0; break; }
+                case Op::F32_LT:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a<$b)?1:0; break; }
+                case Op::F32_GT:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a>$b)?1:0; break; }
+                case Op::F32_LE:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a<=$b)?1:0; break; }
+                case Op::F32_GE:  { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- f64 arithmetic ----
-                case Op::F64_ADD:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a+$b; break; }
-                case Op::F64_SUB:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a-$b; break; }
-                case Op::F64_MUL:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=$a*$b; break; }
-                case Op::F64_DIV:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fdiv($a,$b); break; }
-                case Op::F64_MIN:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fmin($a,$b); break; }
-                case Op::F64_MAX:     { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::fmax($a,$b); break; }
-                case Op::F64_ABS:     { $stack[]=abs((float)array_pop($stack)); break; }
-                case Op::F64_NEG:     { $stack[]=-(float)array_pop($stack); break; }
-                case Op::F64_SQRT:    { $stack[]=sqrt((float)array_pop($stack)); break; }
-                case Op::F64_CEIL:    { $stack[]=ceil((float)array_pop($stack)); break; }
-                case Op::F64_FLOOR:   { $stack[]=floor((float)array_pop($stack)); break; }
-                case Op::F64_TRUNC:   { $a=(float)array_pop($stack); $stack[]=$a>=0?floor($a):ceil($a); break; }
-                case Op::F64_NEAREST: { $stack[]=self::nearest((float)array_pop($stack)); break; }
-                case Op::F64_COPYSIGN:{ $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=self::copysign($a,$b); break; }
-                case Op::F64_EQ:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a===$b)?1:0; break; }
-                case Op::F64_NE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a!==$b)?1:0; break; }
-                case Op::F64_LT:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a<$b)?1:0; break; }
-                case Op::F64_GT:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a>$b)?1:0; break; }
-                case Op::F64_LE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a<=$b)?1:0; break; }
-                case Op::F64_GE:  { $b=(float)array_pop($stack); $a=(float)array_pop($stack); $stack[]=($a>=$b)?1:0; break; }
+                case Op::F64_ADD:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=$a+$b; break; }
+                case Op::F64_SUB:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=$a-$b; break; }
+                case Op::F64_MUL:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=$a*$b; break; }
+                case Op::F64_DIV:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=self::fdiv($a,$b); break; }
+                case Op::F64_MIN:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=self::fmin($a,$b); break; }
+                case Op::F64_MAX:     { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=self::fmax($a,$b); break; }
+                case Op::F64_ABS:     { $v=$stack[--$sp]; $stack[$sp++]=abs((float)$v); break; }
+                case Op::F64_NEG:     { $v=$stack[--$sp]; $stack[$sp++]=-(float)$v; break; }
+                case Op::F64_SQRT:    { $v=$stack[--$sp]; $stack[$sp++]=sqrt((float)$v); break; }
+                case Op::F64_CEIL:    { $v=$stack[--$sp]; $stack[$sp++]=ceil((float)$v); break; }
+                case Op::F64_FLOOR:   { $v=$stack[--$sp]; $stack[$sp++]=floor((float)$v); break; }
+                case Op::F64_TRUNC:   { $a=(float)$stack[--$sp]; $stack[$sp++]=$a>=0?floor($a):ceil($a); break; }
+                case Op::F64_NEAREST: { $v=$stack[--$sp]; $stack[$sp++]=self::nearest((float)$v); break; }
+                case Op::F64_COPYSIGN:{ $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=self::copysign($a,$b); break; }
+                case Op::F64_EQ:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a===$b)?1:0; break; }
+                case Op::F64_NE:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a!==$b)?1:0; break; }
+                case Op::F64_LT:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a<$b)?1:0; break; }
+                case Op::F64_GT:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a>$b)?1:0; break; }
+                case Op::F64_LE:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a<=$b)?1:0; break; }
+                case Op::F64_GE:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- Conversions ----
-                case Op::I32_WRAP_I64:       { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
-                case Op::I32_TRUNC_F32_S:    { $stack[]=self::truncF2I32s(self::asF32(array_pop($stack))); break; }
-                case Op::I32_TRUNC_F32_U:    { $stack[]=self::truncF2I32u(self::asF32(array_pop($stack))); break; }
-                case Op::I32_TRUNC_F64_S:    { $stack[]=self::truncF2I32s((float)array_pop($stack)); break; }
-                case Op::I32_TRUNC_F64_U:    { $stack[]=self::truncF2I32u((float)array_pop($stack)); break; }
-                case Op::I32_TRUNC_SAT_F32_S:{ $stack[]=self::truncSatI32s(self::asF32(array_pop($stack))); break; }
-                case Op::I32_TRUNC_SAT_F32_U:{ $stack[]=self::truncSatI32u(self::asF32(array_pop($stack))); break; }
-                case Op::I32_TRUNC_SAT_F64_S:{ $stack[]=self::truncSatI32s((float)array_pop($stack)); break; }
-                case Op::I32_TRUNC_SAT_F64_U:{ $stack[]=self::truncSatI32u((float)array_pop($stack)); break; }
-                case Op::I64_EXTEND_I32_S:   { $stack[]=WasmValue::mask32((int)array_pop($stack)); break; }
-                case Op::I64_EXTEND_I32_U:   { $stack[]=WasmValue::u32((int)array_pop($stack)); break; }
-                case Op::I64_TRUNC_F32_S:    { $stack[]=self::truncF2I64s(self::asF32(array_pop($stack))); break; }
-                case Op::I64_TRUNC_F32_U:    { $stack[]=self::truncF2I64u(self::asF32(array_pop($stack))); break; }
-                case Op::I64_TRUNC_F64_S:    { $stack[]=self::truncF2I64s((float)array_pop($stack)); break; }
-                case Op::I64_TRUNC_F64_U:    { $stack[]=self::truncF2I64u((float)array_pop($stack)); break; }
-                case Op::I64_TRUNC_SAT_F64_S:{ $stack[]=self::truncSatI64s((float)array_pop($stack)); break; }
-                case Op::I64_TRUNC_SAT_F64_U:{ $stack[]=self::truncSatI64u((float)array_pop($stack)); break; }
-                case Op::I64_TRUNC_SAT_F32_S:{ $stack[]=self::truncSatI64s(self::asF32(array_pop($stack))); break; }
-                case Op::I64_TRUNC_SAT_F32_U:{ $stack[]=self::truncSatI64u(self::asF32(array_pop($stack))); break; }
-                case Op::F32_CONVERT_I32_S:  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
-                case Op::F32_CONVERT_I32_U:  { $stack[]=WasmValue::canonF32((float)WasmValue::u32((int)array_pop($stack))); break; }
-                case Op::F32_CONVERT_I64_S:  { $stack[]=WasmValue::canonF32((float)(int)array_pop($stack)); break; }
-                case Op::F32_CONVERT_I64_U:  { $stack[]=WasmValue::canonF32(self::u64toFloat((int)array_pop($stack))); break; }
-                case Op::F32_DEMOTE_F64:     { $stack[]=WasmValue::canonF32((float)array_pop($stack)); break; }
-                case Op::F64_CONVERT_I32_S:  { $stack[]=(float)(int)array_pop($stack); break; }
-                case Op::F64_CONVERT_I32_U:  { $stack[]=(float)WasmValue::u32((int)array_pop($stack)); break; }
-                case Op::F64_CONVERT_I64_S:  { $stack[]=(float)(int)array_pop($stack); break; }
-                case Op::F64_CONVERT_I64_U:  { $stack[]=self::u64toFloat((int)array_pop($stack)); break; }
-                case Op::F64_PROMOTE_F32:    { $stack[]=self::asF32(array_pop($stack)); break; }
+                case Op::I32_WRAP_I64:       { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::mask32((int)$v); break; }
+                case Op::I32_TRUNC_F32_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32s(self::asF32($v)); break; }
+                case Op::I32_TRUNC_F32_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32u(self::asF32($v)); break; }
+                case Op::I32_TRUNC_F64_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32s((float)$v); break; }
+                case Op::I32_TRUNC_F64_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32u((float)$v); break; }
+                case Op::I32_TRUNC_SAT_F32_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32s(self::asF32($v)); break; }
+                case Op::I32_TRUNC_SAT_F32_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32u(self::asF32($v)); break; }
+                case Op::I32_TRUNC_SAT_F64_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32s((float)$v); break; }
+                case Op::I32_TRUNC_SAT_F64_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32u((float)$v); break; }
+                case Op::I64_EXTEND_I32_S:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::mask32((int)$v); break; }
+                case Op::I64_EXTEND_I32_U:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::u32((int)$v); break; }
+                case Op::I64_TRUNC_F32_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64s(self::asF32($v)); break; }
+                case Op::I64_TRUNC_F32_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64u(self::asF32($v)); break; }
+                case Op::I64_TRUNC_F64_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64s((float)$v); break; }
+                case Op::I64_TRUNC_F64_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64u((float)$v); break; }
+                case Op::I64_TRUNC_SAT_F64_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64s((float)$v); break; }
+                case Op::I64_TRUNC_SAT_F64_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64u((float)$v); break; }
+                case Op::I64_TRUNC_SAT_F32_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64s(self::asF32($v)); break; }
+                case Op::I64_TRUNC_SAT_F32_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64u(self::asF32($v)); break; }
+                case Op::F32_CONVERT_I32_S:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)(int)$v); break; }
+                case Op::F32_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)WasmValue::u32((int)$v)); break; }
+                case Op::F32_CONVERT_I64_S:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)(int)$v); break; }
+                case Op::F32_CONVERT_I64_U:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(self::u64toFloat((int)$v)); break; }
+                case Op::F32_DEMOTE_F64:     { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)$v); break; }
+                case Op::F64_CONVERT_I32_S:  { $v=$stack[--$sp]; $stack[$sp++]=(float)(int)$v; break; }
+                case Op::F64_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=(float)WasmValue::u32((int)$v); break; }
+                case Op::F64_CONVERT_I64_S:  { $v=$stack[--$sp]; $stack[$sp++]=(float)(int)$v; break; }
+                case Op::F64_CONVERT_I64_U:  { $v=$stack[--$sp]; $stack[$sp++]=self::u64toFloat((int)$v); break; }
+                case Op::F64_PROMOTE_F32:    { $v=$stack[--$sp]; $stack[$sp++]=self::asF32($v); break; }
                 case Op::I32_REINTERPRET_F32: {
-                    $v=array_pop($stack);
+                    $v=$stack[--$sp];
                     $bits=is_int($v)?($v&0xFFFFFFFF):(unpack('V',pack('f',(float)$v))[1]&0xFFFFFFFF);
-                    $stack[]=($bits&0x80000000)?($bits|-4294967296):$bits;
+                    $stack[$sp++]=($bits&0x80000000)?($bits|-4294967296):$bits;
                     break;
                 }
                 case Op::I64_REINTERPRET_F64: {
-                    $p=pack('d',(float)array_pop($stack));
+                    $p=pack('d',(float)$stack[--$sp]);
                     $r=unpack('V2',$p);
-                    $stack[]=($r[2]<<32)|($r[1]&0xFFFFFFFF); break;
+                    $stack[$sp++]=($r[2]<<32)|($r[1]&0xFFFFFFFF); break;
                 }
                 case Op::F32_REINTERPRET_I32: {
-                    $bits=((int)array_pop($stack))&0xFFFFFFFF;
+                    $bits=((int)$stack[--$sp])&0xFFFFFFFF;
                     if (($bits & 0x7FFFFFFF) > 0x7F800000) {
-                        $stack[]=($bits&0x80000000)?($bits|-4294967296):$bits;
+                        $stack[$sp++]=($bits&0x80000000)?($bits|-4294967296):$bits;
                     } else {
-                        $stack[]=(float)unpack('f',pack('V',$bits))[1];
+                        $stack[$sp++]=(float)unpack('f',pack('V',$bits))[1];
                     }
                     break;
                 }
                 case Op::F64_REINTERPRET_I64: {
-                    $v=(int)array_pop($stack);
-                    $stack[]=unpack('d',pack('VV',$v&0xFFFFFFFF,($v>>32)&0xFFFFFFFF))[1]; break;
+                    $v=(int)$stack[--$sp];
+                    $stack[$sp++]=unpack('d',pack('VV',$v&0xFFFFFFFF,($v>>32)&0xFFFFFFFF))[1]; break;
                 }
-                case Op::I32_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $v=($v&0x80)?($v|(-1<<8)):$v; $stack[]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
-                case Op::I32_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $v=($v&0x8000)?($v|(-1<<16)):$v; $stack[]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
-                case Op::I64_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $stack[]=($v&0x80)?$v|(-1<<8):$v; break; }
-                case Op::I64_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $stack[]=($v&0x8000)?$v|(-1<<16):$v; break; }
-                case Op::I64_EXTEND32_S: { $v=(int)array_pop($stack)&0xFFFFFFFF; $stack[]=($v&0x80000000)?$v|(-1<<32):$v; break; }
+                case Op::I32_EXTEND8_S:  { $v=(int)$stack[--$sp]&0xFF;   $v=($v&0x80)?($v|(-1<<8)):$v; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
+                case Op::I32_EXTEND16_S: { $v=(int)$stack[--$sp]&0xFFFF; $v=($v&0x8000)?($v|(-1<<16)):$v; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
+                case Op::I64_EXTEND8_S:  { $v=(int)$stack[--$sp]&0xFF;   $stack[$sp++]=($v&0x80)?$v|(-1<<8):$v; break; }
+                case Op::I64_EXTEND16_S: { $v=(int)$stack[--$sp]&0xFFFF; $stack[$sp++]=($v&0x8000)?$v|(-1<<16):$v; break; }
+                case Op::I64_EXTEND32_S: { $v=(int)$stack[--$sp]&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?$v|(-1<<32):$v; break; }
 
                 // ---- Memory ----
-                case Op::MEMORY_SIZE: $stack[]=$mem0->size(); break;
-                case Op::MEMORY_GROW: { $stack[]=$mem0->grow((int)array_pop($stack)); break; }
-                case Op::I32_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI32(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI64(($a&0xFFFFFFFF)+$off); break; }
-                case Op::F32_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadF32(($a&0xFFFFFFFF)+$off); break; }
-                case Op::F64_LOAD:    { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadF64(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I32_LOAD8_S: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I32_LOAD8_U: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I32_LOAD16_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I32_LOAD16_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD8_S: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD8_U: { $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD16_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD16_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD32_S:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadI32s(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I64_LOAD32_U:{ $off=$code[$ip++]; $a=(int)array_pop($stack); $stack[]=$mem0->loadU32(($a&0xFFFFFFFF)+$off); break; }
-                case Op::I32_STORE:   { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I64_STORE:   { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI64(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::F32_STORE:   { $off=$code[$ip++]; $v=array_pop($stack); $a=(int)array_pop($stack); $mem0->storeF32(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::F64_STORE:   { $off=$code[$ip++]; $v=(float)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeF64(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I32_STORE8:  { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I32_STORE16: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I64_STORE8:  { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I64_STORE16: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
-                case Op::I64_STORE32: { $off=$code[$ip++]; $v=(int)array_pop($stack); $a=(int)array_pop($stack); $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::MEMORY_SIZE: $stack[$sp++]=$mem0->size(); break;
+                case Op::MEMORY_GROW: { $v=$stack[--$sp]; $stack[$sp++]=$mem0->grow((int)$v); break; }
+                case Op::I32_LOAD:    { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD:    { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI64(($a&0xFFFFFFFF)+$off); break; }
+                case Op::F32_LOAD:    { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadF32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::F64_LOAD:    { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadF64(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD8_S: { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD8_U: { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD16_S:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_LOAD16_U:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD8_S: { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI8s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD8_U: { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI8u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD16_S:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI16s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD16_U:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI16u(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD32_S:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadI32s(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I64_LOAD32_U:{ $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadU32(($a&0xFFFFFFFF)+$off); break; }
+                case Op::I32_STORE:   { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE:   { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI64(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::F32_STORE:   { $off=$code[$ip++]; $v=$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeF32(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::F64_STORE:   { $off=$code[$ip++]; $v=(float)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeF64(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I32_STORE8:  { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I32_STORE16: { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE8:  { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI8(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE16: { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI16(($a&0xFFFFFFFF)+$off,$v); break; }
+                case Op::I64_STORE32: { $off=$code[$ip++]; $v=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $mem0->storeI32(($a&0xFFFFFFFF)+$off,$v); break; }
 
                 // ---- Table ----
                 case Op::TABLE_SIZE: {
                     $tIdx = $code[$ip++];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    $stack[] = $table->size();
+                    $stack[$sp++] = $table->size();
                     break;
                 }
                 case Op::TABLE_GROW: {
                     $tIdx = $code[$ip++];
-                    $n    = (int)array_pop($stack);
-                    $val  = array_pop($stack);
+                    $n    = (int)$stack[--$sp];
+                    $val  = $stack[--$sp];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    $stack[] = $table->grow($n, $val);
+                    $stack[$sp++] = $table->grow($n, $val);
                     break;
                 }
                 case Op::TABLE_GET: {
                     $tIdx = $code[$ip++];
-                    $idx  = (int)array_pop($stack);
+                    $idx  = (int)$stack[--$sp];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    $stack[] = $table->get($idx);
+                    $stack[$sp++] = $table->get($idx);
                     break;
                 }
                 case Op::TABLE_SET: {
                     $tIdx = $code[$ip++];
-                    $val  = array_pop($stack);
-                    $idx  = (int)array_pop($stack);
+                    $val  = $stack[--$sp];
+                    $idx  = (int)$stack[--$sp];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $table->set($idx, $val);
                     break;
                 }
                 case Op::TABLE_FILL: {
                     $tIdx = $code[$ip++];
-                    $n    = (int)array_pop($stack);
-                    $val  = array_pop($stack);
-                    $i    = (int)array_pop($stack);
+                    $n    = (int)$stack[--$sp];
+                    $val  = $stack[--$sp];
+                    $i    = (int)$stack[--$sp];
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($i < 0 || $n < 0 || ($i & 0xFFFFFFFF) + ($n & 0xFFFFFFFF) > $table->size()) {
                         throw Trap::outOfBoundsTableAccess();
@@ -655,9 +674,9 @@ final class Executor
                 case Op::TABLE_COPY: {
                     $dIdx = $code[$ip++];
                     $sIdx = $code[$ip++];
-                    $n    = (int)array_pop($stack);
-                    $s    = (int)array_pop($stack);
-                    $d    = (int)array_pop($stack);
+                    $n    = (int)$stack[--$sp];
+                    $s    = (int)$stack[--$sp];
+                    $d    = (int)$stack[--$sp];
                     $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
                     $dTable = $this->instance->tables[$dIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $sTable = $this->instance->tables[$sIdx] ?? throw Trap::outOfBoundsTableAccess();
@@ -675,9 +694,9 @@ final class Executor
                 case Op::TABLE_INIT: {
                     $tIdx = $code[$ip++];
                     $eIdx = $code[$ip++];
-                    $n    = (int)array_pop($stack);
-                    $s    = (int)array_pop($stack);
-                    $d    = (int)array_pop($stack);
+                    $n    = (int)$stack[--$sp];
+                    $s    = (int)$stack[--$sp];
+                    $d    = (int)$stack[--$sp];
                     $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $elem  = $mod->elements[$eIdx] ?? null;
@@ -697,42 +716,42 @@ final class Executor
                 }
                 // ---- References ----
                 case Op::REF_NULL:
-                    $stack[] = null;
+                    $stack[$sp++] = null;
                     break;
                 case Op::REF_FUNC: {
                     $fIdx = $code[$ip++];
-                    $stack[] = $fIdx;
+                    $stack[$sp++] = $fIdx;
                     break;
                 }
                 case Op::REF_IS_NULL:
-                    $stack[] = (array_pop($stack) === null) ? 1 : 0;
+                    $stack[$sp-1] = ($stack[$sp-1] === null) ? 1 : 0;
                     break;
                 case Op::REF_AS_NON_NULL: {
-                    $val = array_pop($stack);
+                    $val = $stack[--$sp];
                     if ($val === null) throw new Trap('null dereference');
-                    $stack[] = $val;
+                    $stack[$sp++] = $val;
                     break;
                 }
                 // ---- Memory bulk operations ----
                 case Op::MEMORY_FILL: {
-                    $n   = (int)array_pop($stack);
-                    $val = (int)array_pop($stack);
-                    $d   = (int)array_pop($stack);
+                    $n   = (int)$stack[--$sp];
+                    $val = (int)$stack[--$sp];
+                    $d   = (int)$stack[--$sp];
                     $mem0->fill($d, $val & 0xFF, $n);
                     break;
                 }
                 case Op::MEMORY_COPY: {
-                    $n = (int)array_pop($stack);
-                    $s = (int)array_pop($stack);
-                    $d = (int)array_pop($stack);
+                    $n = (int)$stack[--$sp];
+                    $s = (int)$stack[--$sp];
+                    $d = (int)$stack[--$sp];
                     $mem0->copy($d, $s, $n);
                     break;
                 }
                 case Op::MEMORY_INIT: {
                     $segIdx = $code[$ip++];
-                    $n = (int)array_pop($stack);
-                    $s = (int)array_pop($stack);
-                    $d = (int)array_pop($stack);
+                    $n = (int)$stack[--$sp];
+                    $s = (int)$stack[--$sp];
+                    $d = (int)$stack[--$sp];
                     $data = $mod->dataSegments[$segIdx]['bytes'] ?? '';
                     $mem0->initFromData($d, $data, $s, $n);
                     break;
@@ -753,8 +772,7 @@ final class Executor
             return $e->values;
         }
 
-        $n = count($stack);
-        return array_slice($stack, max(0, $n - $retCount));
+        return $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
     }
 
     // -------------------------------------------------------------------------
