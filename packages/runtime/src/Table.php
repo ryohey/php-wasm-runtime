@@ -8,7 +8,8 @@ namespace WasmRuntime;
 final class Table
 {
     /** @var mixed[] element values (null = uninitialized/null-ref, int = func index, or any ref) */
-    private array $elements;
+    public array $elements;
+    public int $size;
     private ?int $maxSize;
 
     public function __construct(int $minSize, ?int $maxSize = null, mixed $initVal = null)
@@ -18,17 +19,18 @@ final class Table
             throw new Trap('table size exceeds implementation limit');
         }
         $this->elements = $minSize > 0 ? array_fill(0, $minSize, $initVal) : [];
+        $this->size     = $minSize;
         $this->maxSize  = $maxSize;
     }
 
     public function size(): int
     {
-        return count($this->elements);
+        return $this->size;
     }
 
     public function get(int $idx): mixed
     {
-        if ($idx < 0 || $idx >= count($this->elements)) {
+        if ($idx < 0 || $idx >= $this->size) {
             throw Trap::outOfBoundsTableAccess();
         }
         return $this->elements[$idx];
@@ -36,7 +38,7 @@ final class Table
 
     public function set(int $idx, mixed $value): void
     {
-        if ($idx < 0 || $idx >= count($this->elements)) {
+        if ($idx < 0 || $idx >= $this->size) {
             throw Trap::outOfBoundsTableAccess();
         }
         $this->elements[$idx] = $value;
@@ -44,7 +46,7 @@ final class Table
 
     public function grow(int $delta, mixed $initVal = null): int
     {
-        $old = count($this->elements);
+        $old = $this->size;
         $new = $old + $delta;
         if ($delta < 0 || ($this->maxSize !== null && $new > $this->maxSize)) {
             return -1;
@@ -52,6 +54,7 @@ final class Table
         for ($i = 0; $i < $delta; $i++) {
             $this->elements[] = $initVal;
         }
+        $this->size = $new;
         return $old;
     }
 }

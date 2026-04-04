@@ -327,9 +327,9 @@ final class Executor
                     } else {
                         $rawArgs = [];
                     }
-                    $table    = $tables[$tableIdx]
-                        ?? throw Trap::outOfBoundsTableAccess();
-                    $fIdx = $table->get($elemIdx);
+                    $table = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                    $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
@@ -350,9 +350,9 @@ final class Executor
                     } else {
                         $rawArgs = [];
                     }
-                    $table    = $tables[$tableIdx]
-                        ?? throw Trap::outOfBoundsTableAccess();
-                    $fIdx = $table->get($elemIdx);
+                    $table = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                    $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
