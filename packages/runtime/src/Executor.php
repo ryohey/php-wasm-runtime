@@ -111,14 +111,8 @@ final class Executor
 
                 $body   = $mod->funcBodies[$localIdx];
                 $ft     = $mod->funcTypeFlat[$funcIdx];
-                $locals = $rawArgs; // raw args become the first locals directly
-                foreach ($body['locals'] as $lt) {
-                    $locals[] = match ($lt) {
-                        ValType::F32, ValType::F64           => 0.0,
-                        ValType::FUNCREF, ValType::EXTERNREF => null,
-                        default                              => 0,
-                    };
-                }
+                // Append pre-computed default values for non-arg local slots
+                $locals = $body['localDefaults'] ? array_merge($rawArgs, $body['localDefaults']) : $rawArgs;
 
                 try {
                     return $this->run($body['code'], $locals, $ft);

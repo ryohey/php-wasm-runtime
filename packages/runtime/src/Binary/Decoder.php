@@ -646,10 +646,20 @@ final class Decoder
             }
         }
 
+        // Pre-compute default values for local slots (non-arg locals)
+        $localDefaults = [];
+        foreach ($locals as $lt) {
+            $localDefaults[] = match ($lt) {
+                ValType::F32, ValType::F64           => 0.0,
+                ValType::FUNCREF, ValType::EXTERNREF => null,
+                default                              => 0,
+            };
+        }
+
         // Decode instructions into flat bytecode with pre-computed IP targets
         $code = $this->decodeExpr($r);
 
-        return ['locals' => $locals, 'code' => $code];
+        return ['locals' => $locals, 'localDefaults' => $localDefaults, 'code' => $code];
     }
 
     /**
