@@ -145,6 +145,7 @@ final class Executor
         $len        = count($code);
         $retCount   = count($ft->results);
         $mem0       = $this->instance->memories[0] ?? null;
+        $mod        = $this->instance->module;
 
         try {
         while ($ip < $len) {
@@ -220,7 +221,7 @@ final class Executor
 
                 case Op::BR: {
                     $depth      = $code[$ip++];
-                    $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                    $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
                     break;
                 }
 
@@ -228,7 +229,7 @@ final class Executor
                     $depth = $code[$ip++];
                     $cond  = (int)array_pop($stack);
                     if ($cond !== 0) {
-                        $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                        $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
                     }
                     break;
                 }
@@ -242,13 +243,13 @@ final class Executor
                         $depth = $code[$ip + $cnt]; // default
                     }
                     $ip += $cnt + 1; // skip all labels + default
-                    $labelStack = $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                    $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
                     break;
                 }
 
                 case Op::CALL: {
                     $fIdx    = $code[$ip++];
-                    $pc      = count($this->instance->module->funcType($fIdx)->params);
+                    $pc      = count($mod->funcType($fIdx)->params);
                     $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
                     foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[] = $v;
                     break;
@@ -256,7 +257,7 @@ final class Executor
 
                 case Op::RETURN_CALL: {
                     $fIdx    = $code[$ip++];
-                    $pc      = count($this->instance->module->funcType($fIdx)->params);
+                    $pc      = count($mod->funcType($fIdx)->params);
                     $rawArgs = $pc > 0 ? array_splice($stack, -$pc) : [];
                     throw new TailCallSignal($fIdx, $rawArgs);
                 }
@@ -265,14 +266,14 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)array_pop($stack);
-                    $cft      = $this->instance->module->types[$typeIdx];
+                    $cft      = $mod->types[$typeIdx];
                     $pc       = count($cft->params);
                     $rawArgs  = $pc > 0 ? array_splice($stack, -$pc) : [];
                     $table    = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$cft->equals($this->instance->module->funcType($fIdx)))
+                    if (!$cft->equals($mod->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
                     foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[] = $v;
                     break;
@@ -282,14 +283,14 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)array_pop($stack);
-                    $cft      = $this->instance->module->types[$typeIdx];
+                    $cft      = $mod->types[$typeIdx];
                     $pc       = count($cft->params);
                     $rawArgs  = $pc > 0 ? array_splice($stack, -$pc) : [];
                     $table    = $this->instance->tables[$tableIdx]
                         ?? throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->get($elemIdx);
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$cft->equals($this->instance->module->funcType($fIdx)))
+                    if (!$cft->equals($mod->funcType($fIdx)))
                         throw Trap::indirectCallTypeMismatch();
                     throw new TailCallSignal($fIdx, $rawArgs);
                 }
@@ -630,7 +631,7 @@ final class Executor
                     $d    = (int)array_pop($stack);
                     $su = $s & 0xFFFFFFFF; $du = $d & 0xFFFFFFFF; $nu = $n & 0xFFFFFFFF;
                     $table = $this->instance->tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    $elem  = $this->instance->module->elements[$eIdx] ?? null;
+                    $elem  = $mod->elements[$eIdx] ?? null;
                     $funcIndices = ($elem && !empty($elem['funcIndices'])) ? $elem['funcIndices'] : [];
                     if ($su + $nu > count($funcIndices) || $du + $nu > $table->size()) {
                         throw Trap::outOfBoundsTableAccess();
@@ -640,8 +641,8 @@ final class Executor
                 }
                 case Op::ELEM_DROP: {
                     $eIdx = $code[$ip++];
-                    if (isset($this->instance->module->elements[$eIdx])) {
-                        $this->instance->module->elements[$eIdx]['funcIndices'] = [];
+                    if (isset($mod->elements[$eIdx])) {
+                        $mod->elements[$eIdx]['funcIndices'] = [];
                     }
                     break;
                 }
@@ -683,14 +684,14 @@ final class Executor
                     $n = (int)array_pop($stack);
                     $s = (int)array_pop($stack);
                     $d = (int)array_pop($stack);
-                    $data = $this->instance->module->dataSegments[$segIdx]['bytes'] ?? '';
+                    $data = $mod->dataSegments[$segIdx]['bytes'] ?? '';
                     $mem0->initFromData($d, $data, $s, $n);
                     break;
                 }
                 case Op::DATA_DROP: {
                     $dIdx = $code[$ip++];
-                    if (isset($this->instance->module->dataSegments[$dIdx])) {
-                        $this->instance->module->dataSegments[$dIdx]['bytes'] = '';
+                    if (isset($mod->dataSegments[$dIdx])) {
+                        $mod->dataSegments[$dIdx]['bytes'] = '';
                     }
                     break;
                 }
@@ -714,35 +715,34 @@ final class Executor
     private function doBranch(
         int   $depth,
         array &$stack,
-        array $labelStack,
+        array &$labelStack,
         int   $retCount,
         int   &$ip,
-    ): array {
+    ): void {
         $lsCount   = count($labelStack);
         $targetIdx = $lsCount - 1 - $depth;
 
         if ($targetIdx < 0) {
             $n    = count($stack);
-            $vals = array_slice($stack, max(0, $n - $retCount));
+            $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
             throw new EarlyReturn($vals);
         }
 
         [$type, $contIp, $stackHeight, $resultCount] = $labelStack[$targetIdx];
 
-        $n       = count($stack);
-        $topVals = ($resultCount > 0 && $n >= $resultCount) ? array_slice($stack, $n - $resultCount) : [];
-        $stack   = array_slice($stack, 0, $stackHeight);
-        foreach ($topVals as $v) {
-            $stack[] = $v;
+        $n = count($stack);
+        if ($resultCount > 0 && $n > $stackHeight) {
+            $topVals = array_slice($stack, $n - $resultCount);
+            array_splice($stack, $stackHeight);
+            foreach ($topVals as $v) $stack[] = $v;
+        } else {
+            array_splice($stack, $stackHeight);
         }
 
         $ip = $contIp;
 
-        if ($type === 'loop') {
-            return array_slice($labelStack, 0, $targetIdx + 1);
-        } else {
-            return array_slice($labelStack, 0, $targetIdx);
-        }
+        // For loop: keep target label (branch to loop start); for block: pop target too
+        array_splice($labelStack, $type === 'loop' ? $targetIdx + 1 : $targetIdx);
     }
 
     // -------------------------------------------------------------------------

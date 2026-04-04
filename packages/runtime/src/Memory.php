@@ -14,6 +14,8 @@ final class Memory
     private string $bytes = '';
     /** Tracks strlen($this->bytes) to avoid repeated strlen() calls. */
     private int $allocated = 0;
+    /** Cached pages * PAGE_SIZE to avoid repeated multiplication in check(). */
+    private int $limit = 0;
     private int $pages;
     private ?int $maxPages;
 
@@ -27,6 +29,7 @@ final class Memory
         }
         $this->pages    = $minPages;
         $this->maxPages = $maxPages;
+        $this->limit    = $minPages * self::PAGE_SIZE;
     }
 
     public function size(): int
@@ -45,13 +48,14 @@ final class Memory
             return -1;
         }
         $this->pages = $new;
+        $this->limit = $new * self::PAGE_SIZE;
         return $old;
     }
 
     /** Validate bounds and lazily zero-extend the byte buffer. */
     private function check(int $addr, int $len): void
     {
-        if ($addr < 0 || $addr + $len > $this->pages * self::PAGE_SIZE) {
+        if ($addr < 0 || $addr + $len > $this->limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
         $needed = $addr + $len;
@@ -61,32 +65,37 @@ final class Memory
         }
     }
 
-    // ---- load ----
+    // ---- load (ord()-based to avoid substr() allocations) ----
     public function loadI32(int $addr, int $align = 0): int
     {
         $this->check($addr, 4);
-        $v = unpack('V', substr($this->bytes, $addr, 4))[1];
+        $v = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
+           | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
         return ($v & 0x80000000) ? ($v | (-1 << 32)) : $v;
     }
 
     public function loadU32(int $addr): int
     {
         $this->check($addr, 4);
-        return unpack('V', substr($this->bytes, $addr, 4))[1];
+        return ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
+             | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
     }
 
     public function loadI64(int $addr): int
     {
         $this->check($addr, 8);
-        $lo = unpack('V', substr($this->bytes, $addr, 4))[1];
-        $hi = unpack('V', substr($this->bytes, $addr + 4, 4))[1];
-        return ($hi << 32) | $lo;
+        $lo = ord($this->bytes[$addr])   | (ord($this->bytes[$addr+1]) << 8)
+            | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
+        $hi = ord($this->bytes[$addr+4]) | (ord($this->bytes[$addr+5]) << 8)
+            | (ord($this->bytes[$addr+6]) << 16) | (ord($this->bytes[$addr+7]) << 24);
+        return ($hi << 32) | ($lo & 0xFFFFFFFF);
     }
 
     public function loadF32(int $addr): int|float
     {
         $this->check($addr, 4);
-        $bits = unpack('V', substr($this->bytes, $addr, 4))[1];
+        $bits = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8)
+              | (ord($this->bytes[$addr+2]) << 16) | (ord($this->bytes[$addr+3]) << 24);
         // Return NaN as int bit pattern to preserve payload
         if (($bits & 0x7FFFFFFF) > 0x7F800000) {
             return \WasmRuntime\WasmValue::mask32($bits);
@@ -116,14 +125,14 @@ final class Memory
     public function loadI16s(int $addr): int
     {
         $this->check($addr, 2);
-        $v = unpack('v', substr($this->bytes, $addr, 2))[1];
+        $v = ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8);
         return ($v & 0x8000) ? ($v | (-1 << 16)) : $v;
     }
 
     public function loadI16u(int $addr): int
     {
         $this->check($addr, 2);
-        return unpack('v', substr($this->bytes, $addr, 2))[1];
+        return ord($this->bytes[$addr]) | (ord($this->bytes[$addr+1]) << 8);
     }
 
     public function loadI32s(int $addr): int  // sign-extend for i64.load32_s
@@ -202,8 +211,7 @@ final class Memory
 
     public function fill(int $addr, int $byte, int $n): void
     {
-        $limit = $this->pages * self::PAGE_SIZE;
-        if ($n < 0 || $addr < 0 || $addr + $n > $limit) {
+        if ($n < 0 || $addr < 0 || $addr + $n > $this->limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
@@ -217,8 +225,7 @@ final class Memory
 
     public function copy(int $dst, int $src, int $n): void
     {
-        $limit = $this->pages * self::PAGE_SIZE;
-        if ($n < 0 || $dst < 0 || $src < 0 || $dst + $n > $limit || $src + $n > $limit) {
+        if ($n < 0 || $dst < 0 || $src < 0 || $dst + $n > $this->limit || $src + $n > $this->limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
@@ -234,8 +241,7 @@ final class Memory
     public function initFromData(int $dst, string $data, int $src, int $n): void
     {
         $dataLen = strlen($data);
-        $limit = $this->pages * self::PAGE_SIZE;
-        if ($n < 0 || $src < 0 || $src + $n > $dataLen || $dst < 0 || $dst + $n > $limit) {
+        if ($n < 0 || $src < 0 || $src + $n > $dataLen || $dst < 0 || $dst + $n > $this->limit) {
             throw Trap::outOfBoundsMemoryAccess();
         }
         if ($n === 0) return;
