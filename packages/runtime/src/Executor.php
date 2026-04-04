@@ -139,8 +139,10 @@ final class Executor
      */
     private function run(array $code, array $locals, FuncType $ft): array
     {
-        $stack      = [];
-        $labelStack = [];   // [[type, contIp, stackHeight, resultCount]]
+        $stack    = [];
+        // Flat label stack: 4 slots per label [type(0=block,1=loop), contIp, stackHeight, resultCount]
+        $ls  = [];   // flat storage
+        $lsp = 0;    // next free slot index (always a multiple of 4)
         $ip         = 0;
         $len        = count($code);
         $retCount   = count($ft->results);
@@ -165,7 +167,7 @@ final class Executor
                     $endIp       = $code[$ip++];
                     $paramCount  = $blockType ? count($blockType->params)  : 0;
                     $resultCount = $blockType ? count($blockType->results) : 0;
-                    $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
+                    $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                     break;
                 }
 
@@ -174,7 +176,7 @@ final class Executor
                     $contIp      = $code[$ip++];
                     $endIp       = $code[$ip++];
                     $paramCount  = $blockType ? count($blockType->params) : 0;
-                    $labelStack[] = ['loop', $contIp, count($stack) - $paramCount, $paramCount];
+                    $ls[$lsp]=1; $ls[$lsp+1]=$contIp; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$paramCount; $lsp+=4;
                     break;
                 }
 
@@ -188,11 +190,11 @@ final class Executor
                     $cond        = (int)array_pop($stack);
 
                     if ($cond !== 0) {
-                        $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
+                        $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                     } else {
                         if ($hasElse) {
-                            $ip           = $elseIp + 2; // skip Op::ELSE_ + endIp
-                            $labelStack[] = ['block', $endIp + 1, count($stack) - $paramCount, $resultCount];
+                            $ip = $elseIp + 2; // skip Op::ELSE_ + endIp
+                            $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=count($stack)-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                         } else {
                             $ip = $endIp + 1; // skip Op::END
                         }
@@ -202,15 +204,13 @@ final class Executor
 
                 case Op::ELSE_: {
                     $endIp = $code[$ip++];
-                    array_pop($labelStack);
+                    $lsp -= 4; // pop label
                     $ip = $endIp + 1; // skip Op::END
                     break;
                 }
 
                 case Op::END: {
-                    if (!empty($labelStack)) {
-                        array_pop($labelStack);
-                    }
+                    if ($lsp > 0) $lsp -= 4;
                     break;
                 }
 
@@ -220,8 +220,24 @@ final class Executor
                 }
 
                 case Op::BR: {
-                    $depth      = $code[$ip++];
-                    $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                    $depth = $code[$ip++];
+                    $targetLsp = $lsp - ($depth + 1) * 4;
+                    if ($targetLsp < 0) {
+                        $n = count($stack);
+                        $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                        throw new EarlyReturn($vals);
+                    }
+                    $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                    $n = count($stack);
+                    if ($lsResultCount > 0 && $n > $lsStackHeight) {
+                        $topVals = array_slice($stack, $n - $lsResultCount);
+                        array_splice($stack, $lsStackHeight);
+                        foreach ($topVals as $v) $stack[] = $v;
+                    } else {
+                        array_splice($stack, $lsStackHeight);
+                    }
+                    $ip  = $lsContIp;
+                    $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
                     break;
                 }
 
@@ -229,7 +245,23 @@ final class Executor
                     $depth = $code[$ip++];
                     $cond  = (int)array_pop($stack);
                     if ($cond !== 0) {
-                        $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                        $targetLsp = $lsp - ($depth + 1) * 4;
+                        if ($targetLsp < 0) {
+                            $n = count($stack);
+                            $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                            throw new EarlyReturn($vals);
+                        }
+                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                        $n = count($stack);
+                        if ($lsResultCount > 0 && $n > $lsStackHeight) {
+                            $topVals = array_slice($stack, $n - $lsResultCount);
+                            array_splice($stack, $lsStackHeight);
+                            foreach ($topVals as $v) $stack[] = $v;
+                        } else {
+                            array_splice($stack, $lsStackHeight);
+                        }
+                        $ip  = $lsContIp;
+                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
                     }
                     break;
                 }
@@ -243,7 +275,23 @@ final class Executor
                         $depth = $code[$ip + $cnt]; // default
                     }
                     $ip += $cnt + 1; // skip all labels + default
-                    $this->doBranch($depth, $stack, $labelStack, $retCount, $ip);
+                    $targetLsp = $lsp - ($depth + 1) * 4;
+                    if ($targetLsp < 0) {
+                        $n = count($stack);
+                        $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
+                        throw new EarlyReturn($vals);
+                    }
+                    $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                    $n = count($stack);
+                    if ($lsResultCount > 0 && $n > $lsStackHeight) {
+                        $topVals = array_slice($stack, $n - $lsResultCount);
+                        array_splice($stack, $lsStackHeight);
+                        foreach ($topVals as $v) $stack[] = $v;
+                    } else {
+                        array_splice($stack, $lsStackHeight);
+                    }
+                    $ip  = $lsContIp;
+                    $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
                     break;
                 }
 
@@ -507,31 +555,30 @@ final class Executor
                 case Op::F64_PROMOTE_F32:    { $stack[]=self::asF32(array_pop($stack)); break; }
                 case Op::I32_REINTERPRET_F32: {
                     $v=array_pop($stack);
-                    $stack[]=is_int($v) ? WasmValue::mask32($v) : WasmValue::mask32(WasmValue::f32Bits((float)$v));
+                    $bits=is_int($v)?($v&0xFFFFFFFF):(unpack('V',pack('f',(float)$v))[1]&0xFFFFFFFF);
+                    $stack[]=($bits&0x80000000)?($bits|-4294967296):$bits;
                     break;
                 }
                 case Op::I64_REINTERPRET_F64: {
-                    $v=(float)array_pop($stack); $p=pack('d',$v);
-                    $lo=unpack('V',$p)[1]; $hi=unpack('V',substr($p,4))[1];
-                    $stack[]=($hi<<32)|$lo; break;
+                    $p=pack('d',(float)array_pop($stack));
+                    $r=unpack('V2',$p);
+                    $stack[]=($r[2]<<32)|($r[1]&0xFFFFFFFF); break;
                 }
                 case Op::F32_REINTERPRET_I32: {
-                    $v=(int)array_pop($stack);
-                    $bits = $v & 0xFFFFFFFF;
+                    $bits=((int)array_pop($stack))&0xFFFFFFFF;
                     if (($bits & 0x7FFFFFFF) > 0x7F800000) {
-                        $stack[] = WasmValue::mask32($bits);
+                        $stack[]=($bits&0x80000000)?($bits|-4294967296):$bits;
                     } else {
-                        $stack[] = (float)unpack('f', pack('V', $bits))[1];
+                        $stack[]=(float)unpack('f',pack('V',$bits))[1];
                     }
                     break;
                 }
                 case Op::F64_REINTERPRET_I64: {
                     $v=(int)array_pop($stack);
-                    $lo=$v&0xFFFFFFFF; $hi=($v>>32)&0xFFFFFFFF;
-                    $stack[]=unpack('d',pack('VV',$lo,$hi))[1]; break;
+                    $stack[]=unpack('d',pack('VV',$v&0xFFFFFFFF,($v>>32)&0xFFFFFFFF))[1]; break;
                 }
-                case Op::I32_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $stack[]=WasmValue::mask32(($v&0x80)?$v|(-1<<8):$v); break; }
-                case Op::I32_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $stack[]=WasmValue::mask32(($v&0x8000)?$v|(-1<<16):$v); break; }
+                case Op::I32_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $v=($v&0x80)?($v|(-1<<8)):$v; $stack[]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
+                case Op::I32_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $v=($v&0x8000)?($v|(-1<<16)):$v; $stack[]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
                 case Op::I64_EXTEND8_S:  { $v=(int)array_pop($stack)&0xFF;   $stack[]=($v&0x80)?$v|(-1<<8):$v; break; }
                 case Op::I64_EXTEND16_S: { $v=(int)array_pop($stack)&0xFFFF; $stack[]=($v&0x8000)?$v|(-1<<16):$v; break; }
                 case Op::I64_EXTEND32_S: { $v=(int)array_pop($stack)&0xFFFFFFFF; $stack[]=($v&0x80000000)?$v|(-1<<32):$v; break; }
@@ -708,43 +755,6 @@ final class Executor
 
         $n = count($stack);
         return array_slice($stack, max(0, $n - $retCount));
-    }
-
-    // -------------------------------------------------------------------------
-    // Branch logic
-    // -------------------------------------------------------------------------
-
-    private function doBranch(
-        int   $depth,
-        array &$stack,
-        array &$labelStack,
-        int   $retCount,
-        int   &$ip,
-    ): void {
-        $lsCount   = count($labelStack);
-        $targetIdx = $lsCount - 1 - $depth;
-
-        if ($targetIdx < 0) {
-            $n    = count($stack);
-            $vals = ($retCount > 0 && $n >= $retCount) ? array_slice($stack, $n - $retCount) : [];
-            throw new EarlyReturn($vals);
-        }
-
-        [$type, $contIp, $stackHeight, $resultCount] = $labelStack[$targetIdx];
-
-        $n = count($stack);
-        if ($resultCount > 0 && $n > $stackHeight) {
-            $topVals = array_slice($stack, $n - $resultCount);
-            array_splice($stack, $stackHeight);
-            foreach ($topVals as $v) $stack[] = $v;
-        } else {
-            array_splice($stack, $stackHeight);
-        }
-
-        $ip = $contIp;
-
-        // For loop: keep target label (branch to loop start); for block: pop target too
-        array_splice($labelStack, $type === 'loop' ? $targetIdx + 1 : $targetIdx);
     }
 
     // -------------------------------------------------------------------------
