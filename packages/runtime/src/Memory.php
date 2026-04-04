@@ -10,12 +10,12 @@ final class Memory
     public const PAGE_SIZE = 65536;
     public const MAX_PAGES = 65536;
 
-    /** Raw byte buffer, lazily grown on access. */
-    private string $bytes = '';
+    /** Raw byte buffer, lazily grown on access. Public for inline access in Executor. */
+    public string $bytes = '';
     /** Tracks strlen($this->bytes) to avoid repeated strlen() calls. */
-    private int $allocated = 0;
+    public int $allocated = 0;
     /** Cached pages * PAGE_SIZE to avoid repeated multiplication in check(). */
-    private int $limit = 0;
+    public int $limit = 0;
     private int $pages;
     private ?int $maxPages;
 
