@@ -530,8 +530,8 @@ final class Executor
                 case Op::I32_GE_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case Op::I64_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Add($a,$b); break; }
-                case Op::I64_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Sub($a,$b); break; }
+                case Op::I64_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $lo=($a&0xFFFFFFFF)+($b&0xFFFFFFFF); $stack[$sp++]=((((($a>>32)&0xFFFFFFFF)+(($b>>32)&0xFFFFFFFF)+($lo>>32&1))&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF); break; }
+                case Op::I64_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $lo=($a&0xFFFFFFFF)-($b&0xFFFFFFFF); $bw=($lo<0)?1:0; $stack[$sp++]=((((($a>>32)&0xFFFFFFFF)-(($b>>32)&0xFFFFFFFF)-$bw)&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF); break; }
                 case Op::I64_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Mul($a,$b); break; }
                 case Op::I64_DIV_S: {
                     $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
