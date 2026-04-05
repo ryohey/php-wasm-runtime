@@ -100,12 +100,8 @@ final class Executor
                 }
                 return $out;
             }
-            $mod      = $this->instance->module;
-            $localIdx = $funcIdx - $mod->importedFuncCount;
-            if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
-                throw new Trap("Invalid function index: $funcIdx");
-            }
-            $body = $mod->funcBodies[$localIdx];
+            $mod  = $this->instance->module;
+            $body = $mod->funcBodiesFlat[$funcIdx] ?? throw new Trap("Invalid function index: $funcIdx");
             $ft   = $mod->funcTypeFlat[$funcIdx];
             return $this->run($body['code'], $rawArgs, $body['localDefaults'], $ft);
         } finally {
@@ -314,13 +310,12 @@ final class Executor
                     }
                     // Iterative WASM-to-WASM call — push frame, switch code
                     if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
-                    $localIdx = $fIdx - $mod->importedFuncCount;
-                    $body     = $mod->funcBodies[$localIdx];
+                    $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push local defaults
                     $frames[] = [$code, $ft, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
@@ -347,13 +342,12 @@ final class Executor
                         foreach ($wresult as $rv) $earlyReturn[] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
                         break 2;
                     }
-                    $localIdx = $fIdx - $mod->importedFuncCount;
-                    $body     = $mod->funcBodies[$localIdx];
+                    $body = $mod->funcBodiesFlat[$fIdx];
                     $lbase    = $sp - $pc; // new lbase = args base on stack
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push defaults
                     // $lbase + locals now at correct positions; sp is past all locals
                     $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx];
-                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
@@ -396,13 +390,12 @@ final class Executor
                         break;
                     }
                     if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
-                    $localIdx = $fIdx - $mod->importedFuncCount;
-                    $body     = $mod->funcBodies[$localIdx];
+                    $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $frames[] = [$code, $ft, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
@@ -437,12 +430,11 @@ final class Executor
                         break 2;
                     }
                     // Tail call — replace frame in-place
-                    $localIdx = $fIdx - $mod->importedFuncCount;
-                    $body     = $mod->funcBodies[$localIdx];
+                    $body = $mod->funcBodiesFlat[$fIdx];
                     $lbase    = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx];
-                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
