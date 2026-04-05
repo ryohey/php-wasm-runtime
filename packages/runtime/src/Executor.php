@@ -139,9 +139,10 @@ final class Executor
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
-        // Iterative call stack: each entry = [code, ip, len, retCount, lsBase, lsp, lbase, sp] (8 elements)
-        // WASM-to-WASM calls push/pop here instead of making recursive PHP calls.
-        $frames = [];
+        // Iterative call stack: flat array, 8 slots per frame: [code, ip, len, retCount, lsBase, lsp, lbase, sp]
+        // $fsp = next free slot index (fsp >> 3 = current depth). Push: write fsp[0..7], fsp+=8. Pop: fsp-=8.
+        $frameData = [];
+        $fsp = 0;
 
         while (true) { // outer: frame manager — loops once per function frame
         while ($ip < $len) {
@@ -310,11 +311,13 @@ final class Executor
                         break;
                     }
                     // Iterative WASM-to-WASM call — push frame, switch code
-                    if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
+                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                     $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push local defaults
-                    $frames[] = [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $newLbase];
+                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
+                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
+                    $fsp += 8;
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
@@ -390,11 +393,13 @@ final class Executor
                         }
                         break;
                     }
-                    if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
+                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                     $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
-                    $frames[] = [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $newLbase];
+                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
+                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
+                    $fsp += 8;
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
@@ -948,9 +953,11 @@ final class Executor
         $retStart = $retBase >= 0 ? $retBase : ($retCount > 0 ? max(0, $sp - $retCount) : $sp);
         $nResults = $retCount;
         $retBase  = -1;
-        if (empty($frames)) return $nResults > 0 ? array_slice($stack, $retStart, $nResults) : [];
+        if ($fsp === 0) return $nResults > 0 ? array_slice($stack, $retStart, $nResults) : [];
         // Pop caller frame; $sp in frame = argBase (return-address for results)
-        [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $sp] = array_pop($frames);
+        $fsp -= 8;
+        $code=$frameData[$fsp]; $ip=$frameData[$fsp+1]; $len=$frameData[$fsp+2]; $retCount=$frameData[$fsp+3];
+        $lsBase=$frameData[$fsp+4]; $lsp=$frameData[$fsp+5]; $lbase=$frameData[$fsp+6]; $sp=$frameData[$fsp+7];
         for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i];
         } // end outer while (true)
     }
