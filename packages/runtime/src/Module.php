@@ -114,6 +114,13 @@ final class Module
     public array $resultCounts = [];
 
     /**
+     * Flat cache: absolute function index → type index (into $types[]).
+     * Used by CALL_INDIRECT for fast int comparison before structural equals().
+     * @var int[]
+     */
+    public array $funcTypeIndicesFlat = [];
+
+    /**
      * Flat cache: absolute function index → funcBody (includes 'code', 'codeLen', 'localDefaults').
      * Only populated for local (non-import) functions.
      * @var array[]
@@ -141,12 +148,14 @@ final class Module
     {
         $flat   = [];
         $counts = [];
+        $typeIdxFlat = [];
         $impIdx = 0;
         foreach ($this->imports as $imp) {
             if ($imp['kind'] === 'func') {
                 $ft              = $this->types[$imp['typeIndex']];
                 $flat[$impIdx]   = $ft;
                 $counts[$impIdx] = count($ft->params);
+                $typeIdxFlat[$impIdx] = $imp['typeIndex'];
                 $impIdx++;
             }
         }
@@ -154,9 +163,10 @@ final class Module
         foreach ($this->funcTypeIndices as $i => $typeIdx) {
             $ft     = $this->types[$typeIdx];
             $absIdx = $this->importedFuncCount + $i;
-            $flat[$absIdx]      = $ft;
-            $counts[$absIdx]    = count($ft->params);
-            $resCounts[$absIdx] = count($ft->results);
+            $flat[$absIdx]        = $ft;
+            $counts[$absIdx]      = count($ft->params);
+            $resCounts[$absIdx]   = count($ft->results);
+            $typeIdxFlat[$absIdx] = $typeIdx;
             // Precompute code length into body and build flat body index
             if (isset($this->funcBodies[$i])) {
                 $this->funcBodies[$i]['codeLen'] = count($this->funcBodies[$i]['code']);
@@ -168,10 +178,11 @@ final class Module
         foreach ($this->imports as $imp) {
             if ($imp['kind'] === 'func') { $resCounts[$impIdx2] = count($this->types[$imp['typeIndex']]->results); $impIdx2++; }
         }
-        $this->funcTypeFlat   = $flat;
-        $this->paramCounts    = $counts;
-        $this->resultCounts   = $resCounts;
-        $this->funcBodiesFlat = $bodiesFlat;
+        $this->funcTypeFlat        = $flat;
+        $this->paramCounts         = $counts;
+        $this->resultCounts        = $resCounts;
+        $this->funcBodiesFlat      = $bodiesFlat;
+        $this->funcTypeIndicesFlat = $typeIdxFlat;
 
         // Pre-compute param counts per type index for CALL_INDIRECT
         $typeCounts = [];
