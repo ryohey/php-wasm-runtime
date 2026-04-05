@@ -76,52 +76,39 @@ final class Executor
             throw Trap::callStackExhausted();
         }
         try {
-            while (true) {
-                if (isset($this->hostFuncs[$funcIdx])) {
-                    // Host functions still use WasmValue convention — wrap and unwrap.
-                    $ft    = $this->instance->module->funcTypeFlat[$funcIdx];
-                    $wargs = [];
-                    foreach ($rawArgs as $i => $raw) {
-                        $type    = $ft->params[$i] ?? ValType::I32;
-                        $wargs[] = match ($type) {
-                            ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
-                            ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
-                            ValType::I64 => WasmValue::i64((int)$raw),
-                            ValType::F32 => WasmValue::f32((float)$raw),
-                            ValType::F64 => WasmValue::f64((float)$raw),
-                            default      => WasmValue::i32((int)($raw ?? 0)),
-                        };
-                    }
-                    $r       = ($this->hostFuncs[$funcIdx])($wargs);
-                    $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
-                    $out     = [];
-                    foreach ($wresult as $rv) {
-                        $out[] = ($rv instanceof WasmValue)
-                            ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value)
-                            : $rv;
-                    }
-                    return $out;
+            if (isset($this->hostFuncs[$funcIdx])) {
+                $ft    = $this->instance->module->funcTypeFlat[$funcIdx];
+                $wargs = [];
+                foreach ($rawArgs as $i => $raw) {
+                    $type    = $ft->params[$i] ?? ValType::I32;
+                    $wargs[] = match ($type) {
+                        ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                        ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                        ValType::I64 => WasmValue::i64((int)$raw),
+                        ValType::F32 => WasmValue::f32((float)$raw),
+                        ValType::F64 => WasmValue::f64((float)$raw),
+                        default      => WasmValue::i32((int)($raw ?? 0)),
+                    };
                 }
-
-                $mod      = $this->instance->module;
-                $localIdx = $funcIdx - $mod->importedFuncCount;
-                if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
-                    throw new Trap("Invalid function index: $funcIdx");
+                $r       = ($this->hostFuncs[$funcIdx])($wargs);
+                $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                $out     = [];
+                foreach ($wresult as $rv) {
+                    $out[] = ($rv instanceof WasmValue)
+                        ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value)
+                        : $rv;
                 }
-
-                $body   = $mod->funcBodies[$localIdx];
-                $ft     = $mod->funcTypeFlat[$funcIdx];
-                // Append pre-computed default values for non-arg local slots
-                $locals = $body['localDefaults'] ? array_merge($rawArgs, $body['localDefaults']) : $rawArgs;
-
-                try {
-                    return $this->run($body['code'], $locals, $ft);
-                } catch (TailCallSignal $tcs) {
-                    $funcIdx = $tcs->funcIdx;
-                    $rawArgs = $tcs->args;
-                    continue;
-                }
+                return $out;
             }
+            $mod      = $this->instance->module;
+            $localIdx = $funcIdx - $mod->importedFuncCount;
+            if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
+                throw new Trap("Invalid function index: $funcIdx");
+            }
+            $body   = $mod->funcBodies[$localIdx];
+            $ft     = $mod->funcTypeFlat[$funcIdx];
+            $locals = $body['localDefaults'] ? array_merge($rawArgs, $body['localDefaults']) : $rawArgs;
+            return $this->run($body['code'], $locals, $ft);
         } finally {
             $this->callDepth--;
         }
@@ -145,8 +132,12 @@ final class Executor
         $mod        = $this->instance->module;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
-        $earlyReturn = null; // non-null signals an early return (replaces EarlyReturn exception)
+        $earlyReturn = null; // non-null signals an early return (set before break 2)
+        // Iterative call stack: each entry = [code, locals, ft, ip, len, retCount, ls, lsp, sp]
+        // WASM-to-WASM calls push/pop here instead of making recursive PHP calls.
+        $frames = [];
 
+        while (true) { // outer: frame manager — loops once per function frame
         while ($ip < $len) {
             $op = $code[$ip++];
 
@@ -208,7 +199,8 @@ final class Executor
                 }
 
                 case Op::RETURN_: {
-                    return $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
+                    $earlyReturn = $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
+                    break 2;
                 }
 
                 case Op::BR: {
@@ -282,32 +274,82 @@ final class Executor
                 }
 
                 case Op::CALL: {
-                    $fIdx    = $code[$ip++];
-                    $pc      = $mod->paramCounts[$fIdx];
-                    if ($pc > 0) {
-                        $rawArgs = [];
+                    $fIdx = $code[$ip++];
+                    $pc   = $mod->paramCounts[$fIdx];
+                    if (isset($this->hostFuncs[$fIdx])) {
+                        // Inline host call — no PHP recursion needed
+                        $hostFt = $mod->funcTypeFlat[$fIdx];
+                        $wargs  = [];
                         $__base = $sp - $pc;
-                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
+                        for ($__i = 0; $__i < $pc; $__i++) {
+                            $raw  = $stack[$__base + $__i];
+                            $type = $hostFt->params[$__i] ?? ValType::I32;
+                            $wargs[] = match ($type) {
+                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                                ValType::I64 => WasmValue::i64((int)$raw),
+                                ValType::F32 => WasmValue::f32((float)$raw),
+                                ValType::F64 => WasmValue::f64((float)$raw),
+                                default      => WasmValue::i32((int)($raw ?? 0)),
+                            };
+                        }
                         $sp -= $pc;
-                    } else {
-                        $rawArgs = [];
+                        $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                        foreach ($wresult as $rv) {
+                            $stack[$sp++] = ($rv instanceof WasmValue)
+                                ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value)
+                                : $rv;
+                        }
+                        break;
                     }
-                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[$sp++] = $v;
+                    // Iterative WASM-to-WASM call — push frame, switch code
+                    if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
+                    $localIdx = $fIdx - $mod->importedFuncCount;
+                    $body     = $mod->funcBodies[$localIdx];
+                    $argBase  = $sp - $pc;
+                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
+                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
+                    $sp = $argBase;
+                    $frames[] = [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp];
+                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
 
                 case Op::RETURN_CALL: {
-                    $fIdx    = $code[$ip++];
-                    $pc      = $mod->paramCounts[$fIdx];
-                    if ($pc > 0) {
-                        $rawArgs = [];
+                    // Tail call — replace current frame in-place (no frame push)
+                    $fIdx = $code[$ip++]; $pc = $mod->paramCounts[$fIdx];
+                    if (isset($this->hostFuncs[$fIdx])) {
+                        // Tail call to host: call it and return its result
+                        $hostFt = $mod->funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
-                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
-                        $sp -= $pc;
-                    } else {
-                        $rawArgs = [];
+                        for ($__i = 0; $__i < $pc; $__i++) {
+                            $raw = $stack[$__base + $__i]; $type = $hostFt->params[$__i] ?? ValType::I32;
+                            $wargs[] = match ($type) {
+                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                                ValType::I64 => WasmValue::i64((int)$raw), ValType::F32 => WasmValue::f32((float)$raw),
+                                ValType::F64 => WasmValue::f64((float)$raw), default => WasmValue::i32((int)($raw ?? 0)),
+                            };
+                        }
+                        $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                        $earlyReturn = [];
+                        foreach ($wresult as $rv) $earlyReturn[] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
+                        break 2;
                     }
-                    throw new TailCallSignal($fIdx, $rawArgs);
+                    $localIdx = $fIdx - $mod->importedFuncCount;
+                    $body     = $mod->funcBodies[$localIdx];
+                    $argBase  = $sp - $pc;
+                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
+                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
+                    $sp = $argBase;
+                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    break;
                 }
 
                 case Op::CALL_INDIRECT: {
@@ -315,21 +357,49 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $mod->typeParamCounts[$typeIdx];
-                    if ($pc > 0) {
-                        $rawArgs = [];
-                        $__base = $sp - $pc;
-                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
-                        $sp -= $pc;
-                    } else {
-                        $rawArgs = [];
-                    }
-                    $table = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    foreach ($this->callFunctionRaw($fIdx, $rawArgs) as $v) $stack[$sp++] = $v;
+                    if (isset($this->hostFuncs[$fIdx])) {
+                        $hostFt = $mod->funcTypeFlat[$fIdx];
+                        $wargs  = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) {
+                            $raw  = $stack[$__base + $__i];
+                            $type = $hostFt->params[$__i] ?? ValType::I32;
+                            $wargs[] = match ($type) {
+                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                                ValType::I64 => WasmValue::i64((int)$raw),
+                                ValType::F32 => WasmValue::f32((float)$raw),
+                                ValType::F64 => WasmValue::f64((float)$raw),
+                                default      => WasmValue::i32((int)($raw ?? 0)),
+                            };
+                        }
+                        $sp -= $pc;
+                        $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                        foreach ($wresult as $rv) {
+                            $stack[$sp++] = ($rv instanceof WasmValue)
+                                ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value)
+                                : $rv;
+                        }
+                        break;
+                    }
+                    if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
+                    $localIdx = $fIdx - $mod->importedFuncCount;
+                    $body     = $mod->funcBodies[$localIdx];
+                    $argBase  = $sp - $pc;
+                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
+                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
+                    $sp = $argBase;
+                    $frames[] = [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp];
+                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
                 }
 
@@ -338,21 +408,41 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $mod->typeParamCounts[$typeIdx];
-                    if ($pc > 0) {
-                        $rawArgs = [];
-                        $__base = $sp - $pc;
-                        for ($__i = 0; $__i < $pc; $__i++) $rawArgs[] = $stack[$__base + $__i];
-                        $sp -= $pc;
-                    } else {
-                        $rawArgs = [];
-                    }
-                    $table = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    throw new TailCallSignal($fIdx, $rawArgs);
+                    if (isset($this->hostFuncs[$fIdx])) {
+                        $hostFt = $mod->funcTypeFlat[$fIdx]; $wargs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) {
+                            $raw = $stack[$__base + $__i]; $type = $hostFt->params[$__i] ?? ValType::I32;
+                            $wargs[] = match ($type) {
+                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                                ValType::I64 => WasmValue::i64((int)$raw), ValType::F32 => WasmValue::f32((float)$raw),
+                                ValType::F64 => WasmValue::f64((float)$raw), default => WasmValue::i32((int)($raw ?? 0)),
+                            };
+                        }
+                        $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                        $earlyReturn = [];
+                        foreach ($wresult as $rv) $earlyReturn[] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
+                        break 2;
+                    }
+                    // Tail call — replace frame in-place
+                    $localIdx = $fIdx - $mod->importedFuncCount;
+                    $body     = $mod->funcBodies[$localIdx];
+                    $argBase  = $sp - $pc;
+                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
+                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
+                    $sp = $argBase;
+                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $ip = 0; $len = count($code); $retCount = count($ft->results);
+                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    break;
                 }
 
                 // ---- Parametric ----
@@ -857,10 +947,16 @@ final class Executor
                 default:
                     break; // unknown/future instructions silently skipped
             }
-        }
+        } // end inner while ($ip < $len)
 
-        if ($earlyReturn !== null) return $earlyReturn;
-        return $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
+        // Current frame complete — compute results and handle frame stack
+        $results = $earlyReturn ?? ($retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : []);
+        if (empty($frames)) return $results;
+        // Pop caller frame and push callee's results onto caller's stack
+        [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp] = array_pop($frames);
+        foreach ($results as $v) $stack[$sp++] = $v;
+        $earlyReturn = null;
+        } // end outer while (true)
     }
 
     // -------------------------------------------------------------------------
