@@ -105,10 +105,9 @@ final class Executor
             if ($localIdx < 0 || $localIdx >= count($mod->funcBodies)) {
                 throw new Trap("Invalid function index: $funcIdx");
             }
-            $body   = $mod->funcBodies[$localIdx];
-            $ft     = $mod->funcTypeFlat[$funcIdx];
-            $locals = $body['localDefaults'] ? array_merge($rawArgs, $body['localDefaults']) : $rawArgs;
-            return $this->run($body['code'], $locals, $ft);
+            $body = $mod->funcBodies[$localIdx];
+            $ft   = $mod->funcTypeFlat[$funcIdx];
+            return $this->run($body['code'], $rawArgs, $body['localDefaults'], $ft);
         } finally {
             $this->callDepth--;
         }
@@ -116,12 +115,22 @@ final class Executor
 
     /**
      * Main interpreter loop — flat bytecode dispatch.
+     *
+     * Locals live on the value stack at [$lbase .. $lbase + totalLocals).
+     * LOCAL_GET/SET/TEE use $stack[$lbase + localIdx].
+     * This eliminates array_slice + array_merge per WASM function call.
+     *
+     * @param  (int|float|null)[] $rawArgs    argument values
+     * @param  (int|float|null)[] $localDefaults  default values for non-arg locals
      * @return (int|float)[]  raw result values
      */
-    private function run(array $code, array $locals, FuncType $ft): array
+    private function run(array $code, array $rawArgs, array $localDefaults, FuncType $ft): array
     {
-        $stack    = [];
-        $sp       = 0;
+        // Build initial stack: args followed by local defaults
+        $stack = $rawArgs;
+        $sp    = count($rawArgs);
+        foreach ($localDefaults as $v) $stack[$sp++] = $v;
+        $lbase = 0;  // index of local[0] in $stack (grows with each CALL frame)
         // Flat label stack: 4 slots per label [type(0=block,1=loop), contIp, stackHeight, resultCount]
         $ls  = [];   // flat storage
         $lsp = 0;    // next free slot index (always a multiple of 4)
@@ -133,7 +142,7 @@ final class Executor
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
         $earlyReturn = null; // non-null signals an early return (set before break 2)
-        // Iterative call stack: each entry = [code, locals, ft, ip, len, retCount, ls, lsp, sp]
+        // Iterative call stack: each entry = [code, ft, ip, len, retCount, ls, lsp, lbase, sp]
         // WASM-to-WASM calls push/pop here instead of making recursive PHP calls.
         $frames = [];
 
@@ -307,12 +316,10 @@ final class Executor
                     if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
                     $localIdx = $fIdx - $mod->importedFuncCount;
                     $body     = $mod->funcBodies[$localIdx];
-                    $argBase  = $sp - $pc;
-                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
-                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
-                    $sp = $argBase;
-                    $frames[] = [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp];
-                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
+                    foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push local defaults
+                    $frames[] = [$code, $ft, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
+                    $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx]; $lbase = $newLbase;
                     $ip = 0; $len = count($code); $retCount = count($ft->results);
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
@@ -342,11 +349,10 @@ final class Executor
                     }
                     $localIdx = $fIdx - $mod->importedFuncCount;
                     $body     = $mod->funcBodies[$localIdx];
-                    $argBase  = $sp - $pc;
-                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
-                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
-                    $sp = $argBase;
-                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $lbase    = $sp - $pc; // new lbase = args base on stack
+                    foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push defaults
+                    // $lbase + locals now at correct positions; sp is past all locals
+                    $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx];
                     $ip = 0; $len = count($code); $retCount = count($ft->results);
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
@@ -392,12 +398,10 @@ final class Executor
                     if (count($frames) >= self::MAX_CALL_DEPTH) throw Trap::callStackExhausted();
                     $localIdx = $fIdx - $mod->importedFuncCount;
                     $body     = $mod->funcBodies[$localIdx];
-                    $argBase  = $sp - $pc;
-                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
-                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
-                    $sp = $argBase;
-                    $frames[] = [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp];
-                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $newLbase = $sp - $pc;
+                    foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
+                    $frames[] = [$code, $ft, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
+                    $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx]; $lbase = $newLbase;
                     $ip = 0; $len = count($code); $retCount = count($ft->results);
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
@@ -435,11 +439,9 @@ final class Executor
                     // Tail call — replace frame in-place
                     $localIdx = $fIdx - $mod->importedFuncCount;
                     $body     = $mod->funcBodies[$localIdx];
-                    $argBase  = $sp - $pc;
-                    $newLocals = $pc > 0 ? array_slice($stack, $argBase, $pc) : [];
-                    if ($body['localDefaults']) $newLocals = array_merge($newLocals, $body['localDefaults']);
-                    $sp = $argBase;
-                    $code = $body['code']; $locals = $newLocals; $ft = $mod->funcTypeFlat[$fIdx];
+                    $lbase    = $sp - $pc;
+                    foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
+                    $code = $body['code']; $ft = $mod->funcTypeFlat[$fIdx];
                     $ip = 0; $len = count($code); $retCount = count($ft->results);
                     $ls = []; $lsp = 0; $earlyReturn = null;
                     break;
@@ -453,9 +455,9 @@ final class Executor
                 }
 
                 // ---- Variable ----
-                case Op::LOCAL_GET:  $stack[$sp++] = $locals[$code[$ip++]]; break;
-                case Op::LOCAL_SET:  $locals[$code[$ip++]] = $stack[--$sp]; break;
-                case Op::LOCAL_TEE:  $locals[$code[$ip++]] = $stack[$sp-1]; break;
+                case Op::LOCAL_GET:  { $idx=$code[$ip++]; $stack[$sp++] = $stack[$lbase+$idx]; break; }
+                case Op::LOCAL_SET:  { $idx=$code[$ip++]; $stack[$lbase+$idx] = $stack[--$sp]; break; }
+                case Op::LOCAL_TEE:  { $idx=$code[$ip++]; $stack[$lbase+$idx] = $stack[$sp-1]; break; }
                 case Op::GLOBAL_GET: $stack[$sp++] = $globals[$code[$ip++]]; break;
                 case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
 
@@ -952,8 +954,8 @@ final class Executor
         // Current frame complete — compute results and handle frame stack
         $results = $earlyReturn ?? ($retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : []);
         if (empty($frames)) return $results;
-        // Pop caller frame and push callee's results onto caller's stack
-        [$code, $locals, $ft, $ip, $len, $retCount, $ls, $lsp, $sp] = array_pop($frames);
+        // Pop caller frame; $sp in frame = argBase (return-address for results)
+        [$code, $ft, $ip, $len, $retCount, $ls, $lsp, $lbase, $sp] = array_pop($frames);
         foreach ($results as $v) $stack[$sp++] = $v;
         $earlyReturn = null;
         } // end outer while (true)
