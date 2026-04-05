@@ -141,6 +141,12 @@ final class Executor
         $bytes  = null; $blimit = 0;
         if ($mem0 !== null) { $bytes = &$mem0->bytes; $blimit = $mem0->limit; }
         $mod        = $this->instance->module;
+        // Cache hot module arrays as locals — local var access is faster than property dereference.
+        $funcBodiesFlat  = $mod->funcBodiesFlat;
+        $resultCounts    = $mod->resultCounts;
+        $paramCounts     = $mod->paramCounts;
+        $typeParamCounts = $mod->typeParamCounts;
+        $funcTypeFlat    = $mod->funcTypeFlat;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
@@ -287,10 +293,10 @@ final class Executor
 
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
-                    $pc   = $mod->paramCounts[$fIdx];
+                    $pc   = $paramCounts[$fIdx];
                     if (isset($this->hostFuncs[$fIdx])) {
                         // Inline host call — no PHP recursion needed
-                        $hostFt = $mod->funcTypeFlat[$fIdx];
+                        $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
@@ -317,24 +323,24 @@ final class Executor
                     }
                     // Iterative WASM-to-WASM call — push frame, switch code
                     if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
-                    $body = $mod->funcBodiesFlat[$fIdx];
+                    $body = $funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push local defaults
                     $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                     $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                     $fsp += 8;
                     $code = $body['code']; $lbase = $newLbase;
-                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
                     break;
                 }
 
                 case Op::RETURN_CALL: {
                     // Tail call — replace current frame in-place (no frame push)
-                    $fIdx = $code[$ip++]; $pc = $mod->paramCounts[$fIdx];
+                    $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
                     if (isset($this->hostFuncs[$fIdx])) {
                         // Tail call to host: call it and return its result
-                        $hostFt = $mod->funcTypeFlat[$fIdx]; $wargs = [];
+                        $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
                             $raw = $stack[$__base + $__i]; $type = $hostFt->params[$__i] ?? ValType::I32;
@@ -351,12 +357,12 @@ final class Executor
                         foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
                         break 2;
                     }
-                    $body = $mod->funcBodiesFlat[$fIdx];
+                    $body = $funcBodiesFlat[$fIdx];
                     $lbase    = $sp - $pc; // new lbase = args base on stack
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push defaults
                     // $lbase + locals now at correct positions; sp is past all locals
                     $code = $body['code'];
-                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $resultCounts[$fIdx];
                     $lsp = $lsBase; $retBase = -1;
                     break;
                 }
@@ -365,15 +371,15 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
-                    $pc       = $mod->typeParamCounts[$typeIdx];
+                    $pc       = $typeParamCounts[$typeIdx];
                     $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
+                    if (!$mod->types[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($this->hostFuncs[$fIdx])) {
-                        $hostFt = $mod->funcTypeFlat[$fIdx];
+                        $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
@@ -399,14 +405,14 @@ final class Executor
                         break;
                     }
                     if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
-                    $body = $mod->funcBodiesFlat[$fIdx];
+                    $body = $funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                     $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                     $fsp += 8;
                     $code = $body['code']; $lbase = $newLbase;
-                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
                     break;
                 }
@@ -415,15 +421,15 @@ final class Executor
                     $typeIdx  = $code[$ip++];
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
-                    $pc       = $mod->typeParamCounts[$typeIdx];
+                    $pc       = $typeParamCounts[$typeIdx];
                     $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
+                    if (!$mod->types[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($this->hostFuncs[$fIdx])) {
-                        $hostFt = $mod->funcTypeFlat[$fIdx]; $wargs = [];
+                        $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
                             $raw = $stack[$__base + $__i]; $type = $hostFt->params[$__i] ?? ValType::I32;
@@ -441,11 +447,11 @@ final class Executor
                         break 2;
                     }
                     // Tail call — replace frame in-place
-                    $body = $mod->funcBodiesFlat[$fIdx];
+                    $body = $funcBodiesFlat[$fIdx];
                     $lbase    = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $code = $body['code'];
-                    $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
+                    $ip = 0; $len = $body["codeLen"]; $retCount = $resultCounts[$fIdx];
                     $lsp = $lsBase; $retBase = -1;
                     break;
                 }
