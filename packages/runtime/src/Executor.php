@@ -1026,20 +1026,31 @@ final class Executor
 
     private static function int64Add(int $a, int $b): int
     {
-        $r = gmp_add($a, $b);
-        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+        // Pure-int 64-bit wrapping add (no GMP): split into 32-bit halves.
+        $lo = ($a & 0xFFFFFFFF) + ($b & 0xFFFFFFFF);
+        $hi = (($a >> 32) & 0xFFFFFFFF) + (($b >> 32) & 0xFFFFFFFF) + ($lo >> 32 & 1);
+        return (($hi & 0xFFFFFFFF) << 32) | ($lo & 0xFFFFFFFF);
     }
 
     private static function int64Sub(int $a, int $b): int
     {
-        $r = gmp_sub($a, $b);
-        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+        // Pure-int 64-bit wrapping sub (no GMP): split into 32-bit halves.
+        $lo = ($a & 0xFFFFFFFF) - ($b & 0xFFFFFFFF);
+        $borrow = ($lo < 0) ? 1 : 0;
+        $hi = (($a >> 32) & 0xFFFFFFFF) - (($b >> 32) & 0xFFFFFFFF) - $borrow;
+        return (($hi & 0xFFFFFFFF) << 32) | ($lo & 0xFFFFFFFF);
     }
 
     private static function int64Mul(int $a, int $b): int
     {
-        $r = gmp_mul($a, $b);
-        return self::gmpToU64(gmp_mod($r, gmp_pow(2, 64)));
+        // Pure-int 64-bit wrapping multiply via 16-bit chunk decomposition (no GMP).
+        $a0=$a&0xFFFF; $a1=($a>>16)&0xFFFF; $a2=($a>>32)&0xFFFF; $a3=($a>>48)&0xFFFF;
+        $b0=$b&0xFFFF; $b1=($b>>16)&0xFFFF; $b2=($b>>32)&0xFFFF; $b3=($b>>48)&0xFFFF;
+        $c0 = $a0*$b0;
+        $c1 = $a1*$b0 + $a0*$b1 + ($c0>>16);
+        $c2 = $a2*$b0 + $a1*$b1 + $a0*$b2 + ($c1>>16);
+        $c3 = $a3*$b0 + $a2*$b1 + $a1*$b2 + $a0*$b3 + ($c2>>16);
+        return (($c3&0xFFFF)<<48)|(($c2&0xFFFF)<<32)|(($c1&0xFFFF)<<16)|($c0&0xFFFF);
     }
 
     private static function u64div(int $a, int $b): int
