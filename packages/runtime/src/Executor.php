@@ -135,7 +135,7 @@ final class Executor
         $mod        = $this->instance->module;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
-        $earlyReturn = null; // non-null signals an early return (set before break 2)
+        $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
         // Iterative call stack: each entry = [code, ip, len, retCount, ls, lsp, lbase, sp] (8 elements)
         // WASM-to-WASM calls push/pop here instead of making recursive PHP calls.
         $frames = [];
@@ -202,7 +202,7 @@ final class Executor
                 }
 
                 case Op::RETURN_: {
-                    $earlyReturn = $retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : [];
+                    $retBase = $retCount > 0 ? max(0, $sp - $retCount) : $sp;
                     break 2;
                 }
 
@@ -210,7 +210,7 @@ final class Executor
                     $depth = $code[$ip++];
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                        $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2; // break out of switch AND while
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
@@ -232,7 +232,7 @@ final class Executor
                     if ($cond !== 0) {
                         $targetLsp = $lsp - ($depth + 1) * 4;
                         if ($targetLsp < 0) {
-                            $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                             break 2;
                         }
                         $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
@@ -260,7 +260,7 @@ final class Executor
                     $ip += $cnt + 1; // skip all labels + default
                     $targetLsp = $lsp - ($depth + 1) * 4;
                     if ($targetLsp < 0) {
-                        $earlyReturn = ($retCount > 0 && $sp >= $retCount) ? array_slice($stack, $sp - $retCount, $retCount) : [];
+                        $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2;
                     }
                     $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
@@ -314,7 +314,7 @@ final class Executor
                     $frames[] = [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    $ls = []; $lsp = 0; $retBase = -1;
                     break;
                 }
 
@@ -336,8 +336,8 @@ final class Executor
                         }
                         $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
-                        $earlyReturn = [];
-                        foreach ($wresult as $rv) $earlyReturn[] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
+                        $retBase = $sp;
+                        foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
                         break 2;
                     }
                     $body = $mod->funcBodiesFlat[$fIdx];
@@ -346,7 +346,7 @@ final class Executor
                     // $lbase + locals now at correct positions; sp is past all locals
                     $code = $body['code'];
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    $ls = []; $lsp = 0; $retBase = -1;
                     break;
                 }
 
@@ -394,7 +394,7 @@ final class Executor
                     $frames[] = [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    $ls = []; $lsp = 0; $retBase = -1;
                     break;
                 }
 
@@ -423,8 +423,8 @@ final class Executor
                         }
                         $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
-                        $earlyReturn = [];
-                        foreach ($wresult as $rv) $earlyReturn[] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
+                        $retBase = $sp;
+                        foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
                         break 2;
                     }
                     // Tail call — replace frame in-place
@@ -433,7 +433,7 @@ final class Executor
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $code = $body['code'];
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $earlyReturn = null;
+                    $ls = []; $lsp = 0; $retBase = -1;
                     break;
                 }
 
@@ -941,13 +941,14 @@ final class Executor
             }
         } // end inner while ($ip < $len)
 
-        // Current frame complete — compute results and handle frame stack
-        $results = $earlyReturn ?? ($retCount > 0 ? array_slice($stack, max(0, $sp - $retCount), $retCount) : []);
-        if (empty($frames)) return $results;
+        // Current frame complete — copy results and handle frame stack
+        $retStart = $retBase >= 0 ? $retBase : ($retCount > 0 ? max(0, $sp - $retCount) : $sp);
+        $nResults = $retCount;
+        $retBase  = -1;
+        if (empty($frames)) return $nResults > 0 ? array_slice($stack, $retStart, $nResults) : [];
         // Pop caller frame; $sp in frame = argBase (return-address for results)
         [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $sp] = array_pop($frames);
-        foreach ($results as $v) $stack[$sp++] = $v;
-        $earlyReturn = null;
+        for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i];
         } // end outer while (true)
     }
 
