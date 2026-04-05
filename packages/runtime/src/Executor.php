@@ -127,8 +127,11 @@ final class Executor
         foreach ($localDefaults as $v) $stack[$sp++] = $v;
         $lbase = 0;  // index of local[0] in $stack (grows with each CALL frame)
         // Flat label stack: 4 slots per label [type(0=block,1=loop), contIp, stackHeight, resultCount]
-        $ls  = [];   // flat storage
-        $lsp = 0;    // next free slot index (always a multiple of 4)
+        // $ls is shared across all frames — $lsBase marks the start of the current frame's region.
+        // On CALL: save $lsBase, set $lsBase = $lsp. On return: restore $lsBase/$lsp from frame.
+        $ls    = [];  // flat storage, never reset — grows as needed, stale slots above $lsp are ignored
+        $lsp   = 0;   // next free slot index (always a multiple of 4)
+        $lsBase = 0;  // first label slot belonging to current frame
         $ip         = 0;
         $len        = count($code);
         $mem0       = $this->instance->memories[0] ?? null;
@@ -136,7 +139,7 @@ final class Executor
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
-        // Iterative call stack: each entry = [code, ip, len, retCount, ls, lsp, lbase, sp] (8 elements)
+        // Iterative call stack: each entry = [code, ip, len, retCount, lsBase, lsp, lbase, sp] (8 elements)
         // WASM-to-WASM calls push/pop here instead of making recursive PHP calls.
         $frames = [];
 
@@ -197,7 +200,7 @@ final class Executor
                 }
 
                 case Op::END: {
-                    if ($lsp > 0) $lsp -= 4;
+                    if ($lsp > $lsBase) $lsp -= 4;
                     break;
                 }
 
@@ -209,7 +212,7 @@ final class Executor
                 case Op::BR: {
                     $depth = $code[$ip++];
                     $targetLsp = $lsp - ($depth + 1) * 4;
-                    if ($targetLsp < 0) {
+                    if ($targetLsp < $lsBase) {
                         $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2; // break out of switch AND while
                     }
@@ -231,7 +234,7 @@ final class Executor
                     $cond  = (int)$stack[--$sp];
                     if ($cond !== 0) {
                         $targetLsp = $lsp - ($depth + 1) * 4;
-                        if ($targetLsp < 0) {
+                        if ($targetLsp < $lsBase) {
                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                             break 2;
                         }
@@ -259,7 +262,7 @@ final class Executor
                     }
                     $ip += $cnt + 1; // skip all labels + default
                     $targetLsp = $lsp - ($depth + 1) * 4;
-                    if ($targetLsp < 0) {
+                    if ($targetLsp < $lsBase) {
                         $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2;
                     }
@@ -311,10 +314,10 @@ final class Executor
                     $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v; // push local defaults
-                    $frames[] = [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
+                    $frames[] = [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $retBase = -1;
+                    $lsBase = $lsp; $retBase = -1;
                     break;
                 }
 
@@ -346,7 +349,7 @@ final class Executor
                     // $lbase + locals now at correct positions; sp is past all locals
                     $code = $body['code'];
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $retBase = -1;
+                    $lsp = $lsBase; $retBase = -1;
                     break;
                 }
 
@@ -391,10 +394,10 @@ final class Executor
                     $body = $mod->funcBodiesFlat[$fIdx];
                     $newLbase = $sp - $pc;
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
-                    $frames[] = [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $newLbase];
+                    $frames[] = [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $newLbase];
                     $code = $body['code']; $lbase = $newLbase;
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $retBase = -1;
+                    $lsBase = $lsp; $retBase = -1;
                     break;
                 }
 
@@ -433,7 +436,7 @@ final class Executor
                     foreach ($body['localDefaults'] as $v) $stack[$sp++] = $v;
                     $code = $body['code'];
                     $ip = 0; $len = $body["codeLen"]; $retCount = $mod->resultCounts[$fIdx];
-                    $ls = []; $lsp = 0; $retBase = -1;
+                    $lsp = $lsBase; $retBase = -1;
                     break;
                 }
 
@@ -947,7 +950,7 @@ final class Executor
         $retBase  = -1;
         if (empty($frames)) return $nResults > 0 ? array_slice($stack, $retStart, $nResults) : [];
         // Pop caller frame; $sp in frame = argBase (return-address for results)
-        [$code, $ip, $len, $retCount, $ls, $lsp, $lbase, $sp] = array_pop($frames);
+        [$code, $ip, $len, $retCount, $lsBase, $lsp, $lbase, $sp] = array_pop($frames);
         for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i];
         } // end outer while (true)
     }
