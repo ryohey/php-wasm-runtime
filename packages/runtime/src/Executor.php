@@ -370,7 +370,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if ($mod->funcTypeIndicesFlat[$fIdx] !== $typeIdx && !$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
+                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($this->hostFuncs[$fIdx])) {
                         $hostFt = $mod->funcTypeFlat[$fIdx];
@@ -420,7 +420,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if ($mod->funcTypeIndicesFlat[$fIdx] !== $typeIdx && !$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
+                    if (!$mod->types[$typeIdx]->equals($mod->funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($this->hostFuncs[$fIdx])) {
                         $hostFt = $mod->funcTypeFlat[$fIdx]; $wargs = [];
