@@ -680,9 +680,9 @@ final class Decoder
      * Format: Op::XXX, imm1, imm2, ... (flat array, no sub-arrays per instruction)
      *
      * Control flow layout in the flat stream:
-     *   BLOCK: Op::BLOCK, blockType, endIp
-     *   LOOP:  Op::LOOP,  blockType, contIp, endIp
-     *   IF:    Op::IF_,   blockType, elseIp, endIp
+     *   BLOCK: Op::BLOCK, paramCount, resultCount, endIp
+     *   LOOP:  Op::LOOP,  paramCount, contIp
+     *   IF:    Op::IF_,   paramCount, resultCount, elseIp, endIp
      *   ELSE:  Op::ELSE_, endIp
      *   END:   Op::END
      */
@@ -707,8 +707,8 @@ final class Decoder
                 $endIp = count($code);
 
                 match ($frame[0]) {
-                    'block' => $code[$frame[1] + 2] = $endIp,          // block: fixup endIp
-                    'loop'  => $code[$frame[1] + 3] = $endIp,          // loop: fixup endIp
+                    'block' => $code[$frame[1] + 3] = $endIp,          // block: fixup endIp (at +3: BLOCK,pc,rc,endIp)
+                    'loop'  => null,                                    // loop: no endIp slot needed
                     'if'    => $this->fixupIf($code, $frame, $endIp),
                 };
 
@@ -738,14 +738,14 @@ final class Decoder
     {
         $elseIp = $frame[2];
         if ($elseIp !== null) {
-            // if with else: Op::IF_, blockType, elseIp, endIp
-            $code[$frame[1] + 2] = $elseIp;   // elseIp
-            $code[$frame[1] + 3] = $endIp;     // endIp
+            // if with else: Op::IF_, paramCount, resultCount, elseIp, endIp
+            $code[$frame[1] + 3] = $elseIp;   // elseIp
+            $code[$frame[1] + 4] = $endIp;     // endIp
             $code[$elseIp + 1] = $endIp;       // else's endIp
         } else {
             // if without else
-            $code[$frame[1] + 2] = $endIp;     // elseIp = endIp
-            $code[$frame[1] + 3] = $endIp;     // endIp
+            $code[$frame[1] + 3] = $endIp;     // elseIp = endIp
+            $code[$frame[1] + 4] = $endIp;     // endIp
         }
     }
 
@@ -798,18 +798,19 @@ final class Decoder
                 $bt = $this->decodeBlockType($r);
                 $ip = count($code);
                 $code[] = Op::BLOCK;
-                $code[] = $bt;
+                $code[] = $bt ? count($bt->params)  : 0; // paramCount
+                $code[] = $bt ? count($bt->results) : 0; // resultCount
                 $code[] = -1; // endIp placeholder
                 $controlStack[] = ['block', $ip, null];
                 break;
 
             case 0x03: // loop
                 $bt = $this->decodeBlockType($r);
+                $paramCount = $bt ? count($bt->params) : 0;
                 $ip = count($code);
                 $code[] = Op::LOOP;
-                $code[] = $bt;
-                $code[] = $ip + 4; // contIp = first body instruction
-                $code[] = -1;      // endIp placeholder
+                $code[] = $paramCount;  // paramCount (also = result arity for BR-to-loop)
+                $code[] = $ip + 3;      // contIp = first body instruction
                 $controlStack[] = ['loop', $ip, null];
                 break;
 
@@ -817,7 +818,8 @@ final class Decoder
                 $bt = $this->decodeBlockType($r);
                 $ip = count($code);
                 $code[] = Op::IF_;
-                $code[] = $bt;
+                $code[] = $bt ? count($bt->params)  : 0; // paramCount
+                $code[] = $bt ? count($bt->results) : 0; // resultCount
                 $code[] = -1; // elseIp placeholder
                 $code[] = -1; // endIp placeholder
                 $controlStack[] = ['if', $ip, null];

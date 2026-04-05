@@ -13,7 +13,7 @@ namespace WasmRuntime;
  * The executor reads opcodes via $code[$ip++] and immediates the same way.
  * Stack is managed via a $sp pointer into a pre-allocated array.
  *
- * Label stack entry: [type, contIp, stackHeight, resultCount]
+ * Label stack entry (flat, 4 slots): [type(0=block,1=loop), contIp, stackHeight, resultCount]
  */
 final class Executor
 {
@@ -160,30 +160,26 @@ final class Executor
                     break;
 
                 case Op::BLOCK: {
-                    $blockType   = $code[$ip++]; // FuncType|null
+                    $paramCount  = $code[$ip++];
+                    $resultCount = $code[$ip++];
                     $endIp       = $code[$ip++];
-                    $paramCount  = $blockType ? count($blockType->params)  : 0;
-                    $resultCount = $blockType ? count($blockType->results) : 0;
                     $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
                     break;
                 }
 
                 case Op::LOOP: {
-                    $blockType   = $code[$ip++]; // FuncType|null
+                    $paramCount  = $code[$ip++];
                     $contIp      = $code[$ip++];
-                    $endIp       = $code[$ip++];
-                    $paramCount  = $blockType ? count($blockType->params) : 0;
                     $ls[$lsp]=1; $ls[$lsp+1]=$contIp; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$paramCount; $lsp+=4;
                     break;
                 }
 
                 case Op::IF_: {
-                    $blockType   = $code[$ip++]; // FuncType|null
+                    $paramCount  = $code[$ip++];
+                    $resultCount = $code[$ip++];
                     $elseIp      = $code[$ip++];
                     $endIp       = $code[$ip++];
                     $hasElse     = ($elseIp !== $endIp);
-                    $paramCount  = $blockType ? count($blockType->params)  : 0;
-                    $resultCount = $blockType ? count($blockType->results) : 0;
                     $cond        = (int)$stack[--$sp];
 
                     if ($cond !== 0) {
