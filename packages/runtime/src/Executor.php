@@ -138,8 +138,8 @@ final class Executor
         // Cache memory buffer reference and limit for faster inline access.
         // $bytes is a reference to $mem0->bytes so writes are reflected back.
         // $blimit mirrors $mem0->limit; update after MEMORY_GROW.
-        $bytes  = null; $blimit = 0;
-        if ($mem0 !== null) { $bytes = &$mem0->bytes; $blimit = $mem0->limit; }
+        $bytes  = null; $blimit = 0; $balloc = 0;
+        if ($mem0 !== null) { $bytes = &$mem0->bytes; $blimit = $mem0->limit; $balloc = $mem0->allocated; }
         $mod        = $this->instance->module;
         // Cache hot module arrays as locals — local var access is faster than property dereference.
         $funcBodiesFlat  = $mod->funcBodiesFlat;
@@ -147,8 +147,10 @@ final class Executor
         $paramCounts     = $mod->paramCounts;
         $typeParamCounts = $mod->typeParamCounts;
         $funcTypeFlat    = $mod->funcTypeFlat;
+        $modTypes   = $mod->types;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
+        $hostFuncs  = $this->hostFuncs;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
         // Iterative call stack: flat array, 8 slots per frame: [code, ip, len, retCount, lsBase, lsp, lbase, sp]
         // $fsp = next free slot index (fsp >> 3 = current depth). Push: write fsp[0..7], fsp+=8. Pop: fsp-=8.
@@ -294,7 +296,7 @@ final class Executor
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
-                    if (isset($this->hostFuncs[$fIdx])) {
+                    if (isset($hostFuncs[$fIdx])) {
                         // Inline host call — no PHP recursion needed
                         $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
@@ -312,7 +314,7 @@ final class Executor
                             };
                         }
                         $sp -= $pc;
-                        $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $r = ($hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
                         foreach ($wresult as $rv) {
                             $stack[$sp++] = ($rv instanceof WasmValue)
@@ -338,7 +340,7 @@ final class Executor
                 case Op::RETURN_CALL: {
                     // Tail call — replace current frame in-place (no frame push)
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
-                    if (isset($this->hostFuncs[$fIdx])) {
+                    if (isset($hostFuncs[$fIdx])) {
                         // Tail call to host: call it and return its result
                         $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
@@ -351,7 +353,7 @@ final class Executor
                                 ValType::F64 => WasmValue::f64((float)$raw), default => WasmValue::i32((int)($raw ?? 0)),
                             };
                         }
-                        $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $sp -= $pc; $r = ($hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
                         $retBase = $sp;
                         foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
@@ -376,9 +378,9 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$mod->types[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($this->hostFuncs[$fIdx])) {
+                    if (isset($hostFuncs[$fIdx])) {
                         $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
                         $__base = $sp - $pc;
@@ -395,7 +397,7 @@ final class Executor
                             };
                         }
                         $sp -= $pc;
-                        $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $r = ($hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
                         foreach ($wresult as $rv) {
                             $stack[$sp++] = ($rv instanceof WasmValue)
@@ -426,9 +428,9 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$mod->types[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($this->hostFuncs[$fIdx])) {
+                    if (isset($hostFuncs[$fIdx])) {
                         $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
@@ -440,7 +442,7 @@ final class Executor
                                 ValType::F64 => WasmValue::f64((float)$raw), default => WasmValue::i32((int)($raw ?? 0)),
                             };
                         }
-                        $sp -= $pc; $r = ($this->hostFuncs[$fIdx])($wargs);
+                        $sp -= $pc; $r = ($hostFuncs[$fIdx])($wargs);
                         $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
                         $retBase = $sp;
                         foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
@@ -701,73 +703,73 @@ final class Executor
                 case Op::I32_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 4 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 4 - $mem0->allocated); $mem0->allocated = $addr + 4; }
+                    if ($addr + 4 > $balloc) { $bytes .= str_repeat("\0", $addr + 4 - $balloc); $balloc = $addr + 4; $mem0->allocated = $balloc; }
                     $v = unpack('V', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x80000000) ? ($v | -4294967296) : $v; break;
                 }
                 case Op::I32_LOAD8_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $stack[$sp++] = ord($bytes[$addr]); break;
                 }
                 case Op::I32_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $b = ord($bytes[$addr]); $stack[$sp++] = ($b & 0x80) ? ($b | (-1 << 8)) : $b; break;
                 }
                 case Op::I32_LOAD16_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $stack[$sp++] = unpack('v', $bytes, $addr)[1]; break;
                 }
                 case Op::I32_LOAD16_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $v = unpack('v', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x8000) ? ($v | (-1 << 16)) : $v; break;
                 }
                 case Op::I64_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 8 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 8 - $mem0->allocated); $mem0->allocated = $addr + 8; }
+                    if ($addr + 8 > $balloc) { $bytes .= str_repeat("\0", $addr + 8 - $balloc); $balloc = $addr + 8; $mem0->allocated = $balloc; }
                     $r = unpack('V2', $bytes, $addr); $stack[$sp++] = ($r[2] << 32) | ($r[1] & 0xFFFFFFFF); break;
                 }
                 case Op::I64_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $b = ord($bytes[$addr]); $stack[$sp++] = ($b & 0x80) ? ($b | (-1 << 8)) : $b; break;
                 }
                 case Op::I64_LOAD8_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $stack[$sp++] = ord($bytes[$addr]); break;
                 }
                 case Op::I64_LOAD16_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $v = unpack('v', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x8000) ? ($v | (-1 << 16)) : $v; break;
                 }
                 case Op::I64_LOAD16_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $stack[$sp++] = unpack('v', $bytes, $addr)[1]; break;
                 }
                 case Op::I64_LOAD32_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 4 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 4 - $mem0->allocated); $mem0->allocated = $addr + 4; }
+                    if ($addr + 4 > $balloc) { $bytes .= str_repeat("\0", $addr + 4 - $balloc); $balloc = $addr + 4; $mem0->allocated = $balloc; }
                     $v = unpack('V', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x80000000) ? ($v | -4294967296) : $v; break;
                 }
                 case Op::I64_LOAD32_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 4 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 4 - $mem0->allocated); $mem0->allocated = $addr + 4; }
+                    if ($addr + 4 > $balloc) { $bytes .= str_repeat("\0", $addr + 4 - $balloc); $balloc = $addr + 4; $mem0->allocated = $balloc; }
                     $stack[$sp++] = unpack('V', $bytes, $addr)[1]; break;
                 }
                 case Op::F32_LOAD:    { $off=$code[$ip++]; $a=(int)$stack[--$sp]; $stack[$sp++]=$mem0->loadF32(($a&0xFFFFFFFF)+$off); break; }
@@ -775,45 +777,45 @@ final class Executor
                 case Op::I32_STORE: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 4 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 4 - $mem0->allocated); $mem0->allocated = $addr + 4; }
+                    if ($addr + 4 > $balloc) { $bytes .= str_repeat("\0", $addr + 4 - $balloc); $balloc = $addr + 4; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF);
                     $bytes[$addr+2] = chr(($v >> 16) & 0xFF); $bytes[$addr+3] = chr(($v >> 24) & 0xFF); break;
                 }
                 case Op::I32_STORE8: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); break;
                 }
                 case Op::I32_STORE16: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF); break;
                 }
                 case Op::I64_STORE: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 8 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 8 - $mem0->allocated); $mem0->allocated = $addr + 8; }
+                    if ($addr + 8 > $balloc) { $bytes .= str_repeat("\0", $addr + 8 - $balloc); $balloc = $addr + 8; $mem0->allocated = $balloc; }
                     $bytes[$addr]=chr($v&0xFF); $bytes[$addr+1]=chr(($v>>8)&0xFF); $bytes[$addr+2]=chr(($v>>16)&0xFF); $bytes[$addr+3]=chr(($v>>24)&0xFF);
                     $bytes[$addr+4]=chr(($v>>32)&0xFF); $bytes[$addr+5]=chr(($v>>40)&0xFF); $bytes[$addr+6]=chr(($v>>48)&0xFF); $bytes[$addr+7]=chr(($v>>56)&0xFF); break;
                 }
                 case Op::I64_STORE8: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 1 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 1 - $mem0->allocated); $mem0->allocated = $addr + 1; }
+                    if ($addr + 1 > $balloc) { $bytes .= str_repeat("\0", $addr + 1 - $balloc); $balloc = $addr + 1; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); break;
                 }
                 case Op::I64_STORE16: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 2 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 2 - $mem0->allocated); $mem0->allocated = $addr + 2; }
+                    if ($addr + 2 > $balloc) { $bytes .= str_repeat("\0", $addr + 2 - $balloc); $balloc = $addr + 2; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF); break;
                 }
                 case Op::I64_STORE32: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    if ($addr + 4 > $mem0->allocated) { $bytes .= str_repeat("\0", $addr + 4 - $mem0->allocated); $mem0->allocated = $addr + 4; }
+                    if ($addr + 4 > $balloc) { $bytes .= str_repeat("\0", $addr + 4 - $balloc); $balloc = $addr + 4; $mem0->allocated = $balloc; }
                     $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF);
                     $bytes[$addr+2] = chr(($v >> 16) & 0xFF); $bytes[$addr+3] = chr(($v >> 24) & 0xFF); break;
                 }
