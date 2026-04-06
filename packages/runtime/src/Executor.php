@@ -1007,15 +1007,20 @@ final class Executor
         } // end inner while ($ip < $len)
 
         // Current frame complete — copy results and handle frame stack
-        $retStart = $retBase >= 0 ? $retBase : ($retCount > 0 ? max(0, $sp - $retCount) : $sp);
+        $retStart = $retBase >= 0 ? $retBase : ($retCount > 0 ? (($t=$sp-$retCount)>0?$t:0) : $sp);
         $nResults = $retCount;
         $retBase  = -1;
-        if ($fsp === 0) return $nResults > 0 ? array_slice($stack, $retStart, $nResults) : [];
+        if ($fsp === 0) {
+            if ($nResults === 0) return [];
+            if ($nResults === 1) return [$stack[$retStart]];
+            return array_slice($stack, $retStart, $nResults);
+        }
         // Pop caller frame; $sp in frame = argBase (return-address for results)
         $fsp -= 8;
         $code=$frameData[$fsp]; $ip=$frameData[$fsp+1]; $len=$frameData[$fsp+2]; $retCount=$frameData[$fsp+3];
         $lsBase=$frameData[$fsp+4]; $lsp=$frameData[$fsp+5]; $lbase=$frameData[$fsp+6]; $sp=$frameData[$fsp+7];
-        for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i];
+        if ($nResults === 1) { $stack[$sp++] = $stack[$retStart]; }
+        elseif ($nResults > 1) { for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i]; }
         } // end outer while (true)
     }
 
