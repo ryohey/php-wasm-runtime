@@ -161,8 +161,9 @@ final class Executor
         $funcLD          = $mod->funcLocalDefaults;
         $resultCounts    = $mod->resultCounts;
         $paramCounts     = $mod->paramCounts;
-        $typeParamCounts = $mod->typeParamCounts;
+        $typeParamCounts  = $mod->typeParamCounts;
         $funcTypeFlat    = $mod->funcTypeFlat;
+        $funcTypeIdxFlat = $mod->funcTypeIndicesFlat;
         $modTypes   = $mod->types;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
@@ -418,7 +419,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
@@ -479,7 +480,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
