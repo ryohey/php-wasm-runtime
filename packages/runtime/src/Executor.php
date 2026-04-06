@@ -21,7 +21,7 @@ final class Executor
 
     /** @var callable[] absIndex => PHP callable for host functions */
     private array $hostFuncs = [];
-    /** @var \Closure[] absIndex => raw host function handlers */
+    /** @var RawHostFunc[] absIndex => raw host function handlers */
     private array $rawHostFuncs = [];
     private int   $callDepth = 0;
 
@@ -30,7 +30,7 @@ final class Executor
     public function registerHostFunc(int $funcIdx, mixed $fn): void
     {
         if ($fn instanceof RawHostFunc) {
-            $this->rawHostFuncs[$funcIdx] = $fn->handler;
+            $this->rawHostFuncs[$funcIdx] = $fn;
             return;
         }
         $this->hostFuncs[$funcIdx] = $fn;
@@ -83,7 +83,7 @@ final class Executor
         }
         try {
             if (isset($this->rawHostFuncs[$funcIdx])) {
-                $r = ($this->rawHostFuncs[$funcIdx])($rawArgs, 0, count($rawArgs));
+                $r = $this->rawHostFuncs[$funcIdx]->invokeArgs($rawArgs);
                 if ($r === null) {
                     return [];
                 }
@@ -315,7 +315,7 @@ final class Executor
                     $pc   = $paramCounts[$fIdx];
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
                         if (is_array($r)) {
                             foreach ($r as $rv) {
                                 $stack[$sp++] = $rv;
@@ -370,7 +370,7 @@ final class Executor
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
                         $retBase = $sp;
                         if (is_array($r)) {
                             foreach ($r as $rv) {
@@ -422,7 +422,7 @@ final class Executor
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
                         if (is_array($r)) {
                             foreach ($r as $rv) {
                                 $stack[$sp++] = $rv;
@@ -483,7 +483,7 @@ final class Executor
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
                         $retBase = $sp;
                         if (is_array($r)) {
                             foreach ($r as $rv) {
