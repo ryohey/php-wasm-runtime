@@ -6,6 +6,7 @@ namespace WasmRuntime\Wasi;
 
 use WasmRuntime\Instance;
 use WasmRuntime\Memory;
+use WasmRuntime\RawHostFunc;
 use WasmRuntime\WasmValue;
 
 /**
@@ -224,46 +225,46 @@ final class Wasi
     {
         return [
             'wasi_snapshot_preview1' => [
-                'args_get'              => fn(array $a) => $this->argsGet($a),
-                'args_sizes_get'        => fn(array $a) => $this->argsSizesGet($a),
-                'environ_get'           => fn(array $a) => $this->environGet($a),
-                'environ_sizes_get'     => fn(array $a) => $this->environSizesGet($a),
-                'clock_time_get'        => fn(array $a) => $this->clockTimeGet($a),
-                'clock_res_get'         => fn(array $a) => $this->clockResGet($a),
+                'args_get'              => new RawHostFunc($this->argsGetRaw(...)),
+                'args_sizes_get'        => new RawHostFunc($this->argsSizesGetRaw(...)),
+                'environ_get'           => new RawHostFunc($this->environGetRaw(...)),
+                'environ_sizes_get'     => new RawHostFunc($this->environSizesGetRaw(...)),
+                'clock_time_get'        => new RawHostFunc($this->clockTimeGetRaw(...)),
+                'clock_res_get'         => new RawHostFunc($this->clockResGetRaw(...)),
                 'fd_advise'             => fn(array $a) => $this->fdAdvise($a),
                 'fd_allocate'           => fn(array $a) => $this->fdAllocate($a),
-                'fd_close'              => fn(array $a) => $this->fdClose($a),
+                'fd_close'              => new RawHostFunc($this->fdCloseRaw(...)),
                 'fd_datasync'           => fn(array $a) => $this->fdDatasync($a),
-                'fd_fdstat_get'         => fn(array $a) => $this->fdFdstatGet($a),
+                'fd_fdstat_get'         => new RawHostFunc($this->fdFdstatGetRaw(...)),
                 'fd_fdstat_set_flags'   => fn(array $a) => $this->fdFdstatSetFlags($a),
                 'fd_fdstat_set_rights'  => fn(array $a) => $this->fdFdstatSetRights($a),
-                'fd_filestat_get'       => fn(array $a) => $this->fdFilestatGet($a),
+                'fd_filestat_get'       => new RawHostFunc($this->fdFilestatGetRaw(...)),
                 'fd_filestat_set_size'  => fn(array $a) => $this->fdFilestatSetSize($a),
                 'fd_filestat_set_times' => fn(array $a) => $this->fdFilestatSetTimes($a),
-                'fd_pread'              => fn(array $a) => $this->fdPread($a),
-                'fd_prestat_get'        => fn(array $a) => $this->fdPrestatGet($a),
-                'fd_prestat_dir_name'   => fn(array $a) => $this->fdPrestatDirName($a),
-                'fd_pwrite'             => fn(array $a) => $this->fdPwrite($a),
-                'fd_read'               => fn(array $a) => $this->fdRead($a),
+                'fd_pread'              => new RawHostFunc($this->fdPreadRaw(...)),
+                'fd_prestat_get'        => new RawHostFunc($this->fdPrestatGetRaw(...)),
+                'fd_prestat_dir_name'   => new RawHostFunc($this->fdPrestatDirNameRaw(...)),
+                'fd_pwrite'             => new RawHostFunc($this->fdPwriteRaw(...)),
+                'fd_read'               => new RawHostFunc($this->fdReadRaw(...)),
                 'fd_readdir'            => fn(array $a) => $this->fdReaddir($a),
                 'fd_renumber'           => fn(array $a) => $this->fdRenumber($a),
-                'fd_seek'               => fn(array $a) => $this->fdSeek($a),
+                'fd_seek'               => new RawHostFunc($this->fdSeekRaw(...)),
                 'fd_sync'               => fn(array $a) => $this->fdSync($a),
-                'fd_tell'               => fn(array $a) => $this->fdTell($a),
-                'fd_write'              => fn(array $a) => $this->fdWrite($a),
+                'fd_tell'               => new RawHostFunc($this->fdTellRaw(...)),
+                'fd_write'              => new RawHostFunc($this->fdWriteRaw(...)),
                 'path_create_directory' => fn(array $a) => $this->pathCreateDirectory($a),
                 'path_filestat_get'     => fn(array $a) => $this->pathFilestatGet($a),
                 'path_filestat_set_times' => fn(array $a) => $this->pathFilestatSetTimes($a),
                 'path_link'             => fn(array $a) => $this->pathLink($a),
-                'path_open'             => fn(array $a) => $this->pathOpen($a),
+                'path_open'             => new RawHostFunc($this->pathOpenRaw(...)),
                 'path_readlink'         => fn(array $a) => $this->pathReadlink($a),
                 'path_remove_directory' => fn(array $a) => $this->pathRemoveDirectory($a),
                 'path_rename'           => fn(array $a) => $this->pathRename($a),
                 'path_symlink'          => fn(array $a) => $this->pathSymlink($a),
                 'path_unlink_file'      => fn(array $a) => $this->pathUnlinkFile($a),
                 'poll_oneoff'           => fn(array $a) => $this->pollOneoff($a),
-                'proc_exit'             => fn(array $a) => $this->procExit($a),
-                'random_get'            => fn(array $a) => $this->randomGet($a),
+                'proc_exit'             => new RawHostFunc($this->procExitRaw(...)),
+                'random_get'            => new RawHostFunc($this->randomGetRaw(...)),
                 'sched_yield'           => fn(array $a) => $this->ok(),
                 'sock_accept'           => fn(array $a) => $this->err(Errno::NOSYS),
                 'sock_recv'             => fn(array $a) => $this->err(Errno::NOSYS),
@@ -287,6 +288,11 @@ final class Wasi
         return $v->value & 0xFFFFFFFF;
     }
 
+    private static function rawAddr(array $args, int $base, int $index): int
+    {
+        return ((int)($args[$base + $index] ?? 0)) & 0xFFFFFFFF;
+    }
+
     private function ok(): array
     {
         return [WasmValue::i32(Errno::SUCCESS)];
@@ -295,6 +301,16 @@ final class Wasi
     private function err(int $errno): array
     {
         return [WasmValue::i32($errno)];
+    }
+
+    private function okRaw(): int
+    {
+        return Errno::SUCCESS;
+    }
+
+    private function errRaw(int $errno): int
+    {
+        return $errno;
     }
 
     /** Check if fd is valid (std, preopen, or open file) */
@@ -521,6 +537,55 @@ final class Wasi
         return $this->ok();
     }
 
+    private function fdWriteRaw(array $args, int $base, int $count): int
+    {
+        $fd          = (int)($args[$base] ?? 0);
+        $iovs        = self::rawAddr($args, $base, 1);
+        $iovsLen     = (int)($args[$base + 2] ?? 0);
+        $nwrittenPtr = self::rawAddr($args, $base, 3);
+
+        if (!$this->fdValid($fd)) {
+            return $this->errRaw(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_WRITE)) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $resource = $this->fdResource($fd);
+        if ($resource === null && $fd > 2) {
+            if (isset($this->preopens[$fd])) {
+                return $this->errRaw(Errno::ISDIR);
+            }
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $mem          = $this->mem();
+        $totalWritten = 0;
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $iovBase = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($iovBase);
+            $bufLen = $mem->loadU32($iovBase + 4);
+
+            if ($bufLen === 0) {
+                continue;
+            }
+
+            $data = substr($mem->rawBytes(), $bufPtr, $bufLen);
+            $written = @fwrite($resource, $data);
+            if ($written === false) {
+                if ($totalWritten === 0) {
+                    return $this->errRaw(Errno::IO);
+                }
+                break;
+            }
+            $totalWritten += $written;
+        }
+
+        $mem->storeI32($nwrittenPtr, $totalWritten);
+        return $this->okRaw();
+    }
+
     // ---- fd_read ----
 
     private function fdRead(array $args): array
@@ -575,6 +640,58 @@ final class Wasi
         return $this->ok();
     }
 
+    private function fdReadRaw(array $args, int $base, int $count): int
+    {
+        $fd       = (int)($args[$base] ?? 0);
+        $iovs     = self::rawAddr($args, $base, 1);
+        $iovsLen  = (int)($args[$base + 2] ?? 0);
+        $nreadPtr = self::rawAddr($args, $base, 3);
+
+        if (!$this->fdValid($fd)) {
+            return $this->errRaw(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_READ)) {
+            return $this->errRaw(Errno::BADF);
+        }
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::ISDIR);
+        }
+
+        $resource = $this->fdResource($fd);
+        if ($resource === null) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $mem       = $this->mem();
+        $totalRead = 0;
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $iovBase = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($iovBase);
+            $bufLen = $mem->loadU32($iovBase + 4);
+
+            if ($bufLen === 0) {
+                continue;
+            }
+
+            $data = @fread($resource, $bufLen);
+            if ($data === false || $data === '') {
+                break;
+            }
+
+            $readLen = strlen($data);
+            $mem->init($bufPtr, $data);
+            $totalRead += $readLen;
+
+            if ($readLen < $bufLen) {
+                break;
+            }
+        }
+
+        $mem->storeI32($nreadPtr, $totalRead);
+        return $this->okRaw();
+    }
+
     // ---- fd_pread ----
 
     private function fdPread(array $args): array
@@ -624,6 +741,50 @@ final class Wasi
         return $this->ok();
     }
 
+    private function fdPreadRaw(array $args, int $base, int $count): int
+    {
+        $fd       = (int)($args[$base] ?? 0);
+        $iovs     = self::rawAddr($args, $base, 1);
+        $iovsLen  = (int)($args[$base + 2] ?? 0);
+        $offset   = (int)($args[$base + 3] ?? 0);
+        $nreadPtr = self::rawAddr($args, $base, 4);
+
+        if (!$this->fdValid($fd)) return $this->errRaw(Errno::BADF);
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::ISDIR);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->errRaw(Errno::BADF);
+
+        $mem       = $this->mem();
+        $totalRead = 0;
+        $savedPos = ftell($resource);
+        fseek($resource, $offset, SEEK_SET);
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $iovBase = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($iovBase);
+            $bufLen = $mem->loadU32($iovBase + 4);
+
+            if ($bufLen === 0) continue;
+
+            $data = @fread($resource, $bufLen);
+            if ($data === false || $data === '') break;
+
+            $readLen = strlen($data);
+            $mem->init($bufPtr, $data);
+            $totalRead += $readLen;
+
+            if ($readLen < $bufLen) break;
+        }
+
+        fseek($resource, $savedPos, SEEK_SET);
+
+        $mem->storeI32($nreadPtr, $totalRead);
+        return $this->okRaw();
+    }
+
     // ---- fd_pwrite ----
 
     private function fdPwrite(array $args): array
@@ -665,6 +826,47 @@ final class Wasi
 
         $mem->storeI32($nwrittenPtr, $totalWritten);
         return $this->ok();
+    }
+
+    private function fdPwriteRaw(array $args, int $base, int $count): int
+    {
+        $fd          = (int)($args[$base] ?? 0);
+        $iovs        = self::rawAddr($args, $base, 1);
+        $iovsLen     = (int)($args[$base + 2] ?? 0);
+        $offset      = (int)($args[$base + 3] ?? 0);
+        $nwrittenPtr = self::rawAddr($args, $base, 4);
+
+        if (!$this->fdValid($fd)) return $this->errRaw(Errno::BADF);
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::ISDIR);
+        }
+
+        $resource = $this->openFds[$fd] ?? null;
+        if ($resource === null) return $this->errRaw(Errno::BADF);
+
+        $mem          = $this->mem();
+        $totalWritten = 0;
+
+        $savedPos = ftell($resource);
+        fseek($resource, $offset, SEEK_SET);
+
+        for ($i = 0; $i < $iovsLen; $i++) {
+            $iovBase = $iovs + $i * 8;
+            $bufPtr = $mem->loadU32($iovBase);
+            $bufLen = $mem->loadU32($iovBase + 4);
+
+            if ($bufLen === 0) continue;
+
+            $data = substr($mem->rawBytes(), $bufPtr, $bufLen);
+            $written = @fwrite($resource, $data);
+            if ($written === false) break;
+            $totalWritten += $written;
+        }
+
+        fseek($resource, $savedPos, SEEK_SET);
+
+        $mem->storeI32($nwrittenPtr, $totalWritten);
+        return $this->okRaw();
     }
 
     // ---- fd_close ----
@@ -710,6 +912,33 @@ final class Wasi
         }
 
         return $this->err(Errno::BADF);
+    }
+
+    private function fdCloseRaw(array $args, int $base, int $count): int
+    {
+        $fd = (int)($args[$base] ?? 0);
+
+        if ($fd < 0) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            unset($this->preopens[$fd], $this->fdTypes[$fd], $this->fdRightsBase[$fd], $this->fdRightsInheriting[$fd], $this->fdFlags[$fd]);
+            return $this->okRaw();
+        }
+
+        if (isset($this->openFds[$fd])) {
+            @fclose($this->openFds[$fd]);
+            unset($this->openFds[$fd], $this->preopens[$fd], $this->fdTypes[$fd], $this->fdRightsBase[$fd], $this->fdRightsInheriting[$fd], $this->fdFlags[$fd]);
+            return $this->okRaw();
+        }
+
+        if ($fd <= 2) {
+            unset($this->fdTypes[$fd], $this->fdRightsBase[$fd], $this->fdRightsInheriting[$fd]);
+            return $this->okRaw();
+        }
+
+        return $this->errRaw(Errno::BADF);
     }
 
     // ---- fd_seek ----
@@ -763,6 +992,54 @@ final class Wasi
         return $this->ok();
     }
 
+    private function fdSeekRaw(array $args, int $base, int $count): int
+    {
+        $fd           = (int)($args[$base] ?? 0);
+        $offset       = (int)($args[$base + 1] ?? 0);
+        $whence       = (int)($args[$base + 2] ?? 0);
+        $newoffsetPtr = self::rawAddr($args, $base, 3);
+
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::ISDIR);
+        }
+        if (!isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_SEEK)) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $seekWhence = match ($whence) {
+            self::WHENCE_SET => SEEK_SET,
+            self::WHENCE_CUR => SEEK_CUR,
+            self::WHENCE_END => SEEK_END,
+            default          => null,
+        };
+
+        if ($seekWhence === null) {
+            return $this->errRaw(Errno::INVAL);
+        }
+
+        $resource = $this->openFds[$fd];
+        if ($seekWhence === SEEK_SET && $offset < 0) {
+            return $this->errRaw(Errno::INVAL);
+        }
+        if ($seekWhence === SEEK_CUR) {
+            $cur = ftell($resource);
+            if ($cur + $offset < 0) {
+                return $this->errRaw(Errno::INVAL);
+            }
+        }
+
+        if (fseek($resource, $offset, $seekWhence) !== 0) {
+            return $this->errRaw(Errno::INVAL);
+        }
+
+        $pos = ftell($resource);
+        $this->mem()->storeI64($newoffsetPtr, (int)$pos);
+        return $this->okRaw();
+    }
+
     // ---- fd_tell ----
 
     private function fdTell(array $args): array
@@ -783,6 +1060,26 @@ final class Wasi
         $pos = ftell($this->openFds[$fd]);
         $this->mem()->storeI64($offsetPtr, (int)$pos);
         return $this->ok();
+    }
+
+    private function fdTellRaw(array $args, int $base, int $count): int
+    {
+        $fd        = (int)($args[$base] ?? 0);
+        $offsetPtr = self::rawAddr($args, $base, 1);
+
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::ISDIR);
+        }
+        if (!isset($this->openFds[$fd])) {
+            return $this->errRaw(Errno::BADF);
+        }
+        if (!$this->hasRight($fd, self::RIGHT_FD_TELL)) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $pos = ftell($this->openFds[$fd]);
+        $this->mem()->storeI64($offsetPtr, (int)$pos);
+        return $this->okRaw();
     }
 
     // ---- fd_sync / fd_datasync ----
@@ -836,6 +1133,34 @@ final class Wasi
         $mem->storeI64($statPtr + 16, $rightsInheriting);
 
         return $this->ok();
+    }
+
+    private function fdFdstatGetRaw(array $args, int $base, int $count): int
+    {
+        $fd      = (int)($args[$base] ?? 0);
+        $statPtr = self::rawAddr($args, $base, 1);
+
+        if (!$this->fdValid($fd)) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $mem = $this->mem();
+        $fileType = $this->fdTypes[$fd] ?? self::FILETYPE_UNKNOWN;
+        $flags    = $this->fdFlags[$fd] ?? 0;
+        $rightsBase       = $this->fdRightsBase[$fd] ?? self::RIGHTS_ALL;
+        $rightsInheriting = $this->fdRightsInheriting[$fd] ?? self::RIGHTS_ALL;
+
+        $mem->storeI8($statPtr, $fileType);
+        $mem->storeI8($statPtr + 1, 0);
+        $mem->storeI8($statPtr + 2, $flags & 0xFF);
+        $mem->storeI8($statPtr + 3, ($flags >> 8) & 0xFF);
+        for ($j = 4; $j < 8; $j++) {
+            $mem->storeI8($statPtr + $j, 0);
+        }
+        $mem->storeI64($statPtr + 8, $rightsBase);
+        $mem->storeI64($statPtr + 16, $rightsInheriting);
+
+        return $this->okRaw();
     }
 
     // ---- fd_fdstat_set_flags ----
@@ -944,6 +1269,43 @@ final class Wasi
         }
 
         return $this->err(Errno::BADF);
+    }
+
+    private function fdFilestatGetRaw(array $args, int $base, int $count): int
+    {
+        $fd      = (int)($args[$base] ?? 0);
+        $statPtr = self::rawAddr($args, $base, 1);
+
+        if (!$this->fdValid($fd)) return $this->errRaw(Errno::BADF);
+        if (!$this->hasRight($fd, self::RIGHT_FD_FILESTAT_GET)) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        if (isset($this->preopens[$fd]) && !isset($this->openFds[$fd])) {
+            $path = $this->preopens[$fd];
+            $stat = @stat($path);
+            if ($stat === false) return $this->errRaw(Errno::IO);
+            $this->writeFilestat($statPtr, $stat, self::FILETYPE_DIRECTORY, $path);
+            return $this->okRaw();
+        }
+
+        $resource = $this->fdResource($fd);
+        if ($resource === null) return $this->errRaw(Errno::BADF);
+
+        if (is_resource($resource)) {
+            $stat = @fstat($resource);
+            if ($stat === false) return $this->errRaw(Errno::IO);
+            $filetype = $this->fdTypes[$fd] ?? self::FILETYPE_REGULAR_FILE;
+            $filePath = null;
+            $meta = @stream_get_meta_data($resource);
+            if ($meta !== false && isset($meta['uri'])) {
+                $filePath = $meta['uri'];
+            }
+            $this->writeFilestat($statPtr, $stat, $filetype, $filePath);
+            return $this->okRaw();
+        }
+
+        return $this->errRaw(Errno::BADF);
     }
 
     // ---- fd_filestat_set_size ----
@@ -1227,6 +1589,22 @@ final class Wasi
         return $this->ok();
     }
 
+    private function fdPrestatGetRaw(array $args, int $base, int $count): int
+    {
+        $fd         = (int)($args[$base] ?? 0);
+        $prestatPtr = self::rawAddr($args, $base, 1);
+
+        if (!isset($this->preopens[$fd])) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $mem = $this->mem();
+        $mem->storeI32($prestatPtr, 0);
+        $mem->storeI32($prestatPtr + 4, strlen($this->preopens[$fd]));
+
+        return $this->okRaw();
+    }
+
     // ---- fd_prestat_dir_name ----
 
     private function fdPrestatDirName(array $args): array
@@ -1246,6 +1624,25 @@ final class Wasi
 
         $this->mem()->init($pathPtr, substr($name, 0, $pathLen));
         return $this->ok();
+    }
+
+    private function fdPrestatDirNameRaw(array $args, int $base, int $count): int
+    {
+        $fd      = (int)($args[$base] ?? 0);
+        $pathPtr = self::rawAddr($args, $base, 1);
+        $pathLen = (int)($args[$base + 2] ?? 0);
+
+        if (!isset($this->preopens[$fd])) {
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $name = $this->preopens[$fd];
+        if ($pathLen < strlen($name)) {
+            return $this->errRaw(Errno::NAMETOOLONG);
+        }
+
+        $this->mem()->init($pathPtr, substr($name, 0, $pathLen));
+        return $this->okRaw();
     }
 
     // ---- path_open ----
@@ -1395,6 +1792,135 @@ final class Wasi
         $this->fdFlags[$fd] = $fdflags;
         $mem->storeI32($fdPtr, $fd);
         return $this->ok();
+    }
+
+    private function pathOpenRaw(array $args, int $base, int $count): int
+    {
+        $dirfd       = (int)($args[$base] ?? 0);
+        $dirflags    = (int)($args[$base + 1] ?? 0);
+        $pathPtr     = self::rawAddr($args, $base, 2);
+        $pathLen     = (int)($args[$base + 3] ?? 0);
+        $oflags      = (int)($args[$base + 4] ?? 0);
+        $fsRightsBase       = (int)($args[$base + 5] ?? 0);
+        $fsRightsInheriting = (int)($args[$base + 6] ?? 0);
+        $fdflags     = (int)($args[$base + 7] ?? 0);
+        $fdPtr       = self::rawAddr($args, $base, 8);
+
+        if (!isset($this->preopens[$dirfd])) {
+            if (isset($this->openFds[$dirfd])) {
+                return $this->errRaw(Errno::NOTDIR);
+            }
+            return $this->errRaw(Errno::BADF);
+        }
+
+        $mem     = $this->mem();
+        $relPath = substr($mem->rawBytes(), $pathPtr, $pathLen);
+
+        if (str_contains($relPath, "\0")) {
+            return $this->errRaw(Errno::INVAL);
+        }
+
+        $absPath = $this->resolvePath($dirfd, $relPath);
+        if ($absPath === null) return $this->errRaw(Errno::BADF);
+
+        $followSymlinks = ($dirflags & self::LOOKUPFLAGS_SYMLINK_FOLLOW) !== 0;
+        $isDirectory = ($oflags & self::OFLAGS_DIRECTORY) !== 0;
+        $isCreate    = ($oflags & self::OFLAGS_CREAT) !== 0;
+        $isExclusive = ($oflags & self::OFLAGS_EXCL) !== 0;
+        $isTruncate  = ($oflags & self::OFLAGS_TRUNC) !== 0;
+        $hasAppend = ($fdflags & self::FDFLAGS_APPEND) !== 0;
+
+        $sandboxErr = $this->checkSandbox($dirfd, $relPath);
+        if ($sandboxErr !== null) return $this->errRaw($sandboxErr);
+
+        if ($isTruncate && !$this->hasRight($dirfd, self::RIGHT_PATH_FILESTAT_SET_SIZE)) {
+            return $this->errRaw(Errno::PERM);
+        }
+
+        if (!$followSymlinks && is_link($absPath)) {
+            return $this->errRaw(Errno::LOOP);
+        }
+
+        if ($isDirectory) {
+            if (is_file($absPath)) {
+                return $this->errRaw(Errno::NOTDIR);
+            }
+            if (!is_dir($absPath)) {
+                return $this->errRaw(Errno::NOENT);
+            }
+            $wantsWrite = ($fsRightsBase & self::RIGHT_FD_WRITE) !== 0;
+            if ($wantsWrite) {
+                return $this->errRaw(Errno::ISDIR);
+            }
+
+            $fd = $this->nextFd++;
+            $this->preopens[$fd] = $absPath;
+            $this->fdTypes[$fd] = self::FILETYPE_DIRECTORY;
+            $parentRightsBase = $this->fdRightsInheriting[$dirfd] ?? self::RIGHTS_ALL;
+            $this->fdRightsBase[$fd] = $parentRightsBase & self::RIGHTS_DIR_BASE;
+            $this->fdRightsInheriting[$fd] = $parentRightsBase & (self::RIGHTS_DIR_BASE | self::RIGHTS_FILE_BASE);
+            $this->fdFlags[$fd] = $fdflags;
+            $mem->storeI32($fdPtr, $fd);
+            return $this->okRaw();
+        }
+
+        if (str_ends_with($relPath, '/')) {
+            if (is_file($absPath)) {
+                return $this->errRaw(Errno::NOTDIR);
+            }
+        }
+
+        if ($isCreate && $isExclusive && file_exists($absPath)) {
+            return $this->errRaw(Errno::EXIST);
+        }
+
+        if (!$isCreate && !file_exists($absPath)) {
+            return $this->errRaw(Errno::NOENT);
+        }
+
+        $wantsRead  = ($fsRightsBase & self::RIGHT_FD_READ) !== 0;
+        $wantsWrite = ($fsRightsBase & self::RIGHT_FD_WRITE) !== 0;
+
+        if ($isCreate && $isExclusive) {
+            $mode = $wantsRead ? 'x+b' : 'xb';
+        } elseif ($isCreate && $isTruncate) {
+            $mode = $wantsRead ? 'w+b' : 'wb';
+        } elseif ($isTruncate) {
+            $mode = $wantsRead ? 'w+b' : 'wb';
+        } elseif ($isCreate && $hasAppend) {
+            $mode = $wantsRead ? 'a+b' : 'ab';
+        } elseif ($isCreate) {
+            if (!file_exists($absPath)) {
+                $mode = $wantsRead ? 'w+b' : 'wb';
+            } else {
+                $mode = ($wantsRead && $wantsWrite) ? 'r+b' : ($wantsWrite ? 'r+b' : 'rb');
+            }
+        } elseif ($hasAppend) {
+            $mode = $wantsRead ? 'a+b' : 'ab';
+        } elseif ($wantsRead && $wantsWrite) {
+            $mode = 'r+b';
+        } elseif ($wantsWrite) {
+            $mode = 'r+b';
+        } else {
+            $mode = 'rb';
+        }
+
+        $handle = @fopen($absPath, $mode);
+        if ($handle === false) {
+            if (!file_exists($absPath)) return $this->errRaw(Errno::NOENT);
+            if (is_dir($absPath))       return $this->errRaw(Errno::ISDIR);
+            return $this->errRaw(Errno::ACCES);
+        }
+
+        $fd = $this->nextFd++;
+        $this->openFds[$fd] = $handle;
+        $this->fdTypes[$fd] = self::FILETYPE_REGULAR_FILE;
+        $parentRightsInheriting = $this->fdRightsInheriting[$dirfd] ?? self::RIGHTS_ALL;
+        $this->fdRightsBase[$fd] = $fsRightsBase & $parentRightsInheriting;
+        $this->fdRightsInheriting[$fd] = $fsRightsInheriting & $parentRightsInheriting;
+        $this->fdFlags[$fd] = $fdflags;
+        $mem->storeI32($fdPtr, $fd);
+        return $this->okRaw();
     }
 
     // ---- path_create_directory ----
@@ -1974,6 +2500,20 @@ final class Wasi
         return $this->ok();
     }
 
+    private function argsSizesGetRaw(array $args, int $base, int $count): int
+    {
+        $argcPtr        = self::rawAddr($args, $base, 0);
+        $argvBufSizePtr = self::rawAddr($args, $base, 1);
+
+        $mem     = $this->mem();
+        $argc    = count($this->args);
+        $bufSize = (int)array_sum(array_map(fn($a) => strlen($a) + 1, $this->args));
+
+        $mem->storeI32($argcPtr, $argc);
+        $mem->storeI32($argvBufSizePtr, $bufSize);
+        return $this->okRaw();
+    }
+
     // ---- args_get ----
 
     private function argsGet(array $args): array
@@ -1993,6 +2533,23 @@ final class Wasi
         return $this->ok();
     }
 
+    private function argsGetRaw(array $args, int $base, int $count): int
+    {
+        $argvPtr    = self::rawAddr($args, $base, 0);
+        $argvBufPtr = self::rawAddr($args, $base, 1);
+
+        $mem       = $this->mem();
+        $bufCursor = $argvBufPtr;
+
+        foreach ($this->args as $i => $arg) {
+            $mem->storeI32($argvPtr + $i * 4, $bufCursor);
+            $mem->init($bufCursor, $arg . "\0");
+            $bufCursor += strlen($arg) + 1;
+        }
+
+        return $this->okRaw();
+    }
+
     // ---- environ_sizes_get ----
 
     private function environSizesGet(array $args): array
@@ -2009,6 +2566,22 @@ final class Wasi
         $mem->storeI32($countPtr, $count);
         $mem->storeI32($bufSizePtr, $bufSize);
         return $this->ok();
+    }
+
+    private function environSizesGetRaw(array $args, int $base, int $count): int
+    {
+        $countPtr   = self::rawAddr($args, $base, 0);
+        $bufSizePtr = self::rawAddr($args, $base, 1);
+
+        $mem     = $this->mem();
+        $countEnv   = count($this->env);
+        $bufSize = (int)array_sum(
+            array_map(fn($k, $v) => strlen($k) + 1 + strlen($v) + 1, array_keys($this->env), $this->env)
+        );
+
+        $mem->storeI32($countPtr, $countEnv);
+        $mem->storeI32($bufSizePtr, $bufSize);
+        return $this->okRaw();
     }
 
     // ---- environ_get ----
@@ -2033,6 +2606,26 @@ final class Wasi
         return $this->ok();
     }
 
+    private function environGetRaw(array $args, int $base, int $count): int
+    {
+        $environPtr    = self::rawAddr($args, $base, 0);
+        $environBufPtr = self::rawAddr($args, $base, 1);
+
+        $mem       = $this->mem();
+        $bufCursor = $environBufPtr;
+        $i         = 0;
+
+        foreach ($this->env as $key => $value) {
+            $entry = "$key=$value\0";
+            $mem->storeI32($environPtr + $i * 4, $bufCursor);
+            $mem->init($bufCursor, $entry);
+            $bufCursor += strlen($entry);
+            $i++;
+        }
+
+        return $this->okRaw();
+    }
+
     // ---- clock_time_get ----
 
     private function clockTimeGet(array $args): array
@@ -2049,6 +2642,19 @@ final class Wasi
         return $this->ok();
     }
 
+    private function clockTimeGetRaw(array $args, int $base, int $count): int
+    {
+        $clockId = (int)($args[$base] ?? 0);
+        $timePtr = self::rawAddr($args, $base, 2);
+
+        $ns = match ($clockId) {
+            0       => (int)(microtime(true) * 1_000_000_000),
+            default => hrtime(true),
+        };
+        $this->mem()->storeI64($timePtr, $ns);
+        return $this->okRaw();
+    }
+
     // ---- clock_res_get ----
 
     private function clockResGet(array $args): array
@@ -2059,6 +2665,13 @@ final class Wasi
         // Report 1 microsecond resolution
         $this->mem()->storeI64($resoPtr, 1000);
         return $this->ok();
+    }
+
+    private function clockResGetRaw(array $args, int $base, int $count): int
+    {
+        $resoPtr   = self::rawAddr($args, $base, 1);
+        $this->mem()->storeI64($resoPtr, 1000);
+        return $this->okRaw();
     }
 
     // ---- random_get ----
@@ -2072,10 +2685,24 @@ final class Wasi
         return $this->ok();
     }
 
+    private function randomGetRaw(array $args, int $base, int $count): int
+    {
+        $bufPtr = self::rawAddr($args, $base, 0);
+        $bufLen = (int)($args[$base + 1] ?? 0);
+
+        $this->mem()->init($bufPtr, random_bytes($bufLen));
+        return $this->okRaw();
+    }
+
     // ---- proc_exit ----
 
     private function procExit(array $args): array
     {
         throw new WasiExitException($args[0]->value & 0xFF);
+    }
+
+    private function procExitRaw(array $args, int $base, int $count): never
+    {
+        throw new WasiExitException(((int)($args[$base] ?? 0)) & 0xFF);
     }
 }

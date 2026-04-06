@@ -30,7 +30,7 @@ final class Instance
      * Instantiate a module with optional imports.
      *
      * $imports format:
-     *   ['moduleName' => ['fieldName' => callable|Memory|Table|WasmValue|int|float]]
+    *   ['moduleName' => ['fieldName' => callable|RawHostFunc|Memory|Table|WasmValue|int|float]]
      *
      * @param  array<string,array<string,mixed>> $imports
      */
