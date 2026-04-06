@@ -181,12 +181,10 @@ final class Module
             $typeIdxFlat[$absIdx] = $typeIdx;
             // Precompute code length into body and build flat body index
             if (isset($this->funcBodies[$i])) {
-                $code = $this->funcBodies[$i]['code'];
-                $code[] = Op::RETURN_; // terminal sentinel — eliminates per-opcode bounds check
-                $codeLen = count($code);
+                $codeLen = count($this->funcBodies[$i]['code']);
                 $this->funcBodies[$i]['codeLen'] = $codeLen;
                 $bodiesFlat[$absIdx] = $this->funcBodies[$i];
-                $fCode[$absIdx] = $code;
+                $fCode[$absIdx] = $this->funcBodies[$i]['code'];
                 $fLen[$absIdx]  = $codeLen;
                 $fLD[$absIdx]   = $this->funcBodies[$i]['localDefaults'];
             }
