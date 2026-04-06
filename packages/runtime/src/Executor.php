@@ -319,7 +319,7 @@ final class Executor
                         // Iterative WASM-to-WASM call — push frame, switch code
                         if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                         $newLbase = $sp - $pc;
-                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        if ($ld = $funcLD[$fIdx]) foreach ($ld as $v) $stack[$sp++] = $v;
                         $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                         $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                         $fsp += 8;
@@ -375,7 +375,7 @@ final class Executor
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
                     if (isset($funcCode[$fIdx])) {
                         $lbase = $sp - $pc;
-                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        if ($ld = $funcLD[$fIdx]) foreach ($ld as $v) $stack[$sp++] = $v;
                         $code = $funcCode[$fIdx];
                         $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
                         $lsp = $lsBase; $retBase = -1;
@@ -431,7 +431,7 @@ final class Executor
                         // WASM-to-WASM call (most common)
                         if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                         $newLbase = $sp - $pc;
-                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        if ($ld = $funcLD[$fIdx]) foreach ($ld as $v) $stack[$sp++] = $v;
                         $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                         $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                         $fsp += 8;
@@ -473,7 +473,7 @@ final class Executor
                     }
                     // Tail call — replace frame in-place
                     $lbase    = $sp - $pc;
-                    foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                    if ($ld = $funcLD[$fIdx]) foreach ($ld as $v) $stack[$sp++] = $v;
                     $code = $funcCode[$fIdx];
                     $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
                     $lsp = $lsBase; $retBase = -1;
@@ -494,7 +494,7 @@ final class Executor
                     if (isset($funcCode[$fIdx])) {
                         // Tail WASM-to-WASM call
                         $lbase = $sp - $pc;
-                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        if ($ld = $funcLD[$fIdx]) foreach ($ld as $v) $stack[$sp++] = $v;
                         $code = $funcCode[$fIdx];
                         $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
                         $lsp = $lsBase; $retBase = -1;
