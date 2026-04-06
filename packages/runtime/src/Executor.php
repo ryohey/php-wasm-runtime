@@ -114,8 +114,8 @@ final class Executor
                 return $out;
             }
             $mod  = $this->instance->module;
-            $body = $mod->funcBodiesFlat[$funcIdx] ?? throw new Trap("Invalid function index: $funcIdx");
-            return $this->run($body['code'], $rawArgs, $body['localDefaults'], $mod->resultCounts[$funcIdx]);
+            if (!isset($mod->funcCode[$funcIdx])) throw new Trap("Invalid function index: $funcIdx");
+            return $this->run($mod->funcCode[$funcIdx], $rawArgs, $mod->funcLocalDefaults[$funcIdx], $mod->resultCounts[$funcIdx]);
         } finally {
             $this->callDepth--;
         }
@@ -146,7 +146,6 @@ final class Executor
         $lsp   = 0;   // next free slot index (always a multiple of 4)
         $lsBase = 0;  // first label slot belonging to current frame
         $ip         = 0;
-        $len        = count($code);
         $mem0       = $this->instance->memories[0] ?? null;
         // Cache memory buffer reference and limit for faster inline access.
         // $bytes is a reference to $mem0->bytes so writes are reflected back.
@@ -157,7 +156,6 @@ final class Executor
         // Cache hot module arrays as locals — local var access is faster than property dereference.
         $funcBodiesFlat  = $mod->funcBodiesFlat;
         $funcCode        = $mod->funcCode;
-        $funcCodeLen     = $mod->funcCodeLen;
         $funcLD          = $mod->funcLocalDefaults;
         $resultCounts    = $mod->resultCounts;
         $paramCounts     = $mod->paramCounts;
@@ -170,13 +168,14 @@ final class Executor
         $rawHostFuncs = $this->rawHostFuncs;
         $hostFuncs  = $this->hostFuncs;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
-        // Iterative call stack: flat array, 8 slots per frame: [code, ip, len, retCount, lsBase, lsp, lbase, sp]
-        // $fsp = next free slot index (fsp >> 3 = current depth). Push: write fsp[0..7], fsp+=8. Pop: fsp-=8.
+        // Iterative call stack: flat array, 7 slots per frame: [code, ip, retCount, lsBase, lsp, lbase, sp]
+        // len eliminated — RETURN_ sentinel in function code triggers break instead of while check
+        // $fsp = next free slot index (fsp/7 = current depth). Push: write fsp[0..6], fsp+=7. Pop: fsp-=7.
         $frameData = [];
         $fsp = 0;
 
         while (true) { // outer: frame manager — loops once per function frame
-        while ($ip < $len) {
+        while (true) {
             $op = $code[$ip++];
 
             switch ($op) {
@@ -354,14 +353,14 @@ final class Executor
                         break;
                     }
                     // Iterative WASM-to-WASM call — push frame, switch code
-                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
+                    if ($fsp >= self::MAX_CALL_DEPTH * 7) throw Trap::callStackExhausted();
                     $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
                     foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v; // push local defaults
-                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
-                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
-                    $fsp += 8;
+                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$retCount;
+                    $frameData[$fsp+3]=$lsBase; $frameData[$fsp+4]=$lsp; $frameData[$fsp+5]=$lbase; $frameData[$fsp+6]=$newLbase;
+                    $fsp += 7;
                     $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                    $ip = 0; $retCount = $resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
                     break;
                 }
@@ -405,7 +404,7 @@ final class Executor
                     foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v; // push defaults
                     // $lbase + locals now at correct positions; sp is past all locals
                     $code = $funcCode[$fIdx];
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                    $ip = 0; $retCount = $resultCounts[$fIdx];
                     $lsp = $lsBase; $retBase = -1;
                     break;
                 }
@@ -459,14 +458,14 @@ final class Executor
                         }
                         break;
                     }
-                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
+                    if ($fsp >= self::MAX_CALL_DEPTH * 7) throw Trap::callStackExhausted();
                     $newLbase = $sp - $pc;
                     foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
-                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
-                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
-                    $fsp += 8;
+                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$retCount;
+                    $frameData[$fsp+3]=$lsBase; $frameData[$fsp+4]=$lsp; $frameData[$fsp+5]=$lbase; $frameData[$fsp+6]=$newLbase;
+                    $fsp += 7;
                     $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                    $ip = 0; $retCount = $resultCounts[$fIdx];
                     $lsBase = $lsp; $retBase = -1;
                     break;
                 }
@@ -517,7 +516,7 @@ final class Executor
                     $lbase    = $sp - $pc;
                     foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
                     $code = $funcCode[$fIdx];
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                    $ip = 0; $retCount = $resultCounts[$fIdx];
                     $lsp = $lsBase; $retBase = -1;
                     break;
                 }
@@ -1016,9 +1015,9 @@ final class Executor
             return array_slice($stack, $retStart, $nResults);
         }
         // Pop caller frame; $sp in frame = argBase (return-address for results)
-        $fsp -= 8;
-        $code=$frameData[$fsp]; $ip=$frameData[$fsp+1]; $len=$frameData[$fsp+2]; $retCount=$frameData[$fsp+3];
-        $lsBase=$frameData[$fsp+4]; $lsp=$frameData[$fsp+5]; $lbase=$frameData[$fsp+6]; $sp=$frameData[$fsp+7];
+        $fsp -= 7;
+        $code=$frameData[$fsp]; $ip=$frameData[$fsp+1]; $retCount=$frameData[$fsp+2];
+        $lsBase=$frameData[$fsp+3]; $lsp=$frameData[$fsp+4]; $lbase=$frameData[$fsp+5]; $sp=$frameData[$fsp+6];
         if ($nResults === 1) { $stack[$sp++] = $stack[$retStart]; }
         elseif ($nResults > 1) { for ($__i = 0; $__i < $nResults; $__i++) $stack[$sp++] = $stack[$retStart + $__i]; }
         } // end outer while (true)
