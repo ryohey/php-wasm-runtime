@@ -314,6 +314,20 @@ final class Executor
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
+                    // Check WASM-to-WASM first (most common): funcCode exists only for non-imported funcs
+                    if (isset($funcCode[$fIdx])) {
+                        // Iterative WASM-to-WASM call — push frame, switch code
+                        if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
+                        $newLbase = $sp - $pc;
+                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
+                        $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
+                        $fsp += 8;
+                        $code = $funcCode[$fIdx]; $lbase = $newLbase;
+                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $lsBase = $lsp; $retBase = -1;
+                        break;
+                    }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
                         $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
@@ -353,22 +367,20 @@ final class Executor
                         }
                         break;
                     }
-                    // Iterative WASM-to-WASM call — push frame, switch code
-                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
-                    $newLbase = $sp - $pc; // args already on stack at [newLbase..sp-1]
-                    foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v; // push local defaults
-                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
-                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
-                    $fsp += 8;
-                    $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
-                    $lsBase = $lsp; $retBase = -1;
                     break;
                 }
 
                 case Op::RETURN_CALL: {
                     // Tail call — replace current frame in-place (no frame push)
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
+                    if (isset($funcCode[$fIdx])) {
+                        $lbase = $sp - $pc;
+                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        $code = $funcCode[$fIdx];
+                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $lsp = $lsBase; $retBase = -1;
+                        break;
+                    }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
                         $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
@@ -401,13 +413,7 @@ final class Executor
                         foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
                         break 2;
                     }
-                    $lbase    = $sp - $pc; // new lbase = args base on stack
-                    foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v; // push defaults
-                    // $lbase + locals now at correct positions; sp is past all locals
-                    $code = $funcCode[$fIdx];
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
-                    $lsp = $lsBase; $retBase = -1;
-                    break;
+                    break; // unreachable — funcCode check covers all WASM funcs
                 }
 
                 case Op::CALL_INDIRECT: {
@@ -421,67 +427,19 @@ final class Executor
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($rawHostFuncs[$fIdx])) {
-                        $sp -= $pc;
-                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
-                        if (is_array($r)) {
-                            foreach ($r as $rv) {
-                                $stack[$sp++] = $rv;
-                            }
-                        } elseif ($r !== null) {
-                            $stack[$sp++] = $r;
-                        }
+                    if (isset($funcCode[$fIdx])) {
+                        // WASM-to-WASM call (most common)
+                        if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
+                        $newLbase = $sp - $pc;
+                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
+                        $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
+                        $fsp += 8;
+                        $code = $funcCode[$fIdx]; $lbase = $newLbase;
+                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $lsBase = $lsp; $retBase = -1;
                         break;
                     }
-                    if (isset($hostFuncs[$fIdx])) {
-                        $hostFt = $funcTypeFlat[$fIdx];
-                        $wargs  = [];
-                        $__base = $sp - $pc;
-                        for ($__i = 0; $__i < $pc; $__i++) {
-                            $raw  = $stack[$__base + $__i];
-                            $type = $hostFt->params[$__i] ?? ValType::I32;
-                            $wargs[] = match ($type) {
-                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
-                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
-                                ValType::I64 => WasmValue::i64((int)$raw),
-                                ValType::F32 => WasmValue::f32((float)$raw),
-                                ValType::F64 => WasmValue::f64((float)$raw),
-                                default      => WasmValue::i32((int)($raw ?? 0)),
-                            };
-                        }
-                        $sp -= $pc;
-                        $r = ($hostFuncs[$fIdx])($wargs);
-                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
-                        foreach ($wresult as $rv) {
-                            $stack[$sp++] = ($rv instanceof WasmValue)
-                                ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value)
-                                : $rv;
-                        }
-                        break;
-                    }
-                    if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
-                    $newLbase = $sp - $pc;
-                    foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
-                    $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
-                    $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
-                    $fsp += 8;
-                    $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                    $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
-                    $lsBase = $lsp; $retBase = -1;
-                    break;
-                }
-
-                case Op::RETURN_CALL_INDIRECT: {
-                    $typeIdx  = $code[$ip++];
-                    $tableIdx = $code[$ip++];
-                    $elemIdx  = (int)$stack[--$sp];
-                    $pc       = $typeParamCounts[$typeIdx];
-                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
-                    $fIdx = $table->elements[$elemIdx];
-                    if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
-                        throw Trap::indirectCallTypeMismatch();
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
                         $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
@@ -522,7 +480,57 @@ final class Executor
                     break;
                 }
 
-                // ---- Parametric ----
+                case Op::RETURN_CALL_INDIRECT: {
+                    $typeIdx  = $code[$ip++];
+                    $tableIdx = $code[$ip++];
+                    $elemIdx  = (int)$stack[--$sp];
+                    $pc       = $typeParamCounts[$typeIdx];
+                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                    $fIdx = $table->elements[$elemIdx];
+                    if ($fIdx === null) throw Trap::uninitializedElement();
+                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                        throw Trap::indirectCallTypeMismatch();
+                    if (isset($funcCode[$fIdx])) {
+                        // Tail WASM-to-WASM call
+                        $lbase = $sp - $pc;
+                        foreach ($funcLD[$fIdx] as $v) $stack[$sp++] = $v;
+                        $code = $funcCode[$fIdx];
+                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $lsp = $lsBase; $retBase = -1;
+                        break;
+                    }
+                    if (isset($rawHostFuncs[$fIdx])) {
+                        $sp -= $pc;
+                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
+                        $retBase = $sp;
+                        if (is_array($r)) {
+                            foreach ($r as $rv) { $stack[$sp++] = $rv; }
+                        } elseif ($r !== null) {
+                            $stack[$sp++] = $r;
+                        }
+                        break 2;
+                    }
+                    if (isset($hostFuncs[$fIdx])) {
+                        $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
+                        $__base = $sp - $pc;
+                        for ($__i = 0; $__i < $pc; $__i++) {
+                            $raw = $stack[$__base + $__i]; $type = $hostFt->params[$__i] ?? ValType::I32;
+                            $wargs[] = match ($type) {
+                                ValType::FUNCREF   => new WasmValue(ValType::FUNCREF,   $raw === null ? -1 : (int)$raw),
+                                ValType::EXTERNREF => new WasmValue(ValType::EXTERNREF, $raw === null ? -1 : (int)$raw),
+                                ValType::I64 => WasmValue::i64((int)$raw), ValType::F32 => WasmValue::f32((float)$raw),
+                                ValType::F64 => WasmValue::f64((float)$raw), default => WasmValue::i32((int)($raw ?? 0)),
+                            };
+                        }
+                        $sp -= $pc; $r = ($hostFuncs[$fIdx])($wargs);
+                        $wresult = is_array($r) ? $r : ($r !== null ? [$r] : []);
+                        $retBase = $sp;
+                        foreach ($wresult as $rv) $stack[$sp++] = ($rv instanceof WasmValue) ? ((($rv->type === ValType::FUNCREF || $rv->type === ValType::EXTERNREF) && $rv->value === -1) ? null : $rv->value) : $rv;
+                        break 2;
+                    }
+                    break; // unreachable if funcCode check above covers all WASM funcs
+                }
                 case Op::DROP:   --$sp; break;
                 case Op::SELECT: {
                     $c = (int)$stack[--$sp]; $b = $stack[--$sp]; $a = $stack[--$sp]; $stack[$sp++] = $c !== 0 ? $a : $b;
