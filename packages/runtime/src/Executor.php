@@ -19,9 +19,9 @@ final class Executor
 {
     private const MAX_CALL_DEPTH = 1000;
 
-    /** @var callable[] absIndex => PHP callable or raw host closure */
+    /** @var callable[] absIndex => PHP callable for host functions */
     private array $hostFuncs = [];
-    /** @var bool[] absIndex => raw host function markers */
+    /** @var \Closure[] absIndex => raw host function handlers */
     private array $rawHostFuncs = [];
     private int   $callDepth = 0;
 
@@ -30,8 +30,7 @@ final class Executor
     public function registerHostFunc(int $funcIdx, mixed $fn): void
     {
         if ($fn instanceof RawHostFunc) {
-            $this->hostFuncs[$funcIdx] = $fn->handler;
-            $this->rawHostFuncs[$funcIdx] = true;
+            $this->rawHostFuncs[$funcIdx] = $fn->handler;
             return;
         }
         $this->hostFuncs[$funcIdx] = $fn;
@@ -83,14 +82,14 @@ final class Executor
             throw Trap::callStackExhausted();
         }
         try {
-            if (isset($this->hostFuncs[$funcIdx])) {
-                if (isset($this->rawHostFuncs[$funcIdx])) {
-                    $r = ($this->hostFuncs[$funcIdx])($rawArgs, 0, count($rawArgs));
-                    if ($r === null) {
-                        return [];
-                    }
-                    return is_array($r) ? $r : [$r];
+            if (isset($this->rawHostFuncs[$funcIdx])) {
+                $r = ($this->rawHostFuncs[$funcIdx])($rawArgs, 0, count($rawArgs));
+                if ($r === null) {
+                    return [];
                 }
+                return is_array($r) ? $r : [$r];
+            }
+            if (isset($this->hostFuncs[$funcIdx])) {
                 $ft    = $this->instance->module->funcTypeFlat[$funcIdx];
                 $wargs = [];
                 foreach ($rawArgs as $i => $raw) {
@@ -167,8 +166,8 @@ final class Executor
         $modTypes   = $mod->types;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
+        $rawHostFuncs = $this->rawHostFuncs;
         $hostFuncs  = $this->hostFuncs;
-        $rawHostFlags = $this->rawHostFuncs;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
         // Iterative call stack: flat array, 8 slots per frame: [code, ip, len, retCount, lsBase, lsp, lbase, sp]
         // $fsp = next free slot index (fsp >> 3 = current depth). Push: write fsp[0..7], fsp+=8. Pop: fsp-=8.
@@ -314,19 +313,19 @@ final class Executor
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
-                    if (isset($hostFuncs[$fIdx])) {
-                        if (isset($rawHostFlags[$fIdx])) {
-                            $sp -= $pc;
-                            $r = ($hostFuncs[$fIdx])($stack, $sp, $pc);
-                            if (is_array($r)) {
-                                foreach ($r as $rv) {
-                                    $stack[$sp++] = $rv;
-                                }
-                            } elseif ($r !== null) {
-                                $stack[$sp++] = $r;
+                    if (isset($rawHostFuncs[$fIdx])) {
+                        $sp -= $pc;
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        if (is_array($r)) {
+                            foreach ($r as $rv) {
+                                $stack[$sp++] = $rv;
                             }
-                            break;
+                        } elseif ($r !== null) {
+                            $stack[$sp++] = $r;
                         }
+                        break;
+                    }
+                    if (isset($hostFuncs[$fIdx])) {
                         // Inline host call — no PHP recursion needed
                         $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
@@ -369,20 +368,20 @@ final class Executor
                 case Op::RETURN_CALL: {
                     // Tail call — replace current frame in-place (no frame push)
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
-                    if (isset($hostFuncs[$fIdx])) {
-                        if (isset($rawHostFlags[$fIdx])) {
-                            $sp -= $pc;
-                            $r = ($hostFuncs[$fIdx])($stack, $sp, $pc);
-                            $retBase = $sp;
-                            if (is_array($r)) {
-                                foreach ($r as $rv) {
-                                    $stack[$sp++] = $rv;
-                                }
-                            } elseif ($r !== null) {
-                                $stack[$sp++] = $r;
+                    if (isset($rawHostFuncs[$fIdx])) {
+                        $sp -= $pc;
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $retBase = $sp;
+                        if (is_array($r)) {
+                            foreach ($r as $rv) {
+                                $stack[$sp++] = $rv;
                             }
-                            break 2;
+                        } elseif ($r !== null) {
+                            $stack[$sp++] = $r;
                         }
+                        break 2;
+                    }
+                    if (isset($hostFuncs[$fIdx])) {
                         // Tail call to host: call it and return its result
                         $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
@@ -421,19 +420,19 @@ final class Executor
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($hostFuncs[$fIdx])) {
-                        if (isset($rawHostFlags[$fIdx])) {
-                            $sp -= $pc;
-                            $r = ($hostFuncs[$fIdx])($stack, $sp, $pc);
-                            if (is_array($r)) {
-                                foreach ($r as $rv) {
-                                    $stack[$sp++] = $rv;
-                                }
-                            } elseif ($r !== null) {
-                                $stack[$sp++] = $r;
+                    if (isset($rawHostFuncs[$fIdx])) {
+                        $sp -= $pc;
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        if (is_array($r)) {
+                            foreach ($r as $rv) {
+                                $stack[$sp++] = $rv;
                             }
-                            break;
+                        } elseif ($r !== null) {
+                            $stack[$sp++] = $r;
                         }
+                        break;
+                    }
+                    if (isset($hostFuncs[$fIdx])) {
                         $hostFt = $funcTypeFlat[$fIdx];
                         $wargs  = [];
                         $__base = $sp - $pc;
@@ -482,20 +481,20 @@ final class Executor
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (!$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($hostFuncs[$fIdx])) {
-                        if (isset($rawHostFlags[$fIdx])) {
-                            $sp -= $pc;
-                            $r = ($hostFuncs[$fIdx])($stack, $sp, $pc);
-                            $retBase = $sp;
-                            if (is_array($r)) {
-                                foreach ($r as $rv) {
-                                    $stack[$sp++] = $rv;
-                                }
-                            } elseif ($r !== null) {
-                                $stack[$sp++] = $r;
+                    if (isset($rawHostFuncs[$fIdx])) {
+                        $sp -= $pc;
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
+                        $retBase = $sp;
+                        if (is_array($r)) {
+                            foreach ($r as $rv) {
+                                $stack[$sp++] = $rv;
                             }
-                            break 2;
+                        } elseif ($r !== null) {
+                            $stack[$sp++] = $r;
                         }
+                        break 2;
+                    }
+                    if (isset($hostFuncs[$fIdx])) {
                         $hostFt = $funcTypeFlat[$fIdx]; $wargs = [];
                         $__base = $sp - $pc;
                         for ($__i = 0; $__i < $pc; $__i++) {
