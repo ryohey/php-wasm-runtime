@@ -167,6 +167,15 @@ final class Executor
         $modTypes   = $mod->types;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
+        // Cache default table (table[0]) elements and size for faster CALL_INDIRECT dispatch
+        $table0 = $tables[0] ?? null;
+        if ($table0 !== null) {
+            $table0elems = &$table0->elements;
+            $table0size  = $table0->size;
+        } else {
+            $table0elems = [];
+            $table0size  = 0;
+        }
         $rawHostFuncs = $this->rawHostFuncs;
         $hostFuncs  = $this->hostFuncs;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
@@ -421,9 +430,15 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $typeParamCounts[$typeIdx];
-                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
-                    $fIdx = $table->elements[$elemIdx];
+                    // Fast path for table[0] (default, covers virtually all call_indirect in practice)
+                    if ($tableIdx === 0) {
+                        if ($elemIdx < 0 || $elemIdx >= $table0size) throw Trap::outOfBoundsTableAccess();
+                        $fIdx = $table0elems[$elemIdx];
+                    } else {
+                        $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                        if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                        $fIdx = $table->elements[$elemIdx];
+                    }
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
@@ -485,9 +500,14 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $typeParamCounts[$typeIdx];
-                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
-                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
-                    $fIdx = $table->elements[$elemIdx];
+                    if ($tableIdx === 0) {
+                        if ($elemIdx < 0 || $elemIdx >= $table0size) throw Trap::outOfBoundsTableAccess();
+                        $fIdx = $table0elems[$elemIdx];
+                    } else {
+                        $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                        if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                        $fIdx = $table->elements[$elemIdx];
+                    }
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
@@ -887,6 +907,7 @@ final class Executor
                     $val  = $stack[--$sp];
                     $table = $tables[$tIdx] ?? throw Trap::outOfBoundsTableAccess();
                     $stack[$sp++] = $table->grow($n, $val);
+                    if ($tIdx === 0 && $table0 !== null) $table0size = $table0->size;
                     break;
                 }
                 case Op::TABLE_GET: {
