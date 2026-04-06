@@ -554,9 +554,9 @@ final class Executor
                 case Op::I64_XOR:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a^$b; break; }
                 case Op::I64_SHL:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a<<($b&63); break; }
                 case Op::I64_SHR_S: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a>>($b&63); break; }
-                case Op::I64_SHR_U: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::shr64u($a,$b&63); break; }
-                case Op::I64_ROTL:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; $stack[$sp++]=($a<<$b)|self::shr64u($a,64-$b); break; }
-                case Op::I64_ROTR:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; $stack[$sp++]=self::shr64u($a,$b)|($a<<(64-$b)); break; }
+                case Op::I64_SHR_U: { $b=((int)$stack[--$sp])&63; $a=(int)$stack[--$sp]; if($b===0){$stack[$sp++]=$a;}elseif($a>=0){$stack[$sp++]=$a>>$b;}elseif($b>=63){$stack[$sp++]=1;}else{$hi=($a>>32)&0xFFFFFFFF;$lo=$a&0xFFFFFFFF;if($b<32){$stack[$sp++]=((($hi>>$b)&((1<<(32-$b))-1))<<32)|(($lo>>$b|$hi<<(32-$b))&0xFFFFFFFF);}else{$stack[$sp++]=($hi>>($b-32))&((1<<(64-$b))-1);}} break; }
+                case Op::I64_ROTL:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; if($b===0){$stack[$sp++]=$a;}else{$s=64-$b;if($a>=0){$shr=$a>>$s;}elseif($s>=63){$shr=1;}else{$hi=($a>>32)&0xFFFFFFFF;$lo=$a&0xFFFFFFFF;if($s<32){$shr=((($hi>>$s)&((1<<(32-$s))-1))<<32)|(($lo>>$s|$hi<<(32-$s))&0xFFFFFFFF);}else{$shr=($hi>>($s-32))&((1<<(64-$s))-1);}}$stack[$sp++]=($a<<$b)|$shr;} break; }
+                case Op::I64_ROTR:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $b&=63; if($b===0){$stack[$sp++]=$a;}else{if($a>=0){$shr=$a>>$b;}elseif($b>=63){$shr=1;}else{$hi=($a>>32)&0xFFFFFFFF;$lo=$a&0xFFFFFFFF;if($b<32){$shr=((($hi>>$b)&((1<<(32-$b))-1))<<32)|(($lo>>$b|$hi<<(32-$b))&0xFFFFFFFF);}else{$shr=($hi>>($b-32))&((1<<(64-$b))-1);}}$stack[$sp++]=$shr|($a<<(64-$b));} break; }
                 case Op::I64_CLZ:   { $a=(int)$stack[--$sp]; $stack[$sp++]=$a===0?64:self::clz64($a); break; }
                 case Op::I64_CTZ:   { $a=(int)$stack[--$sp]; $stack[$sp++]=$a===0?64:self::ctz($a); break; }
                 case Op::I64_POPCNT:{ $a=(int)$stack[--$sp]; $n=0; for($b=0;$b<64;$b++){if(($a>>$b)&1)$n++;} $stack[$sp++]=$n; break; }
@@ -564,13 +564,13 @@ final class Executor
                 case Op::I64_EQ:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a===$b)?1:0; break; }
                 case Op::I64_NE:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a!==$b)?1:0; break; }
                 case Op::I64_LT_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<$b)?1:0; break; }
-                case Op::I64_LT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)<0?1:0; break; }
+                case Op::I64_LT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$r=0;}else{$as=($a>>63)&1;$bs=($b>>63)&1;$r=$as!==$bs?($as>$bs?1:-1):($a<=>$b);} $stack[$sp++]=$r<0?1:0; break; }
                 case Op::I64_GT_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>$b)?1:0; break; }
-                case Op::I64_GT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)>0?1:0; break; }
+                case Op::I64_GT_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$r=0;}else{$as=($a>>63)&1;$bs=($b>>63)&1;$r=$as!==$bs?($as>$bs?1:-1):($a<=>$b);} $stack[$sp++]=$r>0?1:0; break; }
                 case Op::I64_LE_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<=$b)?1:0; break; }
-                case Op::I64_LE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)<=0?1:0; break; }
+                case Op::I64_LE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$r=0;}else{$as=($a>>63)&1;$bs=($b>>63)&1;$r=$as!==$bs?($as>$bs?1:-1):($a<=>$b);} $stack[$sp++]=$r<=0?1:0; break; }
                 case Op::I64_GE_S:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a>=$b)?1:0; break; }
-                case Op::I64_GE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::u64cmp($a,$b)>=0?1:0; break; }
+                case Op::I64_GE_U:  { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$r=0;}else{$as=($a>>63)&1;$bs=($b>>63)&1;$r=$as!==$bs?($as>$bs?1:-1):($a<=>$b);} $stack[$sp++]=$r>=0?1:0; break; }
 
                 // ---- f32 arithmetic ----
                 case Op::F32_ADD:     { $b=self::asF32($stack[--$sp]); $a=self::asF32($stack[--$sp]); $stack[$sp++]=WasmValue::canonF32($a+$b); break; }
