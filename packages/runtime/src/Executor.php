@@ -21,7 +21,7 @@ final class Executor
 
     /** @var callable[] absIndex => PHP callable for host functions */
     private array $hostFuncs = [];
-    /** @var RawHostFunc[] absIndex => raw host function handlers */
+    /** @var \Closure[] absIndex => raw host function handlers */
     private array $rawHostFuncs = [];
     private int   $callDepth = 0;
 
@@ -30,7 +30,7 @@ final class Executor
     public function registerHostFunc(int $funcIdx, mixed $fn): void
     {
         if ($fn instanceof RawHostFunc) {
-            $this->rawHostFuncs[$funcIdx] = $fn;
+            $this->rawHostFuncs[$funcIdx] = $fn->handler;
             return;
         }
         $this->hostFuncs[$funcIdx] = $fn;
@@ -83,7 +83,7 @@ final class Executor
         }
         try {
             if (isset($this->rawHostFuncs[$funcIdx])) {
-                $r = $this->rawHostFuncs[$funcIdx]->invokeArgs($rawArgs);
+                $r = ($this->rawHostFuncs[$funcIdx])($rawArgs, 0, count($rawArgs));
                 if ($r === null) {
                     return [];
                 }
@@ -330,7 +330,7 @@ final class Executor
                     }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
                         if (is_array($r)) {
                             foreach ($r as $rv) {
                                 $stack[$sp++] = $rv;
@@ -383,7 +383,7 @@ final class Executor
                     }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
                         $retBase = $sp;
                         if (is_array($r)) {
                             foreach ($r as $rv) {
@@ -442,7 +442,7 @@ final class Executor
                     }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
                         $retBase = $sp;
                         if (is_array($r)) {
                             foreach ($r as $rv) {
@@ -502,7 +502,7 @@ final class Executor
                     }
                     if (isset($rawHostFuncs[$fIdx])) {
                         $sp -= $pc;
-                        $r = $rawHostFuncs[$fIdx]->invoke($stack, $sp, $pc);
+                        $r = ($rawHostFuncs[$fIdx])($stack, $sp, $pc);
                         $retBase = $sp;
                         if (is_array($r)) {
                             foreach ($r as $rv) { $stack[$sp++] = $rv; }
