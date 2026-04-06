@@ -127,6 +127,17 @@ final class Module
      */
     public array $funcBodiesFlat = [];
 
+    /**
+     * Parallel arrays split out of funcBodiesFlat for faster int-indexed access in the hot loop.
+     * Eliminates string-key hash lookup on every CALL/CALL_INDIRECT.
+     * @var array[] funcIdx → code array
+     */
+    public array $funcCode = [];
+    /** @var int[] funcIdx → codeLen */
+    public array $funcCodeLen = [];
+    /** @var array[] funcIdx → localDefaults array */
+    public array $funcLocalDefaults = [];
+
     public function totalFuncCount(): int
     {
         return $this->importedFuncCount + count($this->funcTypeIndices);
@@ -160,6 +171,7 @@ final class Module
             }
         }
         $resCounts = []; $bodiesFlat = [];
+        $fCode = []; $fLen = []; $fLD = [];
         foreach ($this->funcTypeIndices as $i => $typeIdx) {
             $ft     = $this->types[$typeIdx];
             $absIdx = $this->importedFuncCount + $i;
@@ -169,8 +181,12 @@ final class Module
             $typeIdxFlat[$absIdx] = $typeIdx;
             // Precompute code length into body and build flat body index
             if (isset($this->funcBodies[$i])) {
-                $this->funcBodies[$i]['codeLen'] = count($this->funcBodies[$i]['code']);
+                $codeLen = count($this->funcBodies[$i]['code']);
+                $this->funcBodies[$i]['codeLen'] = $codeLen;
                 $bodiesFlat[$absIdx] = $this->funcBodies[$i];
+                $fCode[$absIdx] = $this->funcBodies[$i]['code'];
+                $fLen[$absIdx]  = $codeLen;
+                $fLD[$absIdx]   = $this->funcBodies[$i]['localDefaults'];
             }
         }
         // Imports: only need resultCounts
@@ -183,6 +199,9 @@ final class Module
         $this->resultCounts        = $resCounts;
         $this->funcBodiesFlat      = $bodiesFlat;
         $this->funcTypeIndicesFlat = $typeIdxFlat;
+        $this->funcCode            = $fCode;
+        $this->funcCodeLen         = $fLen;
+        $this->funcLocalDefaults   = $fLD;
 
         // Pre-compute param counts per type index for CALL_INDIRECT
         $typeCounts = [];
