@@ -792,7 +792,7 @@ final class Executor
                 case Op::I64_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $stack[$sp++] = unpack('P', $bytes, $addr)[1]; break;
+                    $r = unpack('V2', $bytes, $addr); $stack[$sp++] = ($r[2] << 32) | ($r[1] & 0xFFFFFFFF); break;
                 }
                 case Op::I64_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -829,7 +829,8 @@ final class Executor
                 case Op::I32_STORE: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $p=pack('V',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3]; break;
+                    $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF);
+                    $bytes[$addr+2] = chr(($v >> 16) & 0xFF); $bytes[$addr+3] = chr(($v >> 24) & 0xFF); break;
                 }
                 case Op::I32_STORE8: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
@@ -839,12 +840,12 @@ final class Executor
                 case Op::I32_STORE16: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $p=pack('v',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1]; break;
+                    $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF); break;
                 }
                 case Op::I64_STORE: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $p=pack('P',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3];$bytes[$addr+4]=$p[4];$bytes[$addr+5]=$p[5];$bytes[$addr+6]=$p[6];$bytes[$addr+7]=$p[7]; break;
+                    $p=pack('VV',$v,$v>>32); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3];$bytes[$addr+4]=$p[4];$bytes[$addr+5]=$p[5];$bytes[$addr+6]=$p[6];$bytes[$addr+7]=$p[7]; break;
                 }
                 case Op::I64_STORE8: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
@@ -854,14 +855,15 @@ final class Executor
                 case Op::I64_STORE16: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $p=pack('v',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1]; break;
+                    $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF); break;
                 }
                 case Op::I64_STORE32: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $p=pack('V',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3]; break;
+                    $bytes[$addr] = chr($v & 0xFF); $bytes[$addr+1] = chr(($v >> 8) & 0xFF);
+                    $bytes[$addr+2] = chr(($v >> 16) & 0xFF); $bytes[$addr+3] = chr(($v >> 24) & 0xFF); break;
                 }
-                case Op::F32_STORE: { $off=$code[$ip++]; $v=$stack[--$sp]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+4>$blimit) throw Trap::outOfBoundsMemoryAccess(); $bits=is_int($v)?$v:(unpack('V',pack('f',(float)$v))[1]); $p=pack('V',$bits); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3]; break; }
+                case Op::F32_STORE: { $off=$code[$ip++]; $v=$stack[--$sp]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+4>$blimit) throw Trap::outOfBoundsMemoryAccess(); $bits=is_int($v)?$v:(unpack('V',pack('f',(float)$v))[1]); $bytes[$addr]=chr($bits&0xFF);$bytes[$addr+1]=chr(($bits>>8)&0xFF);$bytes[$addr+2]=chr(($bits>>16)&0xFF);$bytes[$addr+3]=chr(($bits>>24)&0xFF); break; }
                 case Op::F64_STORE: { $off=$code[$ip++]; $v=(float)$stack[--$sp]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+8>$blimit) throw Trap::outOfBoundsMemoryAccess(); $p=pack('d',$v); $bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3];$bytes[$addr+4]=$p[4];$bytes[$addr+5]=$p[5];$bytes[$addr+6]=$p[6];$bytes[$addr+7]=$p[7]; break; }
 
                 // ---- Table ----
