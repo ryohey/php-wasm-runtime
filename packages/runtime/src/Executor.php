@@ -792,7 +792,7 @@ final class Executor
                 case Op::I64_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $r = unpack('V2', $bytes, $addr); $stack[$sp++] = ($r[2] << 32) | ($r[1] & 0xFFFFFFFF); break;
+                    $stack[$sp++] = unpack('P', $bytes, $addr)[1]; break;
                 }
                 case Op::I64_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
