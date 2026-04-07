@@ -155,7 +155,6 @@ final class Executor
         if ($mem0 !== null) { $bytes = &$mem0->bytes; $blimit = $mem0->limit; $balloc = $mem0->allocated; if ($balloc < $blimit) { $bytes .= str_repeat("\0", $blimit - $balloc); $balloc = $blimit; $mem0->allocated = $balloc; } }
         $mod        = $this->instance->module;
         // Cache hot module arrays as locals — local var access is faster than property dereference.
-        $funcBodiesFlat  = $mod->funcBodiesFlat;
         $funcCode        = $mod->funcCode;
         $funcCodeLen     = $mod->funcCodeLen;
         $funcLD          = $mod->funcLocalDefaults;
@@ -425,7 +424,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($funcCode[$fIdx])) {
                         // WASM-to-WASM call (most common)
@@ -489,7 +488,7 @@ final class Executor
                     if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
                     $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($funcCode[$fIdx])) {
                         // Tail WASM-to-WASM call
