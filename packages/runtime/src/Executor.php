@@ -155,6 +155,7 @@ final class Executor
         if ($mem0 !== null) { $bytes = &$mem0->bytes; $blimit = $mem0->limit; $balloc = $mem0->allocated; if ($balloc < $blimit) { $bytes .= str_repeat("\0", $blimit - $balloc); $balloc = $blimit; $mem0->allocated = $balloc; } }
         $mod        = $this->instance->module;
         // Cache hot module arrays as locals — local var access is faster than property dereference.
+        $funcBodiesFlat  = $mod->funcBodiesFlat;
         $funcCode        = $mod->funcCode;
         $funcCodeLen     = $mod->funcCodeLen;
         $funcLD          = $mod->funcLocalDefaults;
@@ -166,8 +167,6 @@ final class Executor
         $modTypes   = $mod->types;
         $globals    = &$this->instance->globals; // reference to avoid repeated property chain lookup
         $tables     = &$this->instance->tables;
-        // Cache table[0] object (not a reference) — avoids $tables[] hash lookup on every CALL_INDIRECT
-        $table0 = $tables[0] ?? null;
         $rawHostFuncs = $this->rawHostFuncs;
         $hostFuncs  = $this->hostFuncs;
         $retBase = -1; // -1 = normal exit, >=0 = index in $stack where results begin (early return)
@@ -422,16 +421,11 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $typeParamCounts[$typeIdx];
-                    if ($tableIdx === 0) {
-                        if ($elemIdx < 0 || $elemIdx >= $table0->size) throw Trap::outOfBoundsTableAccess();
-                        $fIdx = $table0->elements[$elemIdx];
-                    } else {
-                        $tbl  = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
-                        if ($elemIdx < 0 || $elemIdx >= $tbl->size) throw Trap::outOfBoundsTableAccess();
-                        $fIdx = $tbl->elements[$elemIdx];
-                    }
+                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                    $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($funcCode[$fIdx])) {
                         // WASM-to-WASM call (most common)
@@ -491,16 +485,11 @@ final class Executor
                     $tableIdx = $code[$ip++];
                     $elemIdx  = (int)$stack[--$sp];
                     $pc       = $typeParamCounts[$typeIdx];
-                    if ($tableIdx === 0) {
-                        if ($elemIdx < 0 || $elemIdx >= $table0->size) throw Trap::outOfBoundsTableAccess();
-                        $fIdx = $table0->elements[$elemIdx];
-                    } else {
-                        $tbl  = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
-                        if ($elemIdx < 0 || $elemIdx >= $tbl->size) throw Trap::outOfBoundsTableAccess();
-                        $fIdx = $tbl->elements[$elemIdx];
-                    }
+                    $table    = $tables[$tableIdx] ?? throw Trap::outOfBoundsTableAccess();
+                    if ($elemIdx < 0 || $elemIdx >= $table->size) throw Trap::outOfBoundsTableAccess();
+                    $fIdx = $table->elements[$elemIdx];
                     if ($fIdx === null) throw Trap::uninitializedElement();
-                    if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
+                    if (($funcTypeIdxFlat[$fIdx] ?? -1) !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
                     if (isset($funcCode[$fIdx])) {
                         // Tail WASM-to-WASM call
