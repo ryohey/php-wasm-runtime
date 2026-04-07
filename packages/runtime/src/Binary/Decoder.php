@@ -518,22 +518,22 @@ final class Decoder
             }
 
             match ($opcode) {
-                0x41 => $ops[] = ['i32.const', $r->readS32()],
-                0x42 => $ops[] = ['i64.const', $r->readS64()],
-                0x43 => $ops[] = ['f32.const', $this->decodeConstF32($r)],
-                0x44 => $ops[] = ['f64.const', WasmValue::f64($r->readF64())],
+                0x41 => $ops[] = [0x41, $r->readS32()],
+                0x42 => $ops[] = [0x42, $r->readS64()],
+                0x43 => $ops[] = [0x43, $this->decodeConstF32($r)],
+                0x44 => $ops[] = [0x44, WasmValue::f64($r->readF64())],
                 0x23 => (function() use ($r, &$ops, &$hasGlobalGet) {
-                    $ops[] = ['global.get', $r->readU32()];
+                    $ops[] = [0x23, $r->readU32()];
                     $hasGlobalGet = true;
                 })(),
-                0xD0 => $ops[] = ['ref.null', $this->decodeConstRefNull($r)],
-                0xD2 => $ops[] = ['ref.func', $this->decodeConstRefFunc($r)],
-                0x6A => $ops[] = ['i32.add'],
-                0x6B => $ops[] = ['i32.sub'],
-                0x6C => $ops[] = ['i32.mul'],
-                0x7C => $ops[] = ['i64.add'],
-                0x7D => $ops[] = ['i64.sub'],
-                0x7E => $ops[] = ['i64.mul'],
+                0xD0 => $ops[] = [0xD0, $this->decodeConstRefNull($r)],
+                0xD2 => $ops[] = [0xD2, $this->decodeConstRefFunc($r)],
+                0x6A => $ops[] = [0x6A],  // i32.add
+                0x6B => $ops[] = [0x6B],  // i32.sub
+                0x6C => $ops[] = [0x6C],  // i32.mul
+                0x7C => $ops[] = [0x7C],  // i64.add
+                0x7D => $ops[] = [0x7D],  // i64.sub
+                0x7E => $ops[] = [0x7E],  // i64.mul
                 0x01 => null, // nop
                 default => throw new WasmError("unsupported const expr opcode: 0x" . dechex($opcode)),
             };
@@ -557,19 +557,19 @@ final class Decoder
         $stack = [];
         foreach ($ops as $op) {
             match ($op[0]) {
-                'i32.const' => $stack[] = WasmValue::i32($op[1]),
-                'i64.const' => $stack[] = WasmValue::i64($op[1]),
-                'f32.const' => $stack[] = $op[1],
-                'f64.const' => $stack[] = $op[1],
-                'global.get' => $stack[] = self::resolveGlobalGetForConst($op[1], $globals),
-                'ref.null'  => $stack[] = $op[1],
-                'ref.func'  => $stack[] = $op[1],
-                'i32.add' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a + $b)),
-                'i32.sub' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a - $b)),
-                'i32.mul' => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a * $b)),
-                'i64.add' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a + $b),
-                'i64.sub' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a - $b),
-                'i64.mul' => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a * $b),
+                0x41 => $stack[] = WasmValue::i32($op[1]),          // i32.const
+                0x42 => $stack[] = WasmValue::i64($op[1]),          // i64.const
+                0x43 => $stack[] = $op[1],                          // f32.const
+                0x44 => $stack[] = $op[1],                          // f64.const
+                0x23 => $stack[] = self::resolveGlobalGetForConst($op[1], $globals), // global.get
+                0xD0 => $stack[] = $op[1],                          // ref.null
+                0xD2 => $stack[] = $op[1],                          // ref.func
+                0x6A => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a + $b)), // i32.add
+                0x6B => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a - $b)), // i32.sub
+                0x6C => self::constBinOp($stack, ValType::I32, fn($a, $b) => WasmValue::mask32($a * $b)), // i32.mul
+                0x7C => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a + $b), // i64.add
+                0x7D => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a - $b), // i64.sub
+                0x7E => self::constBinOp($stack, ValType::I64, fn($a, $b) => $a * $b), // i64.mul
                 default => null,
             };
         }
@@ -735,31 +735,31 @@ final class Decoder
                 case 0x01: $code[] = Op::NOP; break;
 
                 case 0x02: // block
-                    $bt = $this->decodeBlockType($r);
+                    { $btb = $r->peekByte(); if ($btb === 0x40) { $r->readByte(); $btp = 0; $btr = 0; }
+                      elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; $btr = 1; }
+                      else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $ip = count($code);
-                    $code[] = Op::BLOCK;
-                    $code[] = $bt ? count($bt->params)  : 0; // paramCount
-                    $code[] = $bt ? count($bt->results) : 0; // resultCount
-                    $code[] = -1; // endIp placeholder
+                    $code[] = Op::BLOCK; $code[] = $btp; $code[] = $btr; $code[] = -1;
                     $controlStack[] = ['block', $ip, null];
                     break;
 
                 case 0x03: // loop
-                    $bt = $this->decodeBlockType($r);
-                    $paramCount = $bt ? count($bt->params) : 0;
+                    { $btb = $r->peekByte(); if ($btb === 0x40) { $r->readByte(); $btp = 0; }
+                      elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; }
+                      else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; } }
                     $ip = count($code);
                     $code[] = Op::LOOP;
-                    $code[] = $paramCount;  // paramCount (also = result arity for BR-to-loop)
+                    $code[] = $btp;  // paramCount (also = result arity for BR-to-loop)
                     $code[] = $ip + 3;      // contIp = first body instruction
                     $controlStack[] = ['loop', $ip, null];
                     break;
 
                 case 0x04: // if
-                    $bt = $this->decodeBlockType($r);
+                    { $btb = $r->peekByte(); if ($btb === 0x40) { $r->readByte(); $btp = 0; $btr = 0; }
+                      elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; $btr = 1; }
+                      else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $ip = count($code);
-                    $code[] = Op::IF_;
-                    $code[] = $bt ? count($bt->params)  : 0; // paramCount
-                    $code[] = $bt ? count($bt->results) : 0; // resultCount
+                    $code[] = Op::IF_; $code[] = $btp; $code[] = $btr;
                     $code[] = -1; // elseIp placeholder
                     $code[] = -1; // endIp placeholder
                     $controlStack[] = ['if', $ip, null];
