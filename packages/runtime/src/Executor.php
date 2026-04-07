@@ -577,6 +577,28 @@ final class Executor
                                     $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
                                     $stack[$lbase + $teeIdx] = $v; $stack[$sp++] = $v; break;
                                 }
+                                case Op::SB_LGET_I32LOAD8U: { // local.get $x + i32.load8_u $off
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    $ip += 2;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = ord($bytes[$addr]); break;
+                                }
+                                case Op::SB_LGET_I32LOAD8U_LTEE: { // local.get $x + i32.load8_u $off + local.tee $y
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    $teeIdx = $code[$ip+2]; $ip += 3;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = ord($bytes[$addr]);
+                                    $stack[$lbase + $teeIdx] = $v; $stack[$sp++] = $v; break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_LSET: { // local.get $x + i32.const $c + i32.add + local.set $y
+                                    $stack[$lbase + $code[$ip+2]] = ($stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32;
+                                    $ip += 3; break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_LTEE: { // local.get $x + i32.const $c + i32.add + local.tee $y
+                                    $v = ($stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32;
+                                    $stack[$lbase + $code[$ip+2]] = $v; $stack[$sp++] = $v;
+                                    $ip += 3; break;
+                                }
                                 case Op::SB_I32EQZ_BRIF: { // i32.eqz + br_if $depth  (branch if TOS == 0)
                                     $depth = $code[$ip++];
                                     $cond  = (int)$stack[--$sp];

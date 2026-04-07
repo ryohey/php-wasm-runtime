@@ -288,4 +288,12 @@ final class Op
     public const SB_I32EQ_BRIF_LOOP  = 321; // i32.eq + br_if → 0-param loop   → [contIp]
     public const SB_I32GTU_BRIF_LOOP = 322; // i32.gt_u + br_if → 0-param loop → [contIp]
     public const SB_I64EQ_BRIF_LOOP  = 323; // i64.eq + br_if → 0-param loop   → [contIp]
+
+    // PC-fetch / pointer-load patterns (QuickJS bytecode dispatch hot path)
+    public const SB_LGET_I32LOAD8U      = 324; // local.get $x + i32.load8_u $off            → [local_idx, mem_offset]
+    public const SB_LGET_I32LOAD8U_LTEE = 325; // local.get $x + i32.load8_u $off + local.tee $y → [local_idx, mem_offset, tee_idx]
+
+    // PC-increment patterns: local.get + i32.const + i32.add → local.set/tee
+    public const SB_LGET_ICONST_IADD_LSET = 326; // local.get $x + i32.const $c + i32.add + local.set $y → [local_idx, const_val, set_idx]
+    public const SB_LGET_ICONST_IADD_LTEE = 327; // local.get $x + i32.const $c + i32.add + local.tee $y → [local_idx, const_val, tee_idx]
 }

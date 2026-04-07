@@ -830,6 +830,8 @@ final class Decoder
                             $constVal = $r->readS32();
                             if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD
                                 $r->readByte();
+                                if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_ICONST_IADD_LSET; $code[] = $localIdx; $code[] = $constVal; $code[] = $r->readU32(); break; }
+                                if (!$r->eof() && $r->peekByte() === 0x22) { $r->readByte(); $code[] = Op::SB_LGET_ICONST_IADD_LTEE; $code[] = $localIdx; $code[] = $constVal; $code[] = $r->readU32(); break; }
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
@@ -847,6 +849,19 @@ final class Decoder
                                 break;
                             }
                             $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                        if ($nb === 0x2D) { // I32_LOAD8_U follows
+                            $r->readByte();
+                            $r->readU32(); // skip alignment
+                            $offset = $r->readU32();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $teeIdx = $r->readU32();
+                                $code[] = Op::SB_LGET_I32LOAD8U_LTEE; $code[] = $localIdx; $code[] = $offset; $code[] = $teeIdx;
+                                break;
+                            }
+                            $code[] = Op::SB_LGET_I32LOAD8U; $code[] = $localIdx; $code[] = $offset;
                             break;
                         }
                         if ($nb === 0xA7) { // I32_WRAP_I64 follows → check for LOCAL_TEE triple
@@ -1257,6 +1272,8 @@ final class Decoder
                             $constVal = $r->readS32();
                             if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD
                                 $r->readByte();
+                                if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_ICONST_IADD_LSET; $code[] = $localIdx; $code[] = $constVal; $code[] = $r->readU32(); break; }
+                                if (!$r->eof() && $r->peekByte() === 0x22) { $r->readByte(); $code[] = Op::SB_LGET_ICONST_IADD_LTEE; $code[] = $localIdx; $code[] = $constVal; $code[] = $r->readU32(); break; }
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
@@ -1274,6 +1291,19 @@ final class Decoder
                                 break;
                             }
                             $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                        if ($nb === 0x2D) { // I32_LOAD8_U follows
+                            $r->readByte();
+                            $r->readU32(); // skip alignment
+                            $offset = $r->readU32();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $teeIdx = $r->readU32();
+                                $code[] = Op::SB_LGET_I32LOAD8U_LTEE; $code[] = $localIdx; $code[] = $offset; $code[] = $teeIdx;
+                                break;
+                            }
+                            $code[] = Op::SB_LGET_I32LOAD8U; $code[] = $localIdx; $code[] = $offset;
                             break;
                         }
                         if ($nb === 0xA7) { // I32_WRAP_I64 follows → check for LOCAL_TEE triple
