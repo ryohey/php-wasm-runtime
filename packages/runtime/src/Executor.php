@@ -607,6 +607,18 @@ final class Executor
                                     $stack[$sp++] = $stack[$idxB];
                                     break;
                                 }
+                                case Op::SB_LGET_ICONST: { // local.get $x + i32.const $c
+                                    $stack[$sp++] = $stack[$lbase + $code[$ip++]];
+                                    $stack[$sp++] = $code[$ip++];
+                                    break;
+                                }
+                                case Op::SB_LGET_I32WRAP_LTEE: { // local.get $x + i32.wrap_i64 + local.tee $y
+                                    $v = (int)$stack[$lbase + $code[$ip++]] << 32 >> 32;
+                                    $teeIdx = $code[$ip++];
+                                    $stack[$lbase + $teeIdx] = $v;
+                                    $stack[$sp++] = $v;
+                                    break;
+                                }
 
                 case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {

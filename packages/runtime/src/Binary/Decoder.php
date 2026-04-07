@@ -823,8 +823,7 @@ final class Decoder
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
-                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
-                            $code[] = Op::I32_CONST; $code[] = $constVal;
+                            $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
                         if ($nb === 0x28) { // I32_LOAD follows
@@ -838,6 +837,17 @@ final class Decoder
                                 break;
                             }
                             $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                        if ($nb === 0xA7) { // I32_WRAP_I64 follows → check for LOCAL_TEE triple
+                            $r->readByte();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $code[] = Op::SB_LGET_I32WRAP_LTEE; $code[] = $localIdx; $code[] = $r->readU32();
+                                break;
+                            }
+                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                            $code[] = Op::I32_WRAP_I64;
                             break;
                         }
                     }
@@ -1222,8 +1232,7 @@ final class Decoder
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
-                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
-                            $code[] = Op::I32_CONST; $code[] = $constVal;
+                            $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
                         if ($nb === 0x28) { // I32_LOAD follows
@@ -1237,6 +1246,17 @@ final class Decoder
                                 break;
                             }
                             $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                        if ($nb === 0xA7) { // I32_WRAP_I64 follows → check for LOCAL_TEE triple
+                            $r->readByte();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $code[] = Op::SB_LGET_I32WRAP_LTEE; $code[] = $localIdx; $code[] = $r->readU32();
+                                break;
+                            }
+                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                            $code[] = Op::I32_WRAP_I64;
                             break;
                         }
                     }

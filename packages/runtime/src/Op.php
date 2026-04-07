@@ -266,4 +266,6 @@ final class Op
     public const SB_I32EQZ_BRIF        = 303; // i32.eqz + br_if $depth                  → [depth]
     public const SB_ICONST_IADD        = 304; // i32.const $c + i32.add                  → [const_val]
     public const SB_LGET_LGET          = 305; // local.get $x + local.get $y            → [local_idx_a, local_idx_b]
+    public const SB_LGET_ICONST        = 306; // local.get $x + i32.const $c            → [local_idx, const_val]
+    public const SB_LGET_I32WRAP_LTEE  = 307; // local.get $x + i32.wrap_i64 + local.tee $y → [local_idx, tee_idx]
 }
