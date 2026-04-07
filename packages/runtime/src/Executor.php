@@ -556,6 +556,47 @@ final class Executor
                 // AND/OR/XOR/SHR_S/DIV_S/REM_S of two sign-extended i32s produce sign-extended i32 → no mask32
                 case Op::I32_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a+$b)<<32>>32; break; }
                 case Op::I32_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a-$b)<<32>>32; break; }
+                                // ---- Super instructions (peephole-fused) ----
+                                case Op::SB_LGET_ICONST_IADD: { // local.get $x + i32.const $c + i32.add
+                                    $stack[$sp++] = ($stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32;
+                                    $ip += 2; break;
+                                }
+                                case Op::SB_LGET_I32LOAD: { // local.get $x + i32.load $off
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    $ip += 2;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
+                                }
+                                case Op::SB_LGET_I32LOAD_LTEE: { // local.get $x + i32.load $off + local.tee $y
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    $teeIdx = $code[$ip+2]; $ip += 3;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $stack[$lbase + $teeIdx] = $v; $stack[$sp++] = $v; break;
+                                }
+                                case Op::SB_I32EQZ_BRIF: { // i32.eqz + br_if $depth  (branch if TOS == 0)
+                                    $depth = $code[$ip++];
+                                    $cond  = (int)$stack[--$sp];
+                                    if ($cond === 0) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+
                 case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {
                     $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];

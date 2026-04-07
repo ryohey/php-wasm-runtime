@@ -806,7 +806,39 @@ final class Decoder
                     break;
 
                 // ---- Variables ----
-                case 0x20: $code[] = Op::LOCAL_GET;  $code[] = $r->readU32(); break;
+                case 0x20: { // LOCAL_GET — peephole for common successors
+                    $localIdx = $r->readU32();
+                    if (!$r->eof()) {
+                        $nb = $r->peekByte();
+                        if ($nb === 0x41) { // I32_CONST follows → check for I32_ADD triple
+                            $r->readByte();
+                            $constVal = $r->readS32();
+                            if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD
+                                $r->readByte();
+                                $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
+                                break;
+                            }
+                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                            $code[] = Op::I32_CONST; $code[] = $constVal;
+                            break;
+                        }
+                        if ($nb === 0x28) { // I32_LOAD follows
+                            $r->readByte();
+                            $r->readU32(); // skip alignment
+                            $offset = $r->readU32();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $teeIdx = $r->readU32();
+                                $code[] = Op::SB_LGET_I32LOAD_LTEE; $code[] = $localIdx; $code[] = $offset; $code[] = $teeIdx;
+                                break;
+                            }
+                            $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                    }
+                    $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                    break;
+                }
                 case 0x21: $code[] = Op::LOCAL_SET;  $code[] = $r->readU32(); break;
                 case 0x22: $code[] = Op::LOCAL_TEE;  $code[] = $r->readU32(); break;
                 case 0x23: $code[] = Op::GLOBAL_GET; $code[] = $r->readU32(); break;
@@ -854,7 +886,14 @@ final class Decoder
                 case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
                 // ---- i32 comparison ----
-                case 0x45: $code[] = Op::I32_EQZ; break;
+                case 0x45: // I32_EQZ — peephole for I32_EQZ + BR_IF
+                    if (!$r->eof() && $r->peekByte() === 0x0D) {
+                        $r->readByte();
+                        $code[] = Op::SB_I32EQZ_BRIF; $code[] = $r->readU32();
+                        break;
+                    }
+                    $code[] = Op::I32_EQZ;
+                    break;
                 case 0x46: $code[] = Op::I32_EQ; break;
                 case 0x47: $code[] = Op::I32_NE; break;
                 case 0x48: $code[] = Op::I32_LT_S; break;
@@ -1153,7 +1192,39 @@ final class Decoder
                 break;
 
             // ---- Variables ----
-            case 0x20: $code[] = Op::LOCAL_GET;  $code[] = $r->readU32(); break;
+                case 0x20: { // LOCAL_GET — peephole for common successors
+                    $localIdx = $r->readU32();
+                    if (!$r->eof()) {
+                        $nb = $r->peekByte();
+                        if ($nb === 0x41) { // I32_CONST follows → check for I32_ADD triple
+                            $r->readByte();
+                            $constVal = $r->readS32();
+                            if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD
+                                $r->readByte();
+                                $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
+                                break;
+                            }
+                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                            $code[] = Op::I32_CONST; $code[] = $constVal;
+                            break;
+                        }
+                        if ($nb === 0x28) { // I32_LOAD follows
+                            $r->readByte();
+                            $r->readU32(); // skip alignment
+                            $offset = $r->readU32();
+                            if (!$r->eof() && $r->peekByte() === 0x22) { // LOCAL_TEE follows
+                                $r->readByte();
+                                $teeIdx = $r->readU32();
+                                $code[] = Op::SB_LGET_I32LOAD_LTEE; $code[] = $localIdx; $code[] = $offset; $code[] = $teeIdx;
+                                break;
+                            }
+                            $code[] = Op::SB_LGET_I32LOAD; $code[] = $localIdx; $code[] = $offset;
+                            break;
+                        }
+                    }
+                    $code[] = Op::LOCAL_GET; $code[] = $localIdx;
+                    break;
+                }
             case 0x21: $code[] = Op::LOCAL_SET;  $code[] = $r->readU32(); break;
             case 0x22: $code[] = Op::LOCAL_TEE;  $code[] = $r->readU32(); break;
             case 0x23: $code[] = Op::GLOBAL_GET; $code[] = $r->readU32(); break;
@@ -1207,7 +1278,14 @@ final class Decoder
             case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
             // ---- i32 comparison ----
-            case 0x45: $code[] = Op::I32_EQZ; break;
+                case 0x45: // I32_EQZ — peephole for I32_EQZ + BR_IF
+                    if (!$r->eof() && $r->peekByte() === 0x0D) {
+                        $r->readByte(); // consume BR_IF byte
+                        $code[] = Op::SB_I32EQZ_BRIF; $code[] = $r->readU32();
+                        break;
+                    }
+                    $code[] = Op::I32_EQZ;
+                    break;
             case 0x46: $code[] = Op::I32_EQ; break;
             case 0x47: $code[] = Op::I32_NE; break;
             case 0x48: $code[] = Op::I32_LT_S; break;

@@ -256,4 +256,12 @@ final class Op
     public const I64_TRUNC_SAT_F32_U = 295;
     public const I64_TRUNC_SAT_F64_S = 296;
     public const I64_TRUNC_SAT_F64_U = 297;
+
+    // ---- Super instructions (peephole-fused at decode time) ----
+    // These combine 2-3 common instruction sequences into a single dispatch.
+    // Immediates follow each super instruction in the flat code array.
+    public const SB_LGET_ICONST_IADD   = 300; // local.get $x + i32.const $c + i32.add   → [local_idx, const_val]
+    public const SB_LGET_I32LOAD       = 301; // local.get $x + i32.load $off            → [local_idx, mem_offset]
+    public const SB_LGET_I32LOAD_LTEE  = 302; // local.get $x + i32.load $off + local.tee $y → [local_idx, mem_offset, tee_idx]
+    public const SB_I32EQZ_BRIF        = 303; // i32.eqz + br_if $depth                  → [depth]
 }
