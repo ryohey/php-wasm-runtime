@@ -552,11 +552,11 @@ final class Executor
                 case Op::F64_CONST: $stack[$sp++] = $code[$ip++]; break;
 
                 // ---- i32 arithmetic ----
-                // mask32 inline: $v=($expr)&0xFFFFFFFF; $stack[]=($v&0x80000000)?($v|-4294967296):$v;
+                // sign32 inline: $stack[]= expr <<32>>32;  (branchless, |0xFFFF| mask no longer needed)
                 // AND/OR/XOR/SHR_S/DIV_S/REM_S of two sign-extended i32s produce sign-extended i32 → no mask32
-                case Op::I32_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a+$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
-                case Op::I32_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a-$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
-                case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a*$b)&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a+$b)<<32>>32; break; }
+                case Op::I32_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a-$b)<<32>>32; break; }
+                case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {
                     $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
                     if ($b===0) throw Trap::integerDivideByZero();
@@ -566,7 +566,7 @@ final class Executor
                 case Op::I32_DIV_U: {
                     $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
                     if ($b===0) throw Trap::integerDivideByZero();
-                    $v=(int)($a/$b); $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
+                        $stack[$sp++]=(int)($a/$b)<<32>>32; break;
                 }
                 case Op::I32_REM_S: {
                     $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
@@ -576,24 +576,24 @@ final class Executor
                 case Op::I32_REM_U: {
                     $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
                     if ($b===0) throw Trap::integerDivideByZero();
-                    $v=$a%$b; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
+                        $stack[$sp++]=($a%$b)<<32>>32; break;
                 }
                 case Op::I32_AND:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a&$b; break; }
                 case Op::I32_OR:    { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a|$b; break; }
                 case Op::I32_XOR:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a^$b; break; }
-                case Op::I32_SHL:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $v=($a<<($b&31))&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break; }
+                case Op::I32_SHL:   { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a<<($b&31))<<32>>32; break; }
                 case Op::I32_SHR_S: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=$a>>($b&31); break; }  // already sign-extended
                 case Op::I32_SHR_U: {
                     $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
-                    $v=$a>>($b&31); $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
+                        $stack[$sp++]=($a>>($b&31))<<32>>32; break;
                 }
                 case Op::I32_ROTL: {
                     $b=((int)$stack[--$sp])&31; $a=((int)$stack[--$sp])&0xFFFFFFFF;
-                    $v=($a<<$b)|($a>>(32-$b)); $v&=0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
+                        $stack[$sp++]=(($a<<$b)|($a>>(32-$b)))<<32>>32; break;
                 }
                 case Op::I32_ROTR: {
                     $b=((int)$stack[--$sp])&31; $a=((int)$stack[--$sp])&0xFFFFFFFF;
-                    $v=($a>>$b)|($a<<(32-$b)); $v&=0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v; break;
+                        $stack[$sp++]=(($a>>$b)|($a<<(32-$b)))<<32>>32; break;
                 }
                 case Op::I32_CLZ:    { $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=$a===0?32:self::clz32($a); break; }
                 case Op::I32_CTZ:    { $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=$a===0?32:self::ctz($a); break; }
@@ -709,7 +709,7 @@ final class Executor
                 case Op::F64_GE:  { $b=(float)$stack[--$sp]; $a=(float)$stack[--$sp]; $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- Conversions ----
-                case Op::I32_WRAP_I64:       { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::mask32((int)$v); break; }
+                case Op::I32_WRAP_I64:       { $v=$stack[--$sp]; $stack[$sp++]=(int)$v<<32>>32; break; }
                 case Op::I32_TRUNC_F32_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32s(self::asF32($v)); break; }
                 case Op::I32_TRUNC_F32_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32u(self::asF32($v)); break; }
                 case Op::I32_TRUNC_F64_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I32s((float)$v); break; }
@@ -718,7 +718,7 @@ final class Executor
                 case Op::I32_TRUNC_SAT_F32_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32u(self::asF32($v)); break; }
                 case Op::I32_TRUNC_SAT_F64_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32s((float)$v); break; }
                 case Op::I32_TRUNC_SAT_F64_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32u((float)$v); break; }
-                case Op::I64_EXTEND_I32_S:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::mask32((int)$v); break; }
+                case Op::I64_EXTEND_I32_S:   { $v=$stack[--$sp]; $stack[$sp++]=(int)$v<<32>>32; break; }
                 case Op::I64_EXTEND_I32_U:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::u32((int)$v); break; }
                 case Op::I64_TRUNC_F32_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64s(self::asF32($v)); break; }
                 case Op::I64_TRUNC_F32_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64u(self::asF32($v)); break; }
@@ -741,7 +741,7 @@ final class Executor
                 case Op::I32_REINTERPRET_F32: {
                     $v=$stack[--$sp];
                     $bits=is_int($v)?($v&0xFFFFFFFF):(unpack('V',pack('f',(float)$v))[1]&0xFFFFFFFF);
-                    $stack[$sp++]=($bits&0x80000000)?($bits|-4294967296):$bits;
+                        $stack[$sp++]=$bits<<32>>32;
                     break;
                 }
                 case Op::I64_REINTERPRET_F64: {
@@ -752,7 +752,7 @@ final class Executor
                 case Op::F32_REINTERPRET_I32: {
                     $bits=((int)$stack[--$sp])&0xFFFFFFFF;
                     if (($bits & 0x7FFFFFFF) > 0x7F800000) {
-                        $stack[$sp++]=($bits&0x80000000)?($bits|-4294967296):$bits;
+                            $stack[$sp++]=$bits<<32>>32;
                     } else {
                         $stack[$sp++]=(float)unpack('f',pack('V',$bits))[1];
                     }
@@ -762,11 +762,11 @@ final class Executor
                     $v=(int)$stack[--$sp];
                     $stack[$sp++]=unpack('d',pack('VV',$v&0xFFFFFFFF,($v>>32)&0xFFFFFFFF))[1]; break;
                 }
-                case Op::I32_EXTEND8_S:  { $v=(int)$stack[--$sp]&0xFF;   $v=($v&0x80)?($v|(-1<<8)):$v; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
-                case Op::I32_EXTEND16_S: { $v=(int)$stack[--$sp]&0xFFFF; $v=($v&0x8000)?($v|(-1<<16)):$v; $stack[$sp++]=($v&0x80000000)?($v|-4294967296):($v&0xFFFFFFFF); break; }
-                case Op::I64_EXTEND8_S:  { $v=(int)$stack[--$sp]&0xFF;   $stack[$sp++]=($v&0x80)?$v|(-1<<8):$v; break; }
-                case Op::I64_EXTEND16_S: { $v=(int)$stack[--$sp]&0xFFFF; $stack[$sp++]=($v&0x8000)?$v|(-1<<16):$v; break; }
-                case Op::I64_EXTEND32_S: { $v=(int)$stack[--$sp]&0xFFFFFFFF; $stack[$sp++]=($v&0x80000000)?$v|(-1<<32):$v; break; }
+                case Op::I32_EXTEND8_S:  { $v=(int)$stack[--$sp]; $stack[$sp++]=$v<<56>>56; break; }
+                case Op::I32_EXTEND16_S: { $v=(int)$stack[--$sp]; $stack[$sp++]=$v<<48>>48; break; }
+                case Op::I64_EXTEND8_S:  { $v=(int)$stack[--$sp]; $stack[$sp++]=$v<<56>>56; break; }
+                case Op::I64_EXTEND16_S: { $v=(int)$stack[--$sp]; $stack[$sp++]=$v<<48>>48; break; }
+                case Op::I64_EXTEND32_S: { $v=(int)$stack[--$sp]; $stack[$sp++]=$v<<32>>32; break; }
 
                 // ---- Memory ----
                 case Op::MEMORY_SIZE: $stack[$sp++]=$mem0->size(); break;
@@ -776,7 +776,7 @@ final class Executor
                 case Op::I32_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $v = unpack('V', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x80000000) ? ($v | -4294967296) : $v; break;
+                        $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
                 }
                 case Op::I32_LOAD8_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -786,7 +786,7 @@ final class Executor
                 case Op::I32_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $b = ord($bytes[$addr]); $stack[$sp++] = ($b & 0x80) ? ($b | (-1 << 8)) : $b; break;
+                        $stack[$sp++] = ord($bytes[$addr]) << 56 >> 56; break;
                 }
                 case Op::I32_LOAD16_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -796,7 +796,7 @@ final class Executor
                 case Op::I32_LOAD16_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $v = unpack('v', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x8000) ? ($v | (-1 << 16)) : $v; break;
+                        $stack[$sp++] = unpack('v', $bytes, $addr)[1] << 48 >> 48; break;
                 }
                 case Op::I64_LOAD: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -806,7 +806,7 @@ final class Executor
                 case Op::I64_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $b = ord($bytes[$addr]); $stack[$sp++] = ($b & 0x80) ? ($b | (-1 << 8)) : $b; break;
+                        $stack[$sp++] = ord($bytes[$addr]) << 56 >> 56; break;
                 }
                 case Op::I64_LOAD8_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -816,7 +816,7 @@ final class Executor
                 case Op::I64_LOAD16_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 2 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $v = unpack('v', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x8000) ? ($v | (-1 << 16)) : $v; break;
+                        $stack[$sp++] = unpack('v', $bytes, $addr)[1] << 48 >> 48; break;
                 }
                 case Op::I64_LOAD16_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
@@ -826,14 +826,14 @@ final class Executor
                 case Op::I64_LOAD32_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
-                    $v = unpack('V', $bytes, $addr)[1]; $stack[$sp++] = ($v & 0x80000000) ? ($v | -4294967296) : $v; break;
+                        $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
                 }
                 case Op::I64_LOAD32_U: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                     $stack[$sp++] = unpack('V', $bytes, $addr)[1]; break;
                 }
-                case Op::F32_LOAD: { $off=$code[$ip++]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+4>$blimit) throw Trap::outOfBoundsMemoryAccess(); $bits=unpack('V',$bytes,$addr)[1]; if(($bits&0x7FFFFFFF)>0x7F800000){$v=$bits&0xFFFFFFFF;$stack[$sp++]=($v&0x80000000)?($v|-4294967296):$v;}else{$stack[$sp++]=unpack('f',$bytes,$addr)[1];} break; }
+                case Op::F32_LOAD: { $off=$code[$ip++]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+4>$blimit) throw Trap::outOfBoundsMemoryAccess(); $bits=unpack('V',$bytes,$addr)[1]; if(($bits&0x7FFFFFFF)>0x7F800000){$stack[$sp++]=$bits<<32>>32;}else{$stack[$sp++]=unpack('f',$bytes,$addr)[1];} break; }
                 case Op::F64_LOAD: { $off=$code[$ip++]; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off; if($addr<0||$addr+8>$blimit) throw Trap::outOfBoundsMemoryAccess(); $stack[$sp++]=unpack('d',$bytes,$addr)[1]; break; }
                 case Op::I32_STORE: {
                     $off = $code[$ip++]; $v = (int)$stack[--$sp]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $off;
