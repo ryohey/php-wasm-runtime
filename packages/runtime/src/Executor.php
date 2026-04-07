@@ -596,6 +596,17 @@ final class Executor
                                     }
                                     break;
                                 }
+                                case Op::SB_ICONST_IADD: { // i32.const $c + i32.add
+                                    $stack[$sp - 1] = (((int)$stack[$sp - 1]) + $code[$ip++]) << 32 >> 32;
+                                    break;
+                                }
+                                case Op::SB_LGET_LGET: { // local.get $x + local.get $y
+                                    $idxA = $lbase + $code[$ip++];
+                                    $idxB = $lbase + $code[$ip++];
+                                    $stack[$sp++] = $stack[$idxA];
+                                    $stack[$sp++] = $stack[$idxB];
+                                    break;
+                                }
 
                 case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {

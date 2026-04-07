@@ -264,4 +264,6 @@ final class Op
     public const SB_LGET_I32LOAD       = 301; // local.get $x + i32.load $off            → [local_idx, mem_offset]
     public const SB_LGET_I32LOAD_LTEE  = 302; // local.get $x + i32.load $off + local.tee $y → [local_idx, mem_offset, tee_idx]
     public const SB_I32EQZ_BRIF        = 303; // i32.eqz + br_if $depth                  → [depth]
+    public const SB_ICONST_IADD        = 304; // i32.const $c + i32.add                  → [const_val]
+    public const SB_LGET_LGET          = 305; // local.get $x + local.get $y            → [local_idx_a, local_idx_b]
 }

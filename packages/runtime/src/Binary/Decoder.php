@@ -810,6 +810,11 @@ final class Decoder
                     $localIdx = $r->readU32();
                     if (!$r->eof()) {
                         $nb = $r->peekByte();
+                        if ($nb === 0x20) { // LOCAL_GET follows
+                            $r->readByte();
+                            $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $r->readU32();
+                            break;
+                        }
                         if ($nb === 0x41) { // I32_CONST follows → check for I32_ADD triple
                             $r->readByte();
                             $constVal = $r->readS32();
@@ -880,7 +885,15 @@ final class Decoder
                 case 0x40: $r->readByte(); $code[] = Op::MEMORY_GROW; break;
 
                 // ---- Constants ----
-                case 0x41: $code[] = Op::I32_CONST; $code[] = $r->readS32(); break;
+                case 0x41: {
+                    $constVal = $r->readS32();
+                    if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD follows
+                        $r->readByte();
+                        $code[] = Op::SB_ICONST_IADD; $code[] = $constVal;
+                        break;
+                    }
+                    $code[] = Op::I32_CONST; $code[] = $constVal; break;
+                }
                 case 0x42: $code[] = Op::I64_CONST; $code[] = $r->readS64(); break;
                 case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
                 case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
@@ -1196,6 +1209,11 @@ final class Decoder
                     $localIdx = $r->readU32();
                     if (!$r->eof()) {
                         $nb = $r->peekByte();
+                        if ($nb === 0x20) { // LOCAL_GET follows
+                            $r->readByte();
+                            $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $r->readU32();
+                            break;
+                        }
                         if ($nb === 0x41) { // I32_CONST follows → check for I32_ADD triple
                             $r->readByte();
                             $constVal = $r->readS32();
@@ -1272,7 +1290,15 @@ final class Decoder
                 break;
 
             // ---- Constants ----
-            case 0x41: $code[] = Op::I32_CONST; $code[] = $r->readS32(); break;
+            case 0x41: {
+                $constVal = $r->readS32();
+                if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD follows
+                    $r->readByte();
+                    $code[] = Op::SB_ICONST_IADD; $code[] = $constVal;
+                    break;
+                }
+                $code[] = Op::I32_CONST; $code[] = $constVal; break;
+            }
             case 0x42: $code[] = Op::I64_CONST; $code[] = $r->readS64(); break;
             case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
             case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
