@@ -186,7 +186,12 @@ final class Module
                 $bodiesFlat[$absIdx] = $this->funcBodies[$i];
                 $fCode[$absIdx] = $this->funcBodies[$i]['code'];
                 $fLen[$absIdx]  = $codeLen;
-                $fLD[$absIdx]   = $this->funcBodies[$i]['localDefaults'];
+                    $ld = $this->funcBodies[$i]['localDefaults'];
+                    // Store as integer count when all defaults are zero-equivalent
+                    // (int 0, float 0.0, or null) — Executor uses fast while-loop for these.
+                    $allZero = true;
+                    foreach ($ld as $v) { if ($v !== 0 && $v !== 0.0 && $v !== null) { $allZero = false; break; } }
+                    $fLD[$absIdx] = $allZero ? count($ld) : $ld;
             }
         }
         // Imports: only need resultCounts
