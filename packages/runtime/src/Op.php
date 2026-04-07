@@ -275,4 +275,17 @@ final class Op
     public const SB_I32EQ_BRIF         = 312; // i32.eq + br_if $depth                  → [depth]
     public const SB_I32GTU_BRIF        = 313; // i32.gt_u + br_if $depth                → [depth]
     public const SB_I64EQ_BRIF         = 314; // i64.eq + br_if $depth                  → [depth]
+
+    // Loop-continue fast branches: emitted when br_if/compare+br_if targets a depth=0 0-param LOOP
+    // within the current function. The absolute contIp is pre-encoded; no label stack lookup,
+    // lsBase check, or $sp update is required at runtime (all are no-ops for this case).
+    public const SB_BRIF_LOOP        = 315; // br_if → 0-param loop            → [contIp]
+    public const SB_I32EQZ_BRIF_LOOP = 316; // i32.eqz + br_if → 0-param loop  → [contIp]
+    public const SB_I64LTU_BRIF_LOOP = 317; // i64.lt_u + br_if → 0-param loop → [contIp]
+    public const SB_I32NE_BRIF_LOOP  = 318; // i32.ne + br_if → 0-param loop   → [contIp]
+    public const SB_I32GTS_BRIF_LOOP = 319; // i32.gt_s + br_if → 0-param loop → [contIp]
+    public const SB_I32LTS_BRIF_LOOP = 320; // i32.lt_s + br_if → 0-param loop → [contIp]
+    public const SB_I32EQ_BRIF_LOOP  = 321; // i32.eq + br_if → 0-param loop   → [contIp]
+    public const SB_I32GTU_BRIF_LOOP = 322; // i32.gt_u + br_if → 0-param loop → [contIp]
+    public const SB_I64EQ_BRIF_LOOP  = 323; // i64.eq + br_if → 0-param loop   → [contIp]
 }

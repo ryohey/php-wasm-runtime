@@ -13,7 +13,7 @@ namespace WasmRuntime;
  * The executor reads opcodes via $code[$ip++] and immediates the same way.
  * Stack is managed via a $sp pointer into a pre-allocated array.
  *
- * Label stack entry (flat, 4 slots): [type(0=block,1=loop), contIp, stackHeight, resultCount]
+ * Label stack uses parallel arrays: type, contIp, stackHeight, resultCount.
  */
 final class Executor
 {
@@ -139,12 +139,15 @@ final class Executor
         $sp    = count($rawArgs);
         foreach ($localDefaults as $v) $stack[$sp++] = $v;
         $lbase = 0;  // index of local[0] in $stack (grows with each CALL frame)
-        // Flat label stack: 4 slots per label [type(0=block,1=loop), contIp, stackHeight, resultCount]
-        // $ls is shared across all frames — $lsBase marks the start of the current frame's region.
+        // Label stack uses parallel arrays to avoid stride-4 indexing on hot branch paths.
+        // Arrays are shared across all frames — $lsBase marks the first label index for the current frame.
         // On CALL: save $lsBase, set $lsBase = $lsp. On return: restore $lsBase/$lsp from frame.
-        $ls    = [];  // flat storage, never reset — grows as needed, stale slots above $lsp are ignored
-        $lsp   = 0;   // next free slot index (always a multiple of 4)
-        $lsBase = 0;  // first label slot belonging to current frame
+        $lsType = [];
+        $lsContIp = [];
+        $lsStackHeight = [];
+        $lsResultCount = [];
+        $lsp   = 0;   // next free label index
+        $lsBase = 0;  // first label index belonging to current frame
         $ip         = 0;
         $len        = count($code);
         $mem0       = $this->instance->memories[0] ?? null;
@@ -193,14 +196,14 @@ final class Executor
                     $paramCount  = $code[$ip++];
                     $resultCount = $code[$ip++];
                     $endIp       = $code[$ip++];
-                    $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                    $lsType[$lsp]=0; $lsContIp[$lsp]=$endIp+1; $lsStackHeight[$lsp]=$sp-$paramCount; $lsResultCount[$lsp]=$resultCount; $lsp++;
                     break;
                 }
 
                 case Op::LOOP: {
                     $paramCount  = $code[$ip++];
                     $contIp      = $code[$ip++];
-                    $ls[$lsp]=1; $ls[$lsp+1]=$contIp; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$paramCount; $lsp+=4;
+                    $lsType[$lsp]=1; $lsContIp[$lsp]=$contIp; $lsStackHeight[$lsp]=$sp-$paramCount; $lsResultCount[$lsp]=$paramCount; $lsp++;
                     break;
                 }
 
@@ -213,11 +216,11 @@ final class Executor
                     $cond        = (int)$stack[--$sp];
 
                     if ($cond !== 0) {
-                        $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                        $lsType[$lsp]=0; $lsContIp[$lsp]=$endIp+1; $lsStackHeight[$lsp]=$sp-$paramCount; $lsResultCount[$lsp]=$resultCount; $lsp++;
                     } else {
                         if ($hasElse) {
                             $ip = $elseIp + 2; // skip Op::ELSE_ + endIp
-                            $ls[$lsp]=0; $ls[$lsp+1]=$endIp+1; $ls[$lsp+2]=$sp-$paramCount; $ls[$lsp+3]=$resultCount; $lsp+=4;
+                            $lsType[$lsp]=0; $lsContIp[$lsp]=$endIp+1; $lsStackHeight[$lsp]=$sp-$paramCount; $lsResultCount[$lsp]=$resultCount; $lsp++;
                         } else {
                             $ip = $endIp + 1; // skip Op::END
                         }
@@ -227,13 +230,13 @@ final class Executor
 
                 case Op::ELSE_: {
                     $endIp = $code[$ip++];
-                    $lsp -= 4; // pop label
+                    $lsp--; // pop label
                     $ip = $endIp + 1; // skip Op::END
                     break;
                 }
 
                 case Op::END: {
-                    if ($lsp > $lsBase) $lsp -= 4;
+                    if ($lsp > $lsBase) $lsp--;
                     break;
                 }
 
@@ -244,21 +247,21 @@ final class Executor
 
                 case Op::BR: {
                     $depth = $code[$ip++];
-                    $targetLsp = $lsp - ($depth + 1) * 4;
+                    $targetLsp = $lsp - ($depth + 1);
                     if ($targetLsp < $lsBase) {
                         $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2; // break out of switch AND while
                     }
-                    $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                    if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                        $srcBase = $sp - $lsResultCount;
-                        for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                        $sp = $lsStackHeight + $lsResultCount;
+                    $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                    if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                        $srcBase = $sp - $targetResultCount;
+                        for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                        $sp = $targetStackHeight + $targetResultCount;
                     } else {
-                        $sp = $lsStackHeight;
+                        $sp = $targetStackHeight;
                     }
-                    $ip  = $lsContIp;
-                    $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                    $ip  = $targetContIp;
+                    $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                     break;
                 }
 
@@ -266,21 +269,21 @@ final class Executor
                     $depth = $code[$ip++];
                     $cond  = (int)$stack[--$sp];
                     if ($cond !== 0) {
-                        $targetLsp = $lsp - ($depth + 1) * 4;
+                        $targetLsp = $lsp - ($depth + 1);
                         if ($targetLsp < $lsBase) {
                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                             break 2;
                         }
-                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                            $srcBase = $sp - $lsResultCount;
-                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                            $sp = $lsStackHeight + $lsResultCount;
+                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                            $srcBase = $sp - $targetResultCount;
+                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                            $sp = $targetStackHeight + $targetResultCount;
                         } else {
-                            $sp = $lsStackHeight;
+                            $sp = $targetStackHeight;
                         }
-                        $ip  = $lsContIp;
-                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                        $ip  = $targetContIp;
+                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                     }
                     break;
                 }
@@ -294,21 +297,21 @@ final class Executor
                         $depth = $code[$ip + $cnt]; // default
                     }
                     $ip += $cnt + 1; // skip all labels + default
-                    $targetLsp = $lsp - ($depth + 1) * 4;
+                    $targetLsp = $lsp - ($depth + 1);
                     if ($targetLsp < $lsBase) {
                         $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                         break 2;
                     }
-                    $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                    if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                        $srcBase = $sp - $lsResultCount;
-                        for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                        $sp = $lsStackHeight + $lsResultCount;
+                    $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                    if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                        $srcBase = $sp - $targetResultCount;
+                        for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                        $sp = $targetStackHeight + $targetResultCount;
                     } else {
-                        $sp = $lsStackHeight;
+                        $sp = $targetStackHeight;
                     }
-                    $ip  = $lsContIp;
-                    $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                    $ip  = $targetContIp;
+                    $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                     break;
                 }
 
@@ -578,21 +581,21 @@ final class Executor
                                     $depth = $code[$ip++];
                                     $cond  = (int)$stack[--$sp];
                                     if ($cond === 0) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -632,21 +635,21 @@ final class Executor
                                         $take = $cmp < 0;
                                     }
                                     if ($take) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -655,21 +658,21 @@ final class Executor
                                     $b = (int)$stack[--$sp];
                                     $a = (int)$stack[--$sp];
                                     if ($a !== $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -678,21 +681,21 @@ final class Executor
                                     $b = (int)$stack[--$sp];
                                     $a = (int)$stack[--$sp];
                                     if ($a > $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -701,21 +704,21 @@ final class Executor
                                     $b = (int)$stack[--$sp];
                                     $a = (int)$stack[--$sp];
                                     if ($a < $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -724,21 +727,21 @@ final class Executor
                                     $b = (int)$stack[--$sp];
                                     $a = (int)$stack[--$sp];
                                     if ($a === $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -747,21 +750,21 @@ final class Executor
                                     $b = ((int)$stack[--$sp]) & 0xFFFFFFFF;
                                     $a = ((int)$stack[--$sp]) & 0xFFFFFFFF;
                                     if ($a > $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
@@ -770,24 +773,38 @@ final class Executor
                                     $b = (int)$stack[--$sp];
                                     $a = (int)$stack[--$sp];
                                     if ($a === $b) {
-                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        $targetLsp = $lsp - ($depth + 1);
                                         if ($targetLsp < $lsBase) {
                                             $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
                                             break 2;
                                         }
-                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
-                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
-                                            $srcBase = $sp - $lsResultCount;
-                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
-                                            $sp = $lsStackHeight + $lsResultCount;
+                                        $targetType = $lsType[$targetLsp]; $targetContIp = $lsContIp[$targetLsp]; $targetStackHeight = $lsStackHeight[$targetLsp]; $targetResultCount = $lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) {
+                                            $srcBase = $sp - $targetResultCount;
+                                            for ($__i = 0; $__i < $targetResultCount; $__i++) $stack[$targetStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $targetStackHeight + $targetResultCount;
                                         } else {
-                                            $sp = $lsStackHeight;
+                                            $sp = $targetStackHeight;
                                         }
-                                        $ip  = $lsContIp;
-                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                        $ip  = $targetContIp;
+                                        $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
                                     break;
                                 }
+
+                                case Op::SB_BRIF_LOOP: { $c=$code[$ip++]; if((int)$stack[--$sp]!==0){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I32EQZ_BRIF_LOOP: { $c=$code[$ip++]; if((int)$stack[--$sp]===0){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I64LTU_BRIF_LOOP: {
+                                    $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
+                                    if ($a!==$b) { $as=($a>>63)&1; $bs=($b>>63)&1; $cmp=$as!==$bs?($as>$bs?1:-1):($a<=>$b); if($cmp<0){$sp=$lsStackHeight[$lsp-1];$ip=$c;} }
+                                    break;
+                                }
+                                case Op::SB_I32NE_BRIF_LOOP: { $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a!==$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I32GTS_BRIF_LOOP: { $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a>$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I32LTS_BRIF_LOOP: { $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a<$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I32EQ_BRIF_LOOP: { $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I32GTU_BRIF_LOOP: { $c=$code[$ip++]; $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; if($a>$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
+                                case Op::SB_I64EQ_BRIF_LOOP: { $c=$code[$ip++]; $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; if($a===$b){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
 
                 case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {
