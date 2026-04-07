@@ -619,6 +619,175 @@ final class Executor
                                     $stack[$sp++] = $v;
                                     break;
                                 }
+                                case Op::SB_I64LTU_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a === $b) {
+                                        $take = false;
+                                    } else {
+                                        $as = ($a >> 63) & 1;
+                                        $bs = ($b >> 63) & 1;
+                                        $cmp = $as !== $bs ? ($as > $bs ? 1 : -1) : ($a <=> $b);
+                                        $take = $cmp < 0;
+                                    }
+                                    if ($take) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I32NE_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a !== $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I32GTS_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a > $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I32LTS_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a < $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I32EQ_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a === $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I32GTU_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = ((int)$stack[--$sp]) & 0xFFFFFFFF;
+                                    $a = ((int)$stack[--$sp]) & 0xFFFFFFFF;
+                                    if ($a > $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I64EQ_BRIF: {
+                                    $depth = $code[$ip++];
+                                    $b = (int)$stack[--$sp];
+                                    $a = (int)$stack[--$sp];
+                                    if ($a === $b) {
+                                        $targetLsp = $lsp - ($depth + 1) * 4;
+                                        if ($targetLsp < $lsBase) {
+                                            $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                                            break 2;
+                                        }
+                                        $lsType = $ls[$targetLsp]; $lsContIp = $ls[$targetLsp+1]; $lsStackHeight = $ls[$targetLsp+2]; $lsResultCount = $ls[$targetLsp+3];
+                                        if ($lsResultCount > 0 && $sp > $lsStackHeight) {
+                                            $srcBase = $sp - $lsResultCount;
+                                            for ($__i = 0; $__i < $lsResultCount; $__i++) $stack[$lsStackHeight + $__i] = $stack[$srcBase + $__i];
+                                            $sp = $lsStackHeight + $lsResultCount;
+                                        } else {
+                                            $sp = $lsStackHeight;
+                                        }
+                                        $ip  = $lsContIp;
+                                        $lsp = $targetLsp + ($lsType === 1 ? 4 : 0);
+                                    }
+                                    break;
+                                }
 
                 case Op::I32_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=($a*$b)<<32>>32; break; }
                 case Op::I32_DIV_S: {

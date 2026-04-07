@@ -917,12 +917,22 @@ final class Decoder
                     }
                     $code[] = Op::I32_EQZ;
                     break;
-                case 0x46: $code[] = Op::I32_EQ; break;
-                case 0x47: $code[] = Op::I32_NE; break;
-                case 0x48: $code[] = Op::I32_LT_S; break;
+                case 0x46:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32EQ_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I32_EQ; break;
+                case 0x47:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32NE_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I32_NE; break;
+                case 0x48:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32LTS_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I32_LT_S; break;
                 case 0x49: $code[] = Op::I32_LT_U; break;
-                case 0x4A: $code[] = Op::I32_GT_S; break;
-                case 0x4B: $code[] = Op::I32_GT_U; break;
+                case 0x4A:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32GTS_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I32_GT_S; break;
+                case 0x4B:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32GTU_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I32_GT_U; break;
                 case 0x4C: $code[] = Op::I32_LE_S; break;
                 case 0x4D: $code[] = Op::I32_LE_U; break;
                 case 0x4E: $code[] = Op::I32_GE_S; break;
@@ -930,10 +940,14 @@ final class Decoder
 
                 // ---- i64 comparison ----
                 case 0x50: $code[] = Op::I64_EQZ; break;
-                case 0x51: $code[] = Op::I64_EQ; break;
+                case 0x51:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I64EQ_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I64_EQ; break;
                 case 0x52: $code[] = Op::I64_NE; break;
                 case 0x53: $code[] = Op::I64_LT_S; break;
-                case 0x54: $code[] = Op::I64_LT_U; break;
+                case 0x54:
+                    if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I64LTU_BRIF; $code[] = $r->readU32(); break; }
+                    $code[] = Op::I64_LT_U; break;
                 case 0x55: $code[] = Op::I64_GT_S; break;
                 case 0x56: $code[] = Op::I64_GT_U; break;
                 case 0x57: $code[] = Op::I64_LE_S; break;
@@ -1332,12 +1346,22 @@ final class Decoder
                     }
                     $code[] = Op::I32_EQZ;
                     break;
-            case 0x46: $code[] = Op::I32_EQ; break;
-            case 0x47: $code[] = Op::I32_NE; break;
-            case 0x48: $code[] = Op::I32_LT_S; break;
+            case 0x46:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32EQ_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I32_EQ; break;
+            case 0x47:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32NE_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I32_NE; break;
+            case 0x48:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32LTS_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I32_LT_S; break;
             case 0x49: $code[] = Op::I32_LT_U; break;
-            case 0x4A: $code[] = Op::I32_GT_S; break;
-            case 0x4B: $code[] = Op::I32_GT_U; break;
+            case 0x4A:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32GTS_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I32_GT_S; break;
+            case 0x4B:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I32GTU_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I32_GT_U; break;
             case 0x4C: $code[] = Op::I32_LE_S; break;
             case 0x4D: $code[] = Op::I32_LE_U; break;
             case 0x4E: $code[] = Op::I32_GE_S; break;
@@ -1345,10 +1369,14 @@ final class Decoder
 
             // ---- i64 comparison ----
             case 0x50: $code[] = Op::I64_EQZ; break;
-            case 0x51: $code[] = Op::I64_EQ; break;
+            case 0x51:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I64EQ_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I64_EQ; break;
             case 0x52: $code[] = Op::I64_NE; break;
             case 0x53: $code[] = Op::I64_LT_S; break;
-            case 0x54: $code[] = Op::I64_LT_U; break;
+            case 0x54:
+                if (!$r->eof() && $r->peekByte() === 0x0D) { $r->readByte(); $code[] = Op::SB_I64LTU_BRIF; $code[] = $r->readU32(); break; }
+                $code[] = Op::I64_LT_U; break;
             case 0x55: $code[] = Op::I64_GT_S; break;
             case 0x56: $code[] = Op::I64_GT_U; break;
             case 0x57: $code[] = Op::I64_LE_S; break;
