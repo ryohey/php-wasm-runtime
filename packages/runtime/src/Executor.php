@@ -991,7 +991,7 @@ final class Executor
                 case Op::I32_TRUNC_SAT_F64_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32s((float)$v); break; }
                 case Op::I32_TRUNC_SAT_F64_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI32u((float)$v); break; }
                 case Op::I64_EXTEND_I32_S:   { $v=$stack[--$sp]; $stack[$sp++]=(int)$v<<32>>32; break; }
-                case Op::I64_EXTEND_I32_U:   { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::u32((int)$v); break; }
+                case Op::I64_EXTEND_I32_U:   { $stack[$sp-1]=(int)$stack[$sp-1]&0xFFFFFFFF; break; }
                 case Op::I64_TRUNC_F32_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64s(self::asF32($v)); break; }
                 case Op::I64_TRUNC_F32_U:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64u(self::asF32($v)); break; }
                 case Op::I64_TRUNC_F64_S:    { $v=$stack[--$sp]; $stack[$sp++]=self::truncF2I64s((float)$v); break; }
@@ -1001,12 +1001,12 @@ final class Executor
                 case Op::I64_TRUNC_SAT_F32_S:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64s(self::asF32($v)); break; }
                 case Op::I64_TRUNC_SAT_F32_U:{ $v=$stack[--$sp]; $stack[$sp++]=self::truncSatI64u(self::asF32($v)); break; }
                 case Op::F32_CONVERT_I32_S:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)(int)$v); break; }
-                case Op::F32_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)WasmValue::u32((int)$v)); break; }
+                case Op::F32_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)((int)$v&0xFFFFFFFF)); break; }
                 case Op::F32_CONVERT_I64_S:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)(int)$v); break; }
                 case Op::F32_CONVERT_I64_U:  { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32(self::u64toFloat((int)$v)); break; }
                 case Op::F32_DEMOTE_F64:     { $v=$stack[--$sp]; $stack[$sp++]=WasmValue::canonF32((float)$v); break; }
                 case Op::F64_CONVERT_I32_S:  { $v=$stack[--$sp]; $stack[$sp++]=(float)(int)$v; break; }
-                case Op::F64_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=(float)WasmValue::u32((int)$v); break; }
+                case Op::F64_CONVERT_I32_U:  { $v=$stack[--$sp]; $stack[$sp++]=(float)((int)$v&0xFFFFFFFF); break; }
                 case Op::F64_CONVERT_I64_S:  { $v=$stack[--$sp]; $stack[$sp++]=(float)(int)$v; break; }
                 case Op::F64_CONVERT_I64_U:  { $v=$stack[--$sp]; $stack[$sp++]=self::u64toFloat((int)$v); break; }
                 case Op::F64_PROMOTE_F32:    { $v=$stack[--$sp]; $stack[$sp++]=self::asF32($v); break; }
