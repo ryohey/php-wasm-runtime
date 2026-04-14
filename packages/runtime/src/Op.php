@@ -312,4 +312,6 @@ final class Op
 
     public const SB_BR_LOOP          = 340; // br 0 → 0-param loop (unconditional)  → [contIp]
     public const SB_BR_TABLE_VOID    = 341; // br_table where all targets are 0-result blocks → [cnt, d0..dN, default]
+    public const SB_LGET_ICONST_IADD_LTEE_BRIF_LOOP = 342; // local.get+i32.const+i32.add+local.tee + br_if→loop  → [x,c,y,contIp]
+    public const SB_LGET_ICONST_IADD_LTEE_I32LOAD   = 343; // local.get+i32.const+i32.add+local.tee + i32.load    → [x,c,y,off]
 }

@@ -616,6 +616,20 @@ final class Executor
                                     $stack[$lbase + $code[$ip+2]] = $v; $stack[$sp++] = $v;
                                     $ip += 3; break;
                                 }
+                                case Op::SB_LGET_ICONST_IADD_LTEE_BRIF_LOOP: { // local.get+i32.const+i32.add+local.tee+br_if→loop [x,c,y,contIp]
+                                    $v = (((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) << 32 >> 32;
+                                    $stack[$lbase + $code[$ip+2]] = $v;
+                                    if ($v !== 0) { $sp = $lsStackHeight[$lsp - 1]; $ip = $code[$ip+3]; } else { $ip += 4; }
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_LTEE_I32LOAD: { // local.get+i32.const+i32.add+local.tee+i32.load [x,c,y,off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) << 32 >> 32;
+                                    $stack[$lbase + $code[$ip+2]] = $addr;
+                                    $raddr = ($addr & 0xFFFFFFFF) + $code[$ip+3]; $ip += 4;
+                                    if ($raddr < 0 || $raddr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = unpack('V', $bytes, $raddr)[1] << 32 >> 32;
+                                    break;
+                                }
                                 case Op::SB_I32EQZ_BRIF: { // i32.eqz + br_if $depth  (branch if TOS == 0)
                                     $depth = $code[$ip++];
                                     $cond  = (int)$stack[--$sp];
