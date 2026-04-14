@@ -333,4 +333,13 @@ final class Op
     public const SB_LGET_I64CONST_I64LTU_BRIF      = 360; // local.get+i64.const+i64.lt_u+br_if         → [x, c, depth]
     public const SB_LGET_I64CONST_I64LTU_BRIF_LOOP = 361; // local.get+i64.const+i64.lt_u+br_if→loop   → [x, c, contIp]
     public const SB_LGET_I32ADD                  = 362; // local.get $x + i32.add (add to TOS)          → [x]
+    public const SB_LGET_I64CONST                = 363; // local.get $x + i64.const $c                  → [x, c]
+    public const SB_LGET_I64CONST_I64AND         = 364; // local.get $x + i64.const $c + i64.and        → [x, c]
+    public const SB_ICONST_I32SHL                = 365; // i32.const $c + i32.shl (shift TOS left by c) → [c]
+    public const SB_I32SUB_LTEE                  = 366; // i32.sub + local.tee $y                       → [y]
+    public const SB_I64CONST_I64STORE            = 367; // i64.const $c + i64.store $off                → [c, off]
+    public const SB_LGET_ICONST_I32STORE         = 368; // local.get $x + i32.const $c + i32.store $off → [x, c, off]
+    public const SB_LGET_ICONST_I32AND           = 369; // local.get $x + i32.const $c + i32.and        → [x, c]
+    public const SB_LGET_ICONST_I32SHL           = 370; // local.get $x + i32.const $c + i32.shl        → [x, c]
+    public const SB_LGET_LGET_I32ADD             = 371; // local.get $a + local.get $b + i32.add        → [a, b]
 }

@@ -164,6 +164,7 @@ final class Executor
         $funcCodeLen     = $mod->funcCodeLen;
         $funcLD          = $mod->funcLocalDefaults; // int = zero-fill count, array = actual defaults
         $resultCounts    = $mod->resultCounts;
+        $funcAll         = $mod->funcAll; // [code, codeLen, retCount, localDefaults] per WASM function
         $paramCounts     = $mod->paramCounts;
         $typeParamCounts  = $mod->typeParamCounts;
         $funcTypeFlat    = $mod->funcTypeFlat;
@@ -335,17 +336,18 @@ final class Executor
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
-                    // Check WASM-to-WASM first (most common): funcCode exists only for non-imported funcs
-                    if (isset($funcCode[$fIdx])) {
+                    // Check WASM-to-WASM first (most common): funcAll exists only for non-imported funcs
+                    $_fa = $funcAll[$fIdx] ?? null;
+                    if ($_fa !== null) {
                         // Iterative WASM-to-WASM call — push frame, switch code
                         if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                         $newLbase = $sp - $pc;
-                        { $_ld=$funcLD[$fIdx]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
+                        { $_ld=$_fa[3]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
                         $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                         $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                         $fsp += 8;
-                        $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $code = $_fa[0]; $lbase = $newLbase;
+                        $ip = 0; $len = $_fa[1]; $retCount = $_fa[2];
                         $lsBase = $lsp; $retBase = -1;
                         break;
                     }
@@ -394,11 +396,12 @@ final class Executor
                 case Op::RETURN_CALL: {
                     // Tail call — replace current frame in-place (no frame push)
                     $fIdx = $code[$ip++]; $pc = $paramCounts[$fIdx];
-                    if (isset($funcCode[$fIdx])) {
+                    $_fa = $funcAll[$fIdx] ?? null;
+                    if ($_fa !== null) {
                         $lbase = $sp - $pc;
-                        { $_ld=$funcLD[$fIdx]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
-                        $code = $funcCode[$fIdx];
-                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        { $_ld=$_fa[3]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
+                        $code = $_fa[0];
+                        $ip = 0; $len = $_fa[1]; $retCount = $_fa[2];
                         $lsp = $lsBase; $retBase = -1;
                         break;
                     }
@@ -448,16 +451,17 @@ final class Executor
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($funcCode[$fIdx])) {
+                    $_fa = $funcAll[$fIdx] ?? null;
+                    if ($_fa !== null) {
                         // WASM-to-WASM call (most common)
                         if ($fsp >= self::MAX_CALL_DEPTH * 8) throw Trap::callStackExhausted();
                         $newLbase = $sp - $pc;
-                        { $_ld=$funcLD[$fIdx]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
+                        { $_ld=$_fa[3]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
                         $frameData[$fsp]=$code; $frameData[$fsp+1]=$ip; $frameData[$fsp+2]=$len; $frameData[$fsp+3]=$retCount;
                         $frameData[$fsp+4]=$lsBase; $frameData[$fsp+5]=$lsp; $frameData[$fsp+6]=$lbase; $frameData[$fsp+7]=$newLbase;
                         $fsp += 8;
-                        $code = $funcCode[$fIdx]; $lbase = $newLbase;
-                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        $code = $_fa[0]; $lbase = $newLbase;
+                        $ip = 0; $len = $_fa[1]; $retCount = $_fa[2];
                         $lsBase = $lsp; $retBase = -1;
                         break;
                     }
@@ -512,12 +516,13 @@ final class Executor
                     if ($fIdx === null) throw Trap::uninitializedElement();
                     if ($funcTypeIdxFlat[$fIdx] !== $typeIdx && !$modTypes[$typeIdx]->equals($funcTypeFlat[$fIdx]))
                         throw Trap::indirectCallTypeMismatch();
-                    if (isset($funcCode[$fIdx])) {
+                    $_fa = $funcAll[$fIdx] ?? null;
+                    if ($_fa !== null) {
                         // Tail WASM-to-WASM call
                         $lbase = $sp - $pc;
-                        { $_ld=$funcLD[$fIdx]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
-                        $code = $funcCode[$fIdx];
-                        $ip = 0; $len = $funcCodeLen[$fIdx]; $retCount = $resultCounts[$fIdx];
+                        { $_ld=$_fa[3]; if(is_int($_ld)){$_e=$sp+$_ld;while($sp<$_e)$stack[$sp++]=0;}else{foreach($_ld as $_v)$stack[$sp++]=$_v;} }
+                        $code = $_fa[0];
+                        $ip = 0; $len = $_fa[1]; $retCount = $_fa[2];
                         $lsp = $lsBase; $retBase = -1;
                         break;
                     }
@@ -693,6 +698,38 @@ final class Executor
                                 }
                                 case Op::SB_LGET_I32ADD: { // local.get $x + i32.add (add local to TOS)  → [x]
                                     $stack[$sp-1] = (((int)$stack[$sp-1]) + (int)$stack[$lbase + $code[$ip++]]) << 32 >> 32; break;
+                                }
+                                case Op::SB_LGET_I64CONST: { // local.get $x + i64.const $c → [x, c]
+                                    $stack[$sp] = $stack[$lbase + $code[$ip]]; $stack[$sp+1] = $code[$ip+1]; $sp += 2; $ip += 2; break;
+                                }
+                                case Op::SB_LGET_I64CONST_I64AND: { // local.get $x + i64.const $c + i64.and → [x, c]
+                                    $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] & (int)$code[$ip+1]; $ip += 2; break;
+                                }
+                                case Op::SB_ICONST_I32SHL: { // i32.const $c + i32.shl (shift TOS left by c) → [c]
+                                    $stack[$sp-1] = ((int)$stack[$sp-1] << ($code[$ip++] & 31)) << 32 >> 32; break;
+                                }
+                                case Op::SB_I32SUB_LTEE: { // i32.sub + local.tee $y → [y]
+                                    $v = ((int)$stack[$sp-2] - (int)$stack[$sp-1]) << 32 >> 32; $sp--;
+                                    $stack[$sp-1] = $v; $stack[$lbase + $code[$ip++]] = $v; break;
+                                }
+                                case Op::SB_I64CONST_I64STORE: { // i64.const $c + i64.store $off → [c, off]
+                                    $v=(int)$code[$ip]; $off=$code[$ip+1]; $ip+=2; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off;
+                                    if($addr<0||$addr+8>$blimit)throw Trap::outOfBoundsMemoryAccess();
+                                    $p=pack('VV',$v,$v>>32);$bytes[$addr]=$p[0];$bytes[$addr+1]=$p[1];$bytes[$addr+2]=$p[2];$bytes[$addr+3]=$p[3];$bytes[$addr+4]=$p[4];$bytes[$addr+5]=$p[5];$bytes[$addr+6]=$p[6];$bytes[$addr+7]=$p[7];break;
+                                }
+                                case Op::SB_LGET_ICONST_I32STORE: { // local.get $x + i32.const $c + i32.store $off → [x, c, off]
+                                    $addr = ((int)$stack[$lbase + $code[$ip]] & 0xFFFFFFFF) + $code[$ip+2]; $v = $code[$ip+1]; $ip += 3;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
+                                }
+                                case Op::SB_LGET_ICONST_I32AND: { // local.get $x + i32.const $c + i32.and → [x, c]
+                                    $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] & $code[$ip+1]; $ip += 2; break;
+                                }
+                                case Op::SB_LGET_ICONST_I32SHL: { // local.get $x + i32.const $c + i32.shl → [x, c]
+                                    $stack[$sp++] = ((int)$stack[$lbase + $code[$ip]] << ($code[$ip+1] & 31)) << 32 >> 32; $ip += 2; break;
+                                }
+                                case Op::SB_LGET_LGET_I32ADD: { // local.get $a + local.get $b + i32.add → [a, b]
+                                    $stack[$sp++] = ((int)$stack[$lbase + $code[$ip]] + (int)$stack[$lbase + $code[$ip+1]]) << 32 >> 32; $ip += 2; break;
                                 }
                                 case Op::SB_ICONST_IADD_I32STORE: { // i32.const $c + i32.add + i32.store $off  → [c, off]
                                     $addr = (((int)$stack[$sp - 2]) & 0xFFFFFFFF) + $code[$ip + 1];
@@ -1098,9 +1135,9 @@ final class Executor
                 case Op::I32_GE_U:   { $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF; $stack[$sp++]=($a>=$b)?1:0; break; }
 
                 // ---- i64 arithmetic ----
-                case Op::I64_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $lo=($a&0xFFFFFFFF)+($b&0xFFFFFFFF); $stack[$sp++]=((((($a>>32)&0xFFFFFFFF)+(($b>>32)&0xFFFFFFFF)+($lo>>32&1))&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF); break; }
-                case Op::I64_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $lo=($a&0xFFFFFFFF)-($b&0xFFFFFFFF); $bw=($lo<0)?1:0; $stack[$sp++]=((((($a>>32)&0xFFFFFFFF)-(($b>>32)&0xFFFFFFFF)-$bw)&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF); break; }
-                case Op::I64_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $stack[$sp++]=self::int64Mul($a,$b); break; }
+                case Op::I64_ADD: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $r=$a+$b; if(is_int($r)){$stack[$sp++]=$r;}else{$lo=($a&0xFFFFFFFF)+($b&0xFFFFFFFF);$stack[$sp++]=((((($a>>32)&0xFFFFFFFF)+(($b>>32)&0xFFFFFFFF)+($lo>>32&1))&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF);} break; }
+                case Op::I64_SUB: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $r=$a-$b; if(is_int($r)){$stack[$sp++]=$r;}else{$lo=($a&0xFFFFFFFF)-($b&0xFFFFFFFF);$bw=($lo<0)?1:0;$stack[$sp++]=((((($a>>32)&0xFFFFFFFF)-(($b>>32)&0xFFFFFFFF)-$bw)&0xFFFFFFFF)<<32)|($lo&0xFFFFFFFF);} break; }
+                case Op::I64_MUL: { $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp]; $r=$a*$b; $stack[$sp++]=is_int($r)?$r:self::int64Mul($a,$b); break; }
                 case Op::I64_DIV_S: {
                     $b=(int)$stack[--$sp]; $a=(int)$stack[--$sp];
                     if ($b===0) throw Trap::integerDivideByZero();

@@ -137,6 +137,8 @@ final class Module
     public array $funcCodeLen = [];
     /** @var array[] funcIdx → localDefaults array */
     public array $funcLocalDefaults = [];
+    /** @var array[] funcIdx → [code, codeLen, retCount, localDefaults] for one-shot CALL lookup */
+    public array $funcAll = [];
 
     public function totalFuncCount(): int
     {
@@ -207,6 +209,13 @@ final class Module
         $this->funcCode            = $fCode;
         $this->funcCodeLen         = $fLen;
         $this->funcLocalDefaults   = $fLD;
+        // funcAll bundles [code, codeLen, retCount, localDefaults] per WASM function
+        // for a single hash lookup in CALL instead of 4 separate lookups.
+        $fAll = [];
+        foreach ($fCode as $absIdx => $c) {
+            $fAll[$absIdx] = [$c, $fLen[$absIdx], $resCounts[$absIdx], $fLD[$absIdx]];
+        }
+        $this->funcAll = $fAll;
 
         // Pre-compute param counts per type index for CALL_INDIRECT
         $typeCounts = [];

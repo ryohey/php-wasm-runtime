@@ -834,7 +834,7 @@ final class Decoder
                         $nb = $r->peekByte();
                         if ($nb === 0x20) { // LOCAL_GET follows
                             $r->readByte();
-                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
+                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x6A){$r->readByte();$code[]=Op::SB_LGET_LGET_I32ADD;$code[]=$localIdx;$code[]=$localIdx2;break;}
                             $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $localIdx2;
                             break;
                         }
@@ -849,6 +849,9 @@ final class Decoder
                                 break;
                             }
                             if(!$r->eof()&&$r->peekByte()===0x4A){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDg=$r->readU32();$csLng=count($controlStack);if($brDg===0&&$csLng>0&&$controlStack[$csLng-1][0]==='loop'&&$code[$controlStack[$csLng-1][1]+1]===0){$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF_LOOP;$code[]=$localIdx;$code[]=$constVal;$code[]=$code[$controlStack[$csLng-1][1]+2];break;}$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF;$code[]=$localIdx;$code[]=$constVal;$code[]=$brDg;break;}$code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$code[]=Op::I32_GT_S;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x71){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32AND;$code[]=$localIdx;$code[]=$constVal;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x74){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32SHL;$code[]=$localIdx;$code[]=$constVal;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_ICONST_I32STORE;$code[]=$localIdx;$code[]=$constVal;$code[]=$r->readU32();break;}
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
@@ -859,7 +862,8 @@ final class Decoder
                         if ($nb === 0x42) { // I64_CONST follows — fuse with i64.lt_u + br_if
                             $r->readByte(); $c64g=$r->readS64();
                             if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlg=$r->readU32();$csLlg=count($controlStack);if($brDlg===0&&$csLlg>0&&$controlStack[$csLlg-1][0]==='loop'&&$code[$controlStack[$csLlg-1][1]+1]===0){$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF_LOOP;$code[]=$localIdx;$code[]=$c64g;$code[]=$code[$controlStack[$csLlg-1][1]+2];break;}$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF;$code[]=$localIdx;$code[]=$c64g;$code[]=$brDlg;break;}$code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;$code[]=Op::I64_LT_U;break;}
-                            $code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;break;
+                            if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_LGET_I64CONST_I64AND;$code[]=$localIdx;$code[]=$c64g;break;}
+                            $code[]=Op::SB_LGET_I64CONST;$code[]=$localIdx;$code[]=$c64g;break;
                         }
                         if ($nb === 0x28) { // I32_LOAD follows
                             $r->readByte();
@@ -955,9 +959,10 @@ final class Decoder
                     }
                     if (!$r->eof() && $r->peekByte() === 0x71) { $r->readByte(); $code[] = Op::SB_ICONST_I32AND; $code[] = $constVal; break; }
                     if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_ICONST_LSET; $code[] = $constVal; $code[] = $r->readU32(); break; }
+                    if (!$r->eof() && $r->peekByte() === 0x74) { $r->readByte(); $code[] = Op::SB_ICONST_I32SHL; $code[] = $constVal; break; }
                     $code[] = Op::I32_CONST; $code[] = $constVal; break;
                 }
-                case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_I64CONST_LSET;$code[]=$c64;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlt=$r->readU32();$csLlt=count($controlStack);if($brDlt===0&&$csLlt>0&&$controlStack[$csLlt-1][0]==='loop'&&$code[$controlStack[$csLlt-1][1]+1]===0){$code[]=Op::SB_I64CONST_I64LTU_BRIF_LOOP;$code[]=$c64;$code[]=$code[$controlStack[$csLlt-1][1]+2];break;}$code[]=Op::SB_I64CONST_I64LTU_BRIF;$code[]=$c64;$code[]=$brDlt;break;}$code[]=Op::I64_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;break;} if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_I64CONST_I64AND;$code[]=$c64;break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
+                case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_I64CONST_LSET;$code[]=$c64;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlt=$r->readU32();$csLlt=count($controlStack);if($brDlt===0&&$csLlt>0&&$controlStack[$csLlt-1][0]==='loop'&&$code[$controlStack[$csLlt-1][1]+1]===0){$code[]=Op::SB_I64CONST_I64LTU_BRIF_LOOP;$code[]=$c64;$code[]=$code[$controlStack[$csLlt-1][1]+2];break;}$code[]=Op::SB_I64CONST_I64LTU_BRIF;$code[]=$c64;$code[]=$brDlt;break;}$code[]=Op::I64_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;break;} if(!$r->eof()&&$r->peekByte()===0x37){$r->readByte();$r->readU32();$code[]=Op::SB_I64CONST_I64STORE;$code[]=$c64;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_I64CONST_I64AND;$code[]=$c64;break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
                 case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
                 case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
@@ -1041,7 +1046,7 @@ final class Decoder
                 case 0x68: $code[] = Op::I32_CTZ; break;
                 case 0x69: $code[] = Op::I32_POPCNT; break;
                 case 0x6A: $code[] = Op::I32_ADD; break;
-                case 0x6B: $code[] = Op::I32_SUB; break;
+                case 0x6B: { if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32SUB_LTEE;$code[]=$r->readU32();break;} $code[]=Op::I32_SUB;break; }
                 case 0x6C: $code[] = Op::I32_MUL; break;
                 case 0x6D: $code[] = Op::I32_DIV_S; break;
                 case 0x6E: $code[] = Op::I32_DIV_U; break;
@@ -1313,7 +1318,7 @@ final class Decoder
                         $nb = $r->peekByte();
                         if ($nb === 0x20) { // LOCAL_GET follows
                             $r->readByte();
-                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
+                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x6A){$r->readByte();$code[]=Op::SB_LGET_LGET_I32ADD;$code[]=$localIdx;$code[]=$localIdx2;break;}
                             $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $localIdx2;
                             break;
                         }
@@ -1328,6 +1333,9 @@ final class Decoder
                                 break;
                             }
                             if(!$r->eof()&&$r->peekByte()===0x4A){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDg=$r->readU32();$csLng=count($controlStack);if($brDg===0&&$csLng>0&&$controlStack[$csLng-1][0]==='loop'&&$code[$controlStack[$csLng-1][1]+1]===0){$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF_LOOP;$code[]=$localIdx;$code[]=$constVal;$code[]=$code[$controlStack[$csLng-1][1]+2];break;}$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF;$code[]=$localIdx;$code[]=$constVal;$code[]=$brDg;break;}$code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$code[]=Op::I32_GT_S;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x71){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32AND;$code[]=$localIdx;$code[]=$constVal;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x74){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32SHL;$code[]=$localIdx;$code[]=$constVal;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_ICONST_I32STORE;$code[]=$localIdx;$code[]=$constVal;$code[]=$r->readU32();break;}
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
@@ -1338,7 +1346,8 @@ final class Decoder
                         if ($nb === 0x42) { // I64_CONST follows — fuse with i64.lt_u + br_if
                             $r->readByte(); $c64g=$r->readS64();
                             if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlg=$r->readU32();$csLlg=count($controlStack);if($brDlg===0&&$csLlg>0&&$controlStack[$csLlg-1][0]==='loop'&&$code[$controlStack[$csLlg-1][1]+1]===0){$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF_LOOP;$code[]=$localIdx;$code[]=$c64g;$code[]=$code[$controlStack[$csLlg-1][1]+2];break;}$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF;$code[]=$localIdx;$code[]=$c64g;$code[]=$brDlg;break;}$code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;$code[]=Op::I64_LT_U;break;}
-                            $code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;break;
+                            if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_LGET_I64CONST_I64AND;$code[]=$localIdx;$code[]=$c64g;break;}
+                            $code[]=Op::SB_LGET_I64CONST;$code[]=$localIdx;$code[]=$c64g;break;
                         }
                         if ($nb === 0x28) { // I32_LOAD follows
                             $r->readByte();
@@ -1437,9 +1446,10 @@ final class Decoder
                     $code[] = Op::SB_ICONST_IADD; $code[] = $constVal;
                     break;
                 }
+                if (!$r->eof() && $r->peekByte() === 0x74) { $r->readByte(); $code[] = Op::SB_ICONST_I32SHL; $code[] = $constVal; break; }
                 $code[] = Op::I32_CONST; $code[] = $constVal; break;
             }
-            case 0x42: $code[] = Op::I64_CONST; $code[] = $r->readS64(); break;
+            case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x37){$r->readByte();$r->readU32();$code[]=Op::SB_I64CONST_I64STORE;$code[]=$c64;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_I64CONST_I64AND;$code[]=$c64;break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
             case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
             case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
@@ -1523,7 +1533,7 @@ final class Decoder
             case 0x68: $code[] = Op::I32_CTZ; break;
             case 0x69: $code[] = Op::I32_POPCNT; break;
             case 0x6A: $code[] = Op::I32_ADD; break;
-            case 0x6B: $code[] = Op::I32_SUB; break;
+            case 0x6B: { if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32SUB_LTEE;$code[]=$r->readU32();break;} $code[]=Op::I32_SUB;break; }
             case 0x6C: $code[] = Op::I32_MUL; break;
             case 0x6D: $code[] = Op::I32_DIV_S; break;
             case 0x6E: $code[] = Op::I32_DIV_U; break;
