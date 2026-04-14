@@ -309,4 +309,7 @@ final class Op
     public const SB_I32GES_BRIF_LOOP = 337; // i32.ge_s + br_if → 0-param loop      → [contIp]
     public const SB_I32GEU_BRIF_LOOP = 338; // i32.ge_u + br_if → 0-param loop      → [contIp]
     public const SB_I64NE_BRIF_LOOP  = 339; // i64.ne + br_if → 0-param loop        → [contIp]
+
+    public const SB_BR_LOOP          = 340; // br 0 → 0-param loop (unconditional)  → [contIp]
+    public const SB_BR_TABLE_VOID    = 341; // br_table where all targets are 0-result blocks → [cnt, d0..dN, default]
 }

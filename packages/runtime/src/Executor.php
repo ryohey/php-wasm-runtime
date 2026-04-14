@@ -315,6 +315,23 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_BR_TABLE_VOID: {
+                    // All targets are 0-result blocks: no result copy, no type check, lsp = targetLsp
+                    $cnt = $code[$ip++];
+                    $idx = (int)$stack[--$sp];
+                    $depth = ($idx >= 0 && $idx < $cnt) ? $code[$ip + $idx] : $code[$ip + $cnt];
+                    $ip += $cnt + 1;
+                    $targetLsp = $lsp - ($depth + 1);
+                    if ($targetLsp < $lsBase) {
+                        $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp;
+                        break 2;
+                    }
+                    $sp  = $lsStackHeight[$targetLsp];
+                    $ip  = $lsContIp[$targetLsp];
+                    $lsp = $targetLsp;
+                    break;
+                }
+
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
@@ -893,6 +910,7 @@ final class Executor
                                     break;
                                 }
 
+                                case Op::SB_BR_LOOP:   { $c=$code[$ip++]; $sp=$lsStackHeight[$lsp-1]; $ip=$c; break; }
                                 case Op::SB_BRIF_LOOP: { $c=$code[$ip++]; if((int)$stack[--$sp]!==0){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
                                 case Op::SB_I32EQZ_BRIF_LOOP: { $c=$code[$ip++]; if((int)$stack[--$sp]===0){$sp=$lsStackHeight[$lsp-1];$ip=$c;} break; }
                                 case Op::SB_I64LTU_BRIF_LOOP: {

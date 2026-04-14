@@ -766,7 +766,14 @@ final class Decoder
                     break;
 
                 // ---- Branch ----
-                case 0x0C: $code[] = Op::BR; $code[] = $r->readU32(); break;
+                case 0x0C: { // BR — emit fast loop-continue variant when possible
+                    $brDepth = $r->readU32();
+                    if ($brDepth === 0) {
+                        $csLen = count($controlStack);
+                        if ($csLen > 0) { $topF = $controlStack[$csLen - 1]; if ($topF[0] === 'loop' && $code[$topF[1] + 1] === 0) { $code[] = Op::SB_BR_LOOP; $code[] = $code[$topF[1] + 2]; break; } }
+                    }
+                    $code[] = Op::BR; $code[] = $brDepth; break;
+                }
                 case 0x0D: { // BR_IF — emit fast loop-continue variant when possible
                     $brDepth = $r->readU32();
                     $csLen = count($controlStack);
@@ -779,14 +786,19 @@ final class Decoder
                     $code[] = Op::BR_IF; $code[] = $brDepth; break;
                 }
 
-                case 0x0E: // br_table
+                case 0x0E: { // br_table
                     $labels = $r->readVec(fn() => $r->readU32());
                     $default = $r->readU32();
-                    $code[] = Op::BR_TABLE;
+                    // Specialize to SB_BR_TABLE_VOID if all targets are 0-result blocks
+                    $_csLen = count($controlStack); $_allVoid = true;
+                    foreach ($labels as $_d) { $_ti=$_csLen-1-$_d; if($_ti<0||$controlStack[$_ti][0]!=='block'||$code[$controlStack[$_ti][1]+2]!==0){$_allVoid=false;break;} }
+                    if ($_allVoid) { $_ti=$_csLen-1-$default; if($_ti<0||$controlStack[$_ti][0]!=='block'||$code[$controlStack[$_ti][1]+2]!==0){$_allVoid=false;} }
+                    $code[] = $_allVoid ? Op::SB_BR_TABLE_VOID : Op::BR_TABLE;
                     $code[] = count($labels); // label count
                     foreach ($labels as $l) $code[] = $l;
                     $code[] = $default;
                     break;
+                }
 
                 case 0x0F: $code[] = Op::RETURN_; break;
 
@@ -1224,21 +1236,30 @@ final class Decoder
                 break;
 
             // ---- Branch ----
-            case 0x0C: $code[] = Op::BR; $code[] = $r->readU32(); break;
+            case 0x0C: { // BR — emit fast loop-continue variant when possible
+                $brDepth = $r->readU32();
+                if ($brDepth === 0) { $csLen = count($controlStack); if ($csLen > 0) { $topF = $controlStack[$csLen - 1]; if ($topF[0] === 'loop' && $code[$topF[1] + 1] === 0) { $code[] = Op::SB_BR_LOOP; $code[] = $code[$topF[1] + 2]; break; } } }
+                $code[] = Op::BR; $code[] = $brDepth; break;
+            }
             case 0x0D: {
                 $brDepth = $r->readU32(); $csLen = count($controlStack);
                 if ($brDepth===0 && $csLen>0 && $controlStack[$csLen-1][0]==='loop' && $code[$controlStack[$csLen-1][1]+1]===0) { $code[] = Op::SB_BRIF_LOOP; $code[] = $code[$controlStack[$csLen-1][1]+2]; break; }
                 $code[] = Op::BR_IF; $code[] = $brDepth; break;
             }
 
-            case 0x0E: // br_table
+            case 0x0E: { // br_table
                 $labels = $r->readVec(fn() => $r->readU32());
                 $default = $r->readU32();
-                $code[] = Op::BR_TABLE;
+                // Specialize to SB_BR_TABLE_VOID if all targets are 0-result blocks
+                $_csLen = count($controlStack); $_allVoid = true;
+                foreach ($labels as $_d) { $_ti=$_csLen-1-$_d; if($_ti<0||$controlStack[$_ti][0]!=='block'||$code[$controlStack[$_ti][1]+2]!==0){$_allVoid=false;break;} }
+                if ($_allVoid) { $_ti=$_csLen-1-$default; if($_ti<0||$controlStack[$_ti][0]!=='block'||$code[$controlStack[$_ti][1]+2]!==0){$_allVoid=false;} }
+                $code[] = $_allVoid ? Op::SB_BR_TABLE_VOID : Op::BR_TABLE;
                 $code[] = count($labels); // label count
                 foreach ($labels as $l) $code[] = $l;
                 $code[] = $default;
                 break;
+            }
 
             case 0x0F: $code[] = Op::RETURN_; break;
 
