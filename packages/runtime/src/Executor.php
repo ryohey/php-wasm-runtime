@@ -594,6 +594,21 @@ final class Executor
                                     $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
                                     $stack[$lbase + $teeIdx] = $v; $stack[$sp++] = $v; break;
                                 }
+                                case Op::SB_LGET_I32LOAD_LSET: { // local.get $x + i32.load $off + local.set $y  → [x, off, y]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$lbase + $code[$ip+2]] = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $ip += 3; break;
+                                }
+                                case Op::SB_ICONST_LSET: { // i32.const $c + local.set $y  → [c, y]
+                                    $stack[$lbase + $code[$ip+1]] = $code[$ip]; $ip += 2; break;
+                                }
+                                case Op::SB_LGET_LGET_I32STORE: { // local.get $a + local.get $b + i32.store $off  → [a, b, off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    $v = (int)$stack[$lbase + $code[$ip+1]]; $ip += 3;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
+                                }
                                 case Op::SB_LGET_I32LOAD8U: { // local.get $x + i32.load8_u $off
                                     $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
                                     $ip += 2;

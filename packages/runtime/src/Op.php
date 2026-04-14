@@ -314,4 +314,7 @@ final class Op
     public const SB_BR_TABLE_VOID    = 341; // br_table where all targets are 0-result blocks → [cnt, d0..dN, default]
     public const SB_LGET_ICONST_IADD_LTEE_BRIF_LOOP = 342; // local.get+i32.const+i32.add+local.tee + br_if→loop  → [x,c,y,contIp]
     public const SB_LGET_ICONST_IADD_LTEE_I32LOAD   = 343; // local.get+i32.const+i32.add+local.tee + i32.load    → [x,c,y,off]
+    public const SB_ICONST_LSET          = 344; // i32.const $c + local.set $y                                   → [c, y]
+    public const SB_LGET_I32LOAD_LSET    = 345; // local.get $x + i32.load $off + local.set $y                   → [x, off, y]
+    public const SB_LGET_LGET_I32STORE   = 346; // local.get $a + local.get $b + i32.store $off                  → [a, b, off]
 }
