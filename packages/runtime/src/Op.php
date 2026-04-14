@@ -327,4 +327,10 @@ final class Op
     public const SB_LGET_LGET_I32LOAD            = 354; // local.get $a + local.get $b + i32.load $off  → [a, b, off]
     public const SB_LGET_LSET                    = 355; // local.get $src + local.set $dst              → [src, dst]
     public const SB_I64CONST_I64AND              = 356; // i64.const $c + i64.and                       → [c]
+    public const SB_ICONST_I32AND                = 357; // i32.const $c + i32.and                       → [c]
+    public const SB_I64LOAD_LTEE                 = 358; // i64.load $off + local.tee $y                 → [off, y]
+    public const SB_LGET_I64LOAD                 = 359; // local.get $x + i64.load $off                 → [x, off]
+    public const SB_LGET_I64CONST_I64LTU_BRIF      = 360; // local.get+i64.const+i64.lt_u+br_if         → [x, c, depth]
+    public const SB_LGET_I64CONST_I64LTU_BRIF_LOOP = 361; // local.get+i64.const+i64.lt_u+br_if→loop   → [x, c, contIp]
+    public const SB_LGET_I32ADD                  = 362; // local.get $x + i32.add (add to TOS)          → [x]
 }

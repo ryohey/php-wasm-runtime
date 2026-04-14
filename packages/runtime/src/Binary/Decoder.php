@@ -852,6 +852,15 @@ final class Decoder
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
+                        if ($nb === 0x6A) { $r->readByte(); $code[] = Op::SB_LGET_I32ADD; $code[] = $localIdx; break; } // I32_ADD follows
+                        if ($nb === 0x29) { // I64_LOAD follows
+                            $r->readByte(); $r->readU32(); $code[] = Op::SB_LGET_I64LOAD; $code[] = $localIdx; $code[] = $r->readU32(); break;
+                        }
+                        if ($nb === 0x42) { // I64_CONST follows — fuse with i64.lt_u + br_if
+                            $r->readByte(); $c64g=$r->readS64();
+                            if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlg=$r->readU32();$csLlg=count($controlStack);if($brDlg===0&&$csLlg>0&&$controlStack[$csLlg-1][0]==='loop'&&$code[$controlStack[$csLlg-1][1]+1]===0){$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF_LOOP;$code[]=$localIdx;$code[]=$c64g;$code[]=$code[$controlStack[$csLlg-1][1]+2];break;}$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF;$code[]=$localIdx;$code[]=$c64g;$code[]=$brDlg;break;}$code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;$code[]=Op::I64_LT_U;break;}
+                            $code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;break;
+                        }
                         if ($nb === 0x28) { // I32_LOAD follows
                             $r->readByte();
                             $r->readU32(); // skip alignment
@@ -906,7 +915,7 @@ final class Decoder
 
                 // ---- Memory load (align ignored, read offset inline) ----
                 case 0x28: { $r->readU32(); $off=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I32_LOAD;$code[]=$off;break; }
-                case 0x29: $code[] = Op::I64_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
+                case 0x29: { $r->readU32(); $off=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I64LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I64_LOAD;$code[]=$off;break; }
                 case 0x2A: $code[] = Op::F32_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
                 case 0x2B: $code[] = Op::F64_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
                 case 0x2C: $code[] = Op::I32_LOAD8_S;  $r->readU32(); $code[] = $r->readU32(); break;
@@ -944,6 +953,7 @@ final class Decoder
                         $code[] = Op::SB_ICONST_IADD; $code[] = $constVal;
                         break;
                     }
+                    if (!$r->eof() && $r->peekByte() === 0x71) { $r->readByte(); $code[] = Op::SB_ICONST_I32AND; $code[] = $constVal; break; }
                     if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_ICONST_LSET; $code[] = $constVal; $code[] = $r->readU32(); break; }
                     $code[] = Op::I32_CONST; $code[] = $constVal; break;
                 }
@@ -1321,6 +1331,15 @@ final class Decoder
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
+                        if ($nb === 0x6A) { $r->readByte(); $code[] = Op::SB_LGET_I32ADD; $code[] = $localIdx; break; } // I32_ADD follows
+                        if ($nb === 0x29) { // I64_LOAD follows
+                            $r->readByte(); $r->readU32(); $code[] = Op::SB_LGET_I64LOAD; $code[] = $localIdx; $code[] = $r->readU32(); break;
+                        }
+                        if ($nb === 0x42) { // I64_CONST follows — fuse with i64.lt_u + br_if
+                            $r->readByte(); $c64g=$r->readS64();
+                            if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlg=$r->readU32();$csLlg=count($controlStack);if($brDlg===0&&$csLlg>0&&$controlStack[$csLlg-1][0]==='loop'&&$code[$controlStack[$csLlg-1][1]+1]===0){$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF_LOOP;$code[]=$localIdx;$code[]=$c64g;$code[]=$code[$controlStack[$csLlg-1][1]+2];break;}$code[]=Op::SB_LGET_I64CONST_I64LTU_BRIF;$code[]=$localIdx;$code[]=$c64g;$code[]=$brDlg;break;}$code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;$code[]=Op::I64_LT_U;break;}
+                            $code[]=Op::LOCAL_GET;$code[]=$localIdx;$code[]=Op::I64_CONST;$code[]=$c64g;break;
+                        }
                         if ($nb === 0x28) { // I32_LOAD follows
                             $r->readByte();
                             $r->readU32(); // skip alignment
@@ -1375,7 +1394,7 @@ final class Decoder
 
             // ---- Memory load ----
             case 0x28: { $off=$this->readMemArg($r); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I32_LOAD;$code[]=$off;break; }
-            case 0x29: $code[] = Op::I64_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x29: { $off=$this->readMemArg($r); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I64LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I64_LOAD;$code[]=$off;break; }
             case 0x2A: $code[] = Op::F32_LOAD;     $code[] = $this->readMemArg($r); break;
             case 0x2B: $code[] = Op::F64_LOAD;     $code[] = $this->readMemArg($r); break;
             case 0x2C: $code[] = Op::I32_LOAD8_S;  $code[] = $this->readMemArg($r); break;

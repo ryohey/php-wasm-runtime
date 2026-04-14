@@ -683,6 +683,17 @@ final class Executor
                                 case Op::SB_I64CONST_I64AND: { // i64.const $c + i64.and  → [c]
                                     $stack[$sp - 1] = ((int)$stack[$sp - 1]) & $code[$ip++]; break;
                                 }
+                                case Op::SB_ICONST_I32AND: { // i32.const $c + i32.and  → [c]
+                                    $stack[$sp - 1] = ((int)$stack[$sp - 1]) & $code[$ip++]; break;
+                                }
+                                case Op::SB_LGET_I64LOAD: { // local.get $x + i64.load $off  → [x, off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1]; $ip += 2;
+                                    if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = unpack('P', $bytes, $addr)[1]; break;
+                                }
+                                case Op::SB_LGET_I32ADD: { // local.get $x + i32.add (add local to TOS)  → [x]
+                                    $stack[$sp-1] = (((int)$stack[$sp-1]) + (int)$stack[$lbase + $code[$ip++]]) << 32 >> 32; break;
+                                }
                                 case Op::SB_ICONST_IADD_I32STORE: { // i32.const $c + i32.add + i32.store $off  → [c, off]
                                     $addr = (((int)$stack[$sp - 2]) & 0xFFFFFFFF) + $code[$ip + 1];
                                     $v = (((int)$stack[$sp - 1]) + $code[$ip]) << 32 >> 32; $ip += 2; $sp -= 2;
@@ -763,6 +774,17 @@ final class Executor
                                 }
                                 case Op::SB_I64CONST_I64LTU_BRIF_LOOP: { // [c, contIp]
                                     $c=$code[$ip]; $contIp=$code[$ip+1]; $a=(int)$stack[--$sp]; $ip+=2;
+                                    if($a!==$c){$as=($a>>63)&1;$cs=($c>>63)&1;if(($as!==$cs)?($as===0):($a<$c)){$sp=$lsStackHeight[$lsp-1];$ip=$contIp;}}
+                                    break;
+                                }
+                                case Op::SB_LGET_I64CONST_I64LTU_BRIF: { // [x, c, depth]
+                                    $c=$code[$ip+1]; $depth=$code[$ip+2]; $a=(int)$stack[$lbase+$code[$ip]]; $ip+=3;
+                                    if($a!==$c){$as=($a>>63)&1;$cs=($c>>63)&1;$take=($as!==$cs)?($as===0):($a<$c);}else{$take=false;}
+                                    if($take){$targetLsp=$lsp-($depth+1);if($targetLsp<$lsBase){$retBase=($retCount>0&&$sp>=$retCount)?$sp-$retCount:$sp;break 2;}$targetType=$lsType[$targetLsp];$targetContIp=$lsContIp[$targetLsp];$targetStackHeight=$lsStackHeight[$targetLsp];$targetResultCount=$lsResultCount[$targetLsp];if($targetResultCount>0&&$sp>$targetStackHeight){$srcBase=$sp-$targetResultCount;for($__i=0;$__i<$targetResultCount;$__i++) $stack[$targetStackHeight+$__i]=$stack[$srcBase+$__i];$sp=$targetStackHeight+$targetResultCount;}else{$sp=$targetStackHeight;}$ip=$targetContIp;$lsp=$targetLsp+($targetType===1?1:0);}
+                                    break;
+                                }
+                                case Op::SB_LGET_I64CONST_I64LTU_BRIF_LOOP: { // [x, c, contIp]
+                                    $contIp=$code[$ip+2]; $c=$code[$ip+1]; $a=(int)$stack[$lbase+$code[$ip]]; $ip+=3;
                                     if($a!==$c){$as=($a>>63)&1;$cs=($c>>63)&1;if(($as!==$cs)?($as===0):($a<$c)){$sp=$lsStackHeight[$lsp-1];$ip=$contIp;}}
                                     break;
                                 }
@@ -1267,6 +1289,12 @@ final class Executor
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
                     if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                     $stack[$sp++] = unpack('P', $bytes, $addr)[1]; break;
+                }
+                case Op::SB_I64LOAD_LTEE: { // i64.load $off + local.tee $y  → [off, y]
+                    $addr = (((int)$stack[$sp-1]) & 0xFFFFFFFF) + $code[$ip];
+                    if ($addr < 0 || $addr + 8 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                    $v = unpack('P', $bytes, $addr)[1];
+                    $stack[$sp-1] = $v; $stack[$lbase + $code[$ip+1]] = $v; $ip += 2; break;
                 }
                 case Op::I64_LOAD8_S: {
                     $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip++];
