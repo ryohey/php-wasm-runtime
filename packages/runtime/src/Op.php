@@ -317,4 +317,7 @@ final class Op
     public const SB_ICONST_LSET          = 344; // i32.const $c + local.set $y                                   → [c, y]
     public const SB_LGET_I32LOAD_LSET    = 345; // local.get $x + i32.load $off + local.set $y                   → [x, off, y]
     public const SB_LGET_LGET_I32STORE   = 346; // local.get $a + local.get $b + i32.store $off                  → [a, b, off]
+    public const SB_ICONST_IADD_I32STORE = 347; // i32.const $c + i32.add + i32.store $off                       → [c, off]
+    public const SB_I32LOAD_LTEE         = 348; // i32.load $off + local.tee $y                                   → [off, y]
+    public const SB_I64CONST_LSET        = 349; // i64.const $c + local.set $y                                    → [c, y]
 }

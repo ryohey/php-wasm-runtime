@@ -903,7 +903,7 @@ final class Decoder
                 case 0x26: $code[] = Op::TABLE_SET; $code[] = $r->readU32(); break;
 
                 // ---- Memory load (align ignored, read offset inline) ----
-                case 0x28: $code[] = Op::I32_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
+                case 0x28: { $r->readU32(); $off=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I32_LOAD;$code[]=$off;break; }
                 case 0x29: $code[] = Op::I64_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
                 case 0x2A: $code[] = Op::F32_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
                 case 0x2B: $code[] = Op::F64_LOAD;     $r->readU32(); $code[] = $r->readU32(); break;
@@ -938,13 +938,14 @@ final class Decoder
                     $constVal = $r->readS32();
                     if (!$r->eof() && $r->peekByte() === 0x6A) { // I32_ADD follows
                         $r->readByte();
+                        if (!$r->eof() && $r->peekByte() === 0x36) { $r->readByte(); $r->readU32(); $code[] = Op::SB_ICONST_IADD_I32STORE; $code[] = $constVal; $code[] = $r->readU32(); break; }
                         $code[] = Op::SB_ICONST_IADD; $code[] = $constVal;
                         break;
                     }
                     if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_ICONST_LSET; $code[] = $constVal; $code[] = $r->readU32(); break; }
                     $code[] = Op::I32_CONST; $code[] = $constVal; break;
                 }
-                case 0x42: $code[] = Op::I64_CONST; $code[] = $r->readS64(); break;
+                case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_I64CONST_LSET;$code[]=$c64;$code[]=$r->readU32();break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
                 case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
                 case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
@@ -1369,7 +1370,7 @@ final class Decoder
             case 0x26: $code[] = Op::TABLE_SET; $code[] = $r->readU32(); break;
 
             // ---- Memory load ----
-            case 0x28: $code[] = Op::I32_LOAD;     $code[] = $this->readMemArg($r); break;
+            case 0x28: { $off=$this->readMemArg($r); if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32LOAD_LTEE;$code[]=$off;$code[]=$r->readU32();break;} $code[]=Op::I32_LOAD;$code[]=$off;break; }
             case 0x29: $code[] = Op::I64_LOAD;     $code[] = $this->readMemArg($r); break;
             case 0x2A: $code[] = Op::F32_LOAD;     $code[] = $this->readMemArg($r); break;
             case 0x2B: $code[] = Op::F64_LOAD;     $code[] = $this->readMemArg($r); break;

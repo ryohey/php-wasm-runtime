@@ -587,6 +587,12 @@ final class Executor
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
                                 }
+                                case Op::SB_I32LOAD_LTEE: { // i32.load $off + local.tee $y  → [off, y]
+                                    $addr = (((int)$stack[$sp - 1]) & 0xFFFFFFFF) + $code[$ip];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $stack[$sp - 1] = $v; $stack[$lbase + $code[$ip + 1]] = $v; $ip += 2; break;
+                                }
                                 case Op::SB_LGET_I32LOAD_LTEE: { // local.get $x + i32.load $off + local.tee $y
                                     $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
                                     $teeIdx = $code[$ip+2]; $ip += 3;
@@ -601,6 +607,9 @@ final class Executor
                                     $ip += 3; break;
                                 }
                                 case Op::SB_ICONST_LSET: { // i32.const $c + local.set $y  → [c, y]
+                                    $stack[$lbase + $code[$ip+1]] = $code[$ip]; $ip += 2; break;
+                                }
+                                case Op::SB_I64CONST_LSET: { // i64.const $c + local.set $y  → [c, y]
                                     $stack[$lbase + $code[$ip+1]] = $code[$ip]; $ip += 2; break;
                                 }
                                 case Op::SB_LGET_LGET_I32STORE: { // local.get $a + local.get $b + i32.store $off  → [a, b, off]
@@ -670,6 +679,12 @@ final class Executor
                                 case Op::SB_ICONST_IADD: { // i32.const $c + i32.add
                                     $stack[$sp - 1] = (((int)$stack[$sp - 1]) + $code[$ip++]) << 32 >> 32;
                                     break;
+                                }
+                                case Op::SB_ICONST_IADD_I32STORE: { // i32.const $c + i32.add + i32.store $off  → [c, off]
+                                    $addr = (((int)$stack[$sp - 2]) & 0xFFFFFFFF) + $code[$ip + 1];
+                                    $v = (((int)$stack[$sp - 1]) + $code[$ip]) << 32 >> 32; $ip += 2; $sp -= 2;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
                                 }
                                 case Op::SB_LGET_LGET: { // local.get $x + local.get $y
                                     $idxA = $lbase + $code[$ip++];
