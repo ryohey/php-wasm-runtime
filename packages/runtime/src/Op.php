@@ -296,4 +296,17 @@ final class Op
     // PC-increment patterns: local.get + i32.const + i32.add → local.set/tee
     public const SB_LGET_ICONST_IADD_LSET = 326; // local.get $x + i32.const $c + i32.add + local.set $y → [local_idx, const_val, set_idx]
     public const SB_LGET_ICONST_IADD_LTEE = 327; // local.get $x + i32.const $c + i32.add + local.tee $y → [local_idx, const_val, tee_idx]
+
+    public const SB_I32LTU_BRIF     = 328; // i32.lt_u + br_if $depth                → [depth]
+    public const SB_I32LES_BRIF     = 329; // i32.le_s + br_if $depth                → [depth]
+    public const SB_I32LEU_BRIF     = 330; // i32.le_u + br_if $depth                → [depth]
+    public const SB_I32GES_BRIF     = 331; // i32.ge_s + br_if $depth                → [depth]
+    public const SB_I32GEU_BRIF     = 332; // i32.ge_u + br_if $depth                → [depth]
+    public const SB_I64NE_BRIF      = 333; // i64.ne + br_if $depth                  → [depth]
+    public const SB_I32LTU_BRIF_LOOP = 334; // i32.lt_u + br_if → 0-param loop      → [contIp]
+    public const SB_I32LES_BRIF_LOOP = 335; // i32.le_s + br_if → 0-param loop      → [contIp]
+    public const SB_I32LEU_BRIF_LOOP = 336; // i32.le_u + br_if → 0-param loop      → [contIp]
+    public const SB_I32GES_BRIF_LOOP = 337; // i32.ge_s + br_if → 0-param loop      → [contIp]
+    public const SB_I32GEU_BRIF_LOOP = 338; // i32.ge_u + br_if → 0-param loop      → [contIp]
+    public const SB_I64NE_BRIF_LOOP  = 339; // i64.ne + br_if → 0-param loop        → [contIp]
 }
