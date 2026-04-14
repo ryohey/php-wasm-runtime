@@ -680,6 +680,9 @@ final class Executor
                                     $stack[$sp - 1] = (((int)$stack[$sp - 1]) + $code[$ip++]) << 32 >> 32;
                                     break;
                                 }
+                                case Op::SB_I64CONST_I64AND: { // i64.const $c + i64.and  → [c]
+                                    $stack[$sp - 1] = ((int)$stack[$sp - 1]) & $code[$ip++]; break;
+                                }
                                 case Op::SB_ICONST_IADD_I32STORE: { // i32.const $c + i32.add + i32.store $off  → [c, off]
                                     $addr = (((int)$stack[$sp - 2]) & 0xFFFFFFFF) + $code[$ip + 1];
                                     $v = (((int)$stack[$sp - 1]) + $code[$ip]) << 32 >> 32; $ip += 2; $sp -= 2;
@@ -692,6 +695,16 @@ final class Executor
                                     $stack[$sp++] = $stack[$idxA];
                                     $stack[$sp++] = $stack[$idxB];
                                     break;
+                                }
+                                case Op::SB_LGET_LGET_I32LOAD: { // [a, b, off] — push local[a], load mem[local[b]+off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip+1]]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp] = $stack[$lbase + $code[$ip]];
+                                    $stack[$sp+1] = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $sp += 2; $ip += 3; break;
+                                }
+                                case Op::SB_LGET_LSET: { // local.get $src + local.set $dst  → [src, dst]
+                                    $stack[$lbase + $code[$ip+1]] = $stack[$lbase + $code[$ip]]; $ip += 2; break;
                                 }
                                 case Op::SB_LGET_ICONST: { // local.get $x + i32.const $c
                                     $stack[$sp++] = $stack[$lbase + $code[$ip++]];
@@ -734,6 +747,23 @@ final class Executor
                                         $ip  = $targetContIp;
                                         $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
+                                    break;
+                                }
+                                case Op::SB_I64CONST_I64LTU_BRIF: { // [c, depth] — pop a, branch if a < c (unsigned i64)
+                                    $c = $code[$ip]; $depth = $code[$ip+1]; $a = (int)$stack[--$sp]; $ip += 2;
+                                    if ($a !== $c) { $as=($a>>63)&1; $cs=($c>>63)&1; $take=($as!==$cs)?($as===0):($a<$c); } else { $take=false; }
+                                    if ($take) {
+                                        $targetLsp = $lsp - ($depth + 1);
+                                        if ($targetLsp < $lsBase) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
+                                        $targetType=$lsType[$targetLsp];$targetContIp=$lsContIp[$targetLsp];$targetStackHeight=$lsStackHeight[$targetLsp];$targetResultCount=$lsResultCount[$targetLsp];
+                                        if ($targetResultCount > 0 && $sp > $targetStackHeight) { $srcBase=$sp-$targetResultCount; for($__i=0;$__i<$targetResultCount;$__i++) $stack[$targetStackHeight+$__i]=$stack[$srcBase+$__i]; $sp=$targetStackHeight+$targetResultCount; } else { $sp=$targetStackHeight; }
+                                        $ip=$targetContIp; $lsp=$targetLsp+($targetType===1?1:0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_I64CONST_I64LTU_BRIF_LOOP: { // [c, contIp]
+                                    $c=$code[$ip]; $contIp=$code[$ip+1]; $a=(int)$stack[--$sp]; $ip+=2;
+                                    if($a!==$c){$as=($a>>63)&1;$cs=($c>>63)&1;if(($as!==$cs)?($as===0):($a<$c)){$sp=$lsStackHeight[$lsp-1];$ip=$contIp;}}
                                     break;
                                 }
                                 case Op::SB_I32NE_BRIF: {
@@ -780,6 +810,22 @@ final class Executor
                                         $ip  = $targetContIp;
                                         $lsp = $targetLsp + ($targetType === 1 ? 1 : 0);
                                     }
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_I32GTS_BRIF: { // [x, c, depth] — branch if local[x] > c (signed)
+                                    $b=$code[$ip+1]; $depth=$code[$ip+2]; $a=(int)$stack[$lbase+$code[$ip]]; $ip+=3;
+                                    if ($a > $b) {
+                                        $targetLsp=$lsp-($depth+1);
+                                        if($targetLsp<$lsBase){$retBase=($retCount>0&&$sp>=$retCount)?$sp-$retCount:$sp;break 2;}
+                                        $targetType=$lsType[$targetLsp];$targetContIp=$lsContIp[$targetLsp];$targetStackHeight=$lsStackHeight[$targetLsp];$targetResultCount=$lsResultCount[$targetLsp];
+                                        if($targetResultCount>0&&$sp>$targetStackHeight){$srcBase=$sp-$targetResultCount;for($__i=0;$__i<$targetResultCount;$__i++) $stack[$targetStackHeight+$__i]=$stack[$srcBase+$__i];$sp=$targetStackHeight+$targetResultCount;}else{$sp=$targetStackHeight;}
+                                        $ip=$targetContIp;$lsp=$targetLsp+($targetType===1?1:0);
+                                    }
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_I32GTS_BRIF_LOOP: { // [x, c, contIp]
+                                    $c=$code[$ip+2]; $b=$code[$ip+1]; $a=(int)$stack[$lbase+$code[$ip]]; $ip+=3;
+                                    if ($a > $b) { $sp=$lsStackHeight[$lsp-1]; $ip=$c; }
                                     break;
                                 }
                                 case Op::SB_I32LTS_BRIF: {

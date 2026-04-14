@@ -834,7 +834,7 @@ final class Decoder
                         $nb = $r->peekByte();
                         if ($nb === 0x20) { // LOCAL_GET follows
                             $r->readByte();
-                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
+                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
                             $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $localIdx2;
                             break;
                         }
@@ -848,6 +848,7 @@ final class Decoder
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
+                            if(!$r->eof()&&$r->peekByte()===0x4A){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDg=$r->readU32();$csLng=count($controlStack);if($brDg===0&&$csLng>0&&$controlStack[$csLng-1][0]==='loop'&&$code[$controlStack[$csLng-1][1]+1]===0){$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF_LOOP;$code[]=$localIdx;$code[]=$constVal;$code[]=$code[$controlStack[$csLng-1][1]+2];break;}$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF;$code[]=$localIdx;$code[]=$constVal;$code[]=$brDg;break;}$code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$code[]=Op::I32_GT_S;break;}
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
@@ -889,6 +890,7 @@ final class Decoder
                             $code[] = Op::I32_WRAP_I64;
                             break;
                         }
+                        if ($nb === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_LSET; $code[] = $localIdx; $code[] = $r->readU32(); break; }
                     }
                     $code[] = Op::LOCAL_GET; $code[] = $localIdx;
                     break;
@@ -945,7 +947,7 @@ final class Decoder
                     if (!$r->eof() && $r->peekByte() === 0x21) { $r->readByte(); $code[] = Op::SB_ICONST_LSET; $code[] = $constVal; $code[] = $r->readU32(); break; }
                     $code[] = Op::I32_CONST; $code[] = $constVal; break;
                 }
-                case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_I64CONST_LSET;$code[]=$c64;$code[]=$r->readU32();break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
+                case 0x42: { $c64=$r->readS64(); if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_I64CONST_LSET;$code[]=$c64;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlt=$r->readU32();$csLlt=count($controlStack);if($brDlt===0&&$csLlt>0&&$controlStack[$csLlt-1][0]==='loop'&&$code[$controlStack[$csLlt-1][1]+1]===0){$code[]=Op::SB_I64CONST_I64LTU_BRIF_LOOP;$code[]=$c64;$code[]=$code[$controlStack[$csLlt-1][1]+2];break;}$code[]=Op::SB_I64CONST_I64LTU_BRIF;$code[]=$c64;$code[]=$brDlt;break;}$code[]=Op::I64_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;break;} if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_I64CONST_I64AND;$code[]=$c64;break;} $code[]=Op::I64_CONST;$code[]=$c64;break; }
                 case 0x43: $code[] = Op::F32_CONST; $code[] = $r->readF32(); break;
                 case 0x44: $code[] = Op::F64_CONST; $code[] = $r->readF64(); break;
 
@@ -1301,7 +1303,7 @@ final class Decoder
                         $nb = $r->peekByte();
                         if ($nb === 0x20) { // LOCAL_GET follows
                             $r->readByte();
-                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
+                            $localIdx2=$r->readU32(); if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32STORE;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;} if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_I32LOAD;$code[]=$localIdx;$code[]=$localIdx2;$code[]=$r->readU32();break;}
                             $code[] = Op::SB_LGET_LGET; $code[] = $localIdx; $code[] = $localIdx2;
                             break;
                         }
@@ -1315,6 +1317,7 @@ final class Decoder
                                 $code[] = Op::SB_LGET_ICONST_IADD; $code[] = $localIdx; $code[] = $constVal;
                                 break;
                             }
+                            if(!$r->eof()&&$r->peekByte()===0x4A){$r->readByte();if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDg=$r->readU32();$csLng=count($controlStack);if($brDg===0&&$csLng>0&&$controlStack[$csLng-1][0]==='loop'&&$code[$controlStack[$csLng-1][1]+1]===0){$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF_LOOP;$code[]=$localIdx;$code[]=$constVal;$code[]=$code[$controlStack[$csLng-1][1]+2];break;}$code[]=Op::SB_LGET_ICONST_I32GTS_BRIF;$code[]=$localIdx;$code[]=$constVal;$code[]=$brDg;break;}$code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$code[]=Op::I32_GT_S;break;}
                             $code[] = Op::SB_LGET_ICONST; $code[] = $localIdx; $code[] = $constVal;
                             break;
                         }
@@ -1356,6 +1359,7 @@ final class Decoder
                             $code[] = Op::I32_WRAP_I64;
                             break;
                         }
+                        if ($nb === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_LSET; $code[] = $localIdx; $code[] = $r->readU32(); break; }
                     }
                     $code[] = Op::LOCAL_GET; $code[] = $localIdx;
                     break;
