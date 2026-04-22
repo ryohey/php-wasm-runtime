@@ -567,6 +567,11 @@ final class Executor
                 case Op::LOCAL_GET:  { $idx=$code[$ip++]; $stack[$sp++] = $stack[$lbase+$idx]; break; }
                 case Op::LOCAL_SET:  { $idx=$code[$ip++]; $stack[$lbase+$idx] = $stack[--$sp]; break; }
                 case Op::LOCAL_TEE:  { $idx=$code[$ip++]; $stack[$lbase+$idx] = $stack[$sp-1]; break; }
+                case Op::SB_LGET_I32WRAP:  { $stack[$sp++] = (int)$stack[$lbase + $code[$ip++]] << 32 >> 32; break; }
+                case Op::SB_LGET_I32SUB:   { $stack[$sp-1] = ((int)$stack[$sp-1] - (int)$stack[$lbase + $code[$ip++]]) << 32 >> 32; break; }
+                case Op::SB_LTEE_ICONST:   { $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp++] = $code[$ip+1]; $ip += 2; break; }
+                case Op::SB_LTEE_I64CONST: { $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp++] = $code[$ip+1]; $ip += 2; break; }
+                case Op::SB_LTEE_BRIF:     { $teeIdx=$code[$ip++];$depth=$code[$ip++];$v=$stack[$sp-1];$stack[$lbase+$teeIdx]=$v;$sp--;if((int)$v!==0){$targetLsp=$lsp-($depth+1);if($targetLsp<$lsBase){$retBase=($retCount>0&&$sp>=$retCount)?$sp-$retCount:$sp;break 2;}$targetType=$lsType[$targetLsp];$targetContIp=$lsContIp[$targetLsp];$targetStackHeight=$lsStackHeight[$targetLsp];$targetResultCount=$lsResultCount[$targetLsp];if($targetResultCount>0&&$sp>$targetStackHeight){$srcBase=$sp-$targetResultCount;for($__i=0;$__i<$targetResultCount;$__i++)$stack[$targetStackHeight+$__i]=$stack[$srcBase+$__i];$sp=$targetStackHeight+$targetResultCount;}else{$sp=$targetStackHeight;}$ip=$targetContIp;$lsp=$targetLsp+($targetType===1?1:0);}break; }
                 case Op::GLOBAL_GET: $stack[$sp++] = $globals[$code[$ip++]]; break;
                 case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
 

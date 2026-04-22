@@ -342,4 +342,9 @@ final class Op
     public const SB_LGET_ICONST_I32AND           = 369; // local.get $x + i32.const $c + i32.and        → [x, c]
     public const SB_LGET_ICONST_I32SHL           = 370; // local.get $x + i32.const $c + i32.shl        → [x, c]
     public const SB_LGET_LGET_I32ADD             = 371; // local.get $a + local.get $b + i32.add        → [a, b]
+    public const SB_LGET_I32WRAP   = 372; // local.get $x + i32.wrap_i64                    → [x]
+    public const SB_LGET_I32SUB    = 373; // local.get $x + i32.sub (sub local from TOS)    → [x]
+    public const SB_LTEE_ICONST    = 374; // local.tee $x + i32.const $c                    → [x, c]
+    public const SB_LTEE_I64CONST  = 375; // local.tee $x + i64.const $c                    → [x, c]
+    public const SB_LTEE_BRIF      = 376; // local.tee $x + br_if $depth                    → [x, depth]
 }

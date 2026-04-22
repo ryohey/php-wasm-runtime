@@ -732,7 +732,7 @@ final class Decoder
             switch ($opcode) {
                 // ---- Control flow ----
                 case 0x00: $code[] = Op::UNREACHABLE; break;
-                case 0x01: $code[] = Op::NOP; break;
+                case 0x01: break; // NOP — skip, no-op needs no dispatch slot
 
                 case 0x02: // block
                     { $btb = $r->peekByte(); if ($btb === 0x40) { $r->readByte(); $btp = 0; $btr = 0; }
@@ -899,17 +899,17 @@ final class Decoder
                                 $code[] = Op::SB_LGET_I32WRAP_LTEE; $code[] = $localIdx; $code[] = $r->readU32();
                                 break;
                             }
-                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
-                            $code[] = Op::I32_WRAP_I64;
+                            $code[] = Op::SB_LGET_I32WRAP; $code[] = $localIdx;
                             break;
                         }
                         if ($nb === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_LSET; $code[] = $localIdx; $code[] = $r->readU32(); break; }
+                        if ($nb === 0x6B) { $r->readByte(); $code[] = Op::SB_LGET_I32SUB; $code[] = $localIdx; break; } // I32_SUB follows
                     }
                     $code[] = Op::LOCAL_GET; $code[] = $localIdx;
                     break;
                 }
                 case 0x21: $code[] = Op::LOCAL_SET;  $code[] = $r->readU32(); break;
-                case 0x22: $code[] = Op::LOCAL_TEE;  $code[] = $r->readU32(); break;
+                case 0x22: { $teeIdx=$r->readU32(); if(!$r->eof()){$nb2=$r->peekByte();if($nb2===0x41){$r->readByte();$code[]=Op::SB_LTEE_ICONST;$code[]=$teeIdx;$code[]=$r->readS32();break;}if($nb2===0x42){$r->readByte();$code[]=Op::SB_LTEE_I64CONST;$code[]=$teeIdx;$code[]=$r->readS64();break;}if($nb2===0x0D){$r->readByte();$code[]=Op::SB_LTEE_BRIF;$code[]=$teeIdx;$code[]=$r->readU32();break;}} $code[]=Op::LOCAL_TEE;$code[]=$teeIdx;break; }
                 case 0x23: $code[] = Op::GLOBAL_GET; $code[] = $r->readU32(); break;
                 case 0x24: $code[] = Op::GLOBAL_SET; $code[] = $r->readU32(); break;
 
@@ -1223,7 +1223,7 @@ final class Decoder
         switch ($opcode) {
             // ---- Control flow ----
             case 0x00: $code[] = Op::UNREACHABLE; break;
-            case 0x01: $code[] = Op::NOP; break;
+            case 0x01: break; // NOP — skip, no-op needs no dispatch slot
 
             case 0x02: // block
                 $bt = $this->decodeBlockType($r);
@@ -1383,17 +1383,17 @@ final class Decoder
                                 $code[] = Op::SB_LGET_I32WRAP_LTEE; $code[] = $localIdx; $code[] = $r->readU32();
                                 break;
                             }
-                            $code[] = Op::LOCAL_GET; $code[] = $localIdx;
-                            $code[] = Op::I32_WRAP_I64;
+                            $code[] = Op::SB_LGET_I32WRAP; $code[] = $localIdx;
                             break;
                         }
                         if ($nb === 0x21) { $r->readByte(); $code[] = Op::SB_LGET_LSET; $code[] = $localIdx; $code[] = $r->readU32(); break; }
+                        if ($nb === 0x6B) { $r->readByte(); $code[] = Op::SB_LGET_I32SUB; $code[] = $localIdx; break; } // I32_SUB follows
                     }
                     $code[] = Op::LOCAL_GET; $code[] = $localIdx;
                     break;
                 }
             case 0x21: $code[] = Op::LOCAL_SET;  $code[] = $r->readU32(); break;
-            case 0x22: $code[] = Op::LOCAL_TEE;  $code[] = $r->readU32(); break;
+            case 0x22: { $teeIdx=$r->readU32(); if(!$r->eof()){$nb2=$r->peekByte();if($nb2===0x41){$r->readByte();$code[]=Op::SB_LTEE_ICONST;$code[]=$teeIdx;$code[]=$r->readS32();break;}if($nb2===0x42){$r->readByte();$code[]=Op::SB_LTEE_I64CONST;$code[]=$teeIdx;$code[]=$r->readS64();break;}if($nb2===0x0D){$r->readByte();$code[]=Op::SB_LTEE_BRIF;$code[]=$teeIdx;$code[]=$r->readU32();break;}} $code[]=Op::LOCAL_TEE;$code[]=$teeIdx;break; }
             case 0x23: $code[] = Op::GLOBAL_GET; $code[] = $r->readU32(); break;
             case 0x24: $code[] = Op::GLOBAL_SET; $code[] = $r->readU32(); break;
 
