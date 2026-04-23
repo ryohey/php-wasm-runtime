@@ -737,7 +737,7 @@ final class Decoder
      * decode time, eliminating the runtime label stack entirely.
      *
      * Op::BLOCK and Op::LOOP are NOT emitted — they are purely decode-time bookkeeping.
-     * Op::IF_, Op::ELSE_, Op::END are still emitted.
+     * Op::IF_ [elseIp, endIp] and Op::ELSE_ [endIp] are still emitted; Op::END is eliminated entirely.
      * BR → SB_BR_PRECOMP [targetIp, spDelta, rCnt]
      * BR_IF → SB_BRIF_PRECOMP [targetIp, spDelta, rCnt]  (or SB_BRIF_PRECOMP_ESC for escapes)
      * BRIF peepholes: format changed from [depth] → [targetIp, spDelta, rCnt]
@@ -760,20 +760,19 @@ final class Decoder
             if ($opcode === 0x0B) {
                 // end
                 if (empty($controlStack)) {
-                    $code[] = Op::END;
-                    break;
+                    break; // terminal END eliminated — loop exits when $ip >= $len
                 }
                 $frame  = array_pop($controlStack);
-                $endIp  = count($code);
+                $endIp  = count($code); // first instruction AFTER this block (no END emitted)
                 // Patch all forward-reference BRs that target this block/if
                 foreach ($frame['patches'] as $patchIdx) {
                     $code[$patchIdx] = $endIp; // targetIp = first instruction after block
                 }
                 if ($frame['kind'] === 'if') {
                     $this->fixupIf($code, $frame, $endIp);
-                    $code[] = Op::END; // IF/ELSE bodies need END as jump target (+1)
+                    // Op::END eliminated — Executor uses $ip = $endIp directly (no +1)
                 }
-                // block/loop: no END emitted — dispatch eliminated
+                // block/loop/if: no END emitted — dispatch eliminated
                 // Restore $sd to what it should be after the block exits
                 $sd = $frame['sd'] - $frame['p'] + $frame['r'];
                 continue;
@@ -819,7 +818,7 @@ final class Decoder
                       elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; $btr = 1; }
                       else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $ifIp = count($code);
-                    $code[] = Op::IF_; $code[] = $btp; $code[] = $btr;
+                    $code[] = Op::IF_; // IF_ [elseIp, endIp] — paramCount/resultCount not needed at runtime
                     $code[] = -1; // elseIp placeholder
                     $code[] = -1; // endIp placeholder
                     $sd--;  // condition is popped by IF_
@@ -1251,14 +1250,14 @@ final class Decoder
     {
         $elseIp = $frame['elseIp'] ?? null;
         if ($elseIp !== null) {
-            // if with else: Op::IF_, paramCount, resultCount, elseIp, endIp
-            $code[$frame['ip'] + 3] = $elseIp;   // elseIp
-            $code[$frame['ip'] + 4] = $endIp;     // endIp
-            $code[$elseIp + 1] = $endIp;          // else's endIp
+            // if with else: Op::IF_ [elseIp, endIp] (slots +1, +2)
+            $code[$frame['ip'] + 1] = $elseIp;   // elseIp
+            $code[$frame['ip'] + 2] = $endIp;     // endIp (points past else body, no END)
+            $code[$elseIp + 1] = $endIp;          // ELSE_ [endIp] slot
         } else {
-            // if without else
-            $code[$frame['ip'] + 3] = $endIp;     // elseIp = endIp
-            $code[$frame['ip'] + 4] = $endIp;     // endIp
+            // if without else: elseIp = endIp (condition false → jump past body)
+            $code[$frame['ip'] + 1] = $endIp;     // elseIp = endIp
+            $code[$frame['ip'] + 2] = $endIp;     // endIp
         }
     }
 

@@ -190,25 +190,23 @@ final class Executor
                 // BLOCK and LOOP are never emitted by the new decoder — dead cases removed.
 
                 case Op::IF_: {
-                    // Reads: [paramCount, resultCount, elseIp, endIp] — params/results unused at runtime.
-                    $ip += 2; // skip paramCount, resultCount
+                    // Reads: [elseIp, endIp] — endIp points past block body (no Op::END emitted).
                     $elseIp = $code[$ip++];
                     $endIp  = $code[$ip++];
                     $cond   = (int)$stack[--$sp];
                     if ($cond === 0) {
-                        $ip = ($elseIp !== $endIp) ? $elseIp + 2 : $endIp + 1;
+                        $ip = ($elseIp !== $endIp) ? $elseIp + 2 : $endIp;
                     }
                     // cond != 0: fall through into then-body
                     break;
                 }
 
                 case Op::ELSE_: {
-                    $endIp = $code[$ip++];
-                    $ip = $endIp + 1; // then-body done → jump past Op::END
+                    $ip = $code[$ip]; // endIp (points past else body, no Op::END)
                     break;
                 }
 
-                case Op::END: break; // fall-through from if/else body — no-op
+                case Op::END: break; // dead — never emitted by decoder; kept for safety
 
                 case Op::RETURN_: {
                     $retBase = $retCount > 0 ? max(0, $sp - $retCount) : $sp;
