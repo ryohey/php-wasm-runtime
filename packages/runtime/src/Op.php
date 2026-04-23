@@ -346,5 +346,10 @@ final class Op
     public const SB_LGET_I32SUB    = 373; // local.get $x + i32.sub (sub local from TOS)    → [x]
     public const SB_LTEE_ICONST    = 374; // local.tee $x + i32.const $c                    → [x, c]
     public const SB_LTEE_I64CONST  = 375; // local.tee $x + i64.const $c                    → [x, c]
-    public const SB_LTEE_BRIF      = 376; // local.tee $x + br_if $depth                    → [x, depth]
+    public const SB_LTEE_BRIF      = 376; // local.tee $x + br_if (precomp)                → [x, targetIp, spDelta, 0]
+
+    // ---- Precomputed branch targets (BLOCK/LOOP/END eliminated at decode time) ----
+    public const SB_BR_PRECOMP        = 377; // br  with precomputed target    → [targetIp, spDelta, resultCount]
+    public const SB_BRIF_PRECOMP      = 378; // br_if with precomputed target  → [targetIp, spDelta, resultCount]
+    public const SB_BRIF_PRECOMP_ESC  = 379; // br_if that escapes function frame (conditional return) → []
 }
