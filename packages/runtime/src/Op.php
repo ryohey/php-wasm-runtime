@@ -355,4 +355,6 @@ final class Op
 
     // ---- Fused if-dispatch (IF_ with common patterns) ----
     public const SB_LGET_IF_          = 380; // local.get $x + if → [x, falseTargetIp]
+    public const SB_I32EQZ_IF_        = 381; // i32.eqz + if → [falseTargetIp]  (branch when TOS≠0)
+    public const SB_LGET_I32EQZ_IF_   = 382; // local.get $x + i32.eqz + if → [x, falseTargetIp]
 }

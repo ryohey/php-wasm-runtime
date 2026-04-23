@@ -821,11 +821,27 @@ final class Decoder
                       else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $sd--;  // condition is popped by IF_
                     $cLenIf = count($code);
-                    // Peephole: LOCAL_GET $x + IF_ → SB_LGET_IF_ [x, falseTargetIp]
-                    if ($cLenIf >= 2 && $code[$cLenIf - 2] === Op::LOCAL_GET) {
-                        // Overwrite LOCAL_GET opcode slot; localIdx slot ($cLenIf-1) is already correct
+                    // Peephole priority: LGET+I32EQZ+IF_ > I32EQZ+IF_ > LGET+IF_ > IF_
+                    if ($cLenIf >= 1 && $code[$cLenIf - 1] === Op::I32_EQZ) {
+                        if ($cLenIf >= 3 && $code[$cLenIf - 3] === Op::LOCAL_GET) {
+                            // LGET $x + I32EQZ + IF_ → SB_LGET_I32EQZ_IF_ [x, falseTargetIp]
+                            // Branch to falseTarget when local[x] != 0 (eqz would give 0 → if branches)
+                            $ifIp = $cLenIf - 3;
+                            $code[$ifIp] = Op::SB_LGET_I32EQZ_IF_; // [localIdx already at +1, add falseTargetIp]
+                            $code[$cLenIf - 1] = -1;                 // overwrite I32_EQZ with falseTargetIp
+                            $falseSlot = $cLenIf - 1;
+                        } else {
+                            // I32EQZ + IF_ → SB_I32EQZ_IF_ [falseTargetIp]
+                            // Branch to falseTarget when TOS != 0 (eqz would give 0 → if branches)
+                            $ifIp = $cLenIf - 1;
+                            $code[$ifIp] = Op::SB_I32EQZ_IF_; // overwrite I32_EQZ opcode
+                            $code[$cLenIf] = -1;               // falseTargetIp placeholder
+                            $falseSlot = $cLenIf;
+                        }
+                    } elseif ($cLenIf >= 2 && $code[$cLenIf - 2] === Op::LOCAL_GET) {
+                        // LGET $x + IF_ → SB_LGET_IF_ [x, falseTargetIp]
                         $ifIp = $cLenIf - 2;
-                        $code[$ifIp] = Op::SB_LGET_IF_; // [localIdx, falseTargetIp]
+                        $code[$ifIp] = Op::SB_LGET_IF_; // [localIdx already at +1, add falseTargetIp]
                         $code[$cLenIf] = -1;             // falseTargetIp placeholder
                         $falseSlot = $cLenIf;
                     } else {

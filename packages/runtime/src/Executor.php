@@ -203,6 +203,20 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_I32EQZ_IF_: {
+                    // Reads: [falseTargetIp] — i32.eqz+if fused: branch to falseTarget when TOS != 0.
+                    if ((int)$stack[--$sp] !== 0) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
+                case Op::SB_LGET_I32EQZ_IF_: {
+                    // Reads: [localIdx, falseTargetIp] — local.get+i32.eqz+if fused.
+                    // Branch to falseTarget when local[idx] != 0 (eqz makes non-zero→0, if branches on 0).
+                    $__lIdx = $code[$ip++];
+                    if ((int)$stack[$lbase + $__lIdx] !== 0) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
                 case Op::ELSE_: {
                     $ip = $code[$ip]; // endIp (points past else body, no Op::END)
                     break;
@@ -246,11 +260,11 @@ final class Executor
 
                 case Op::BR_TABLE: {
                     // Format: [cnt, rCnt, (targetIp, spDelta)*(cnt+1)]
+                    // br_table always branches — $ip += skip is dead (overwritten by targetIp or break 2)
                     $cnt  = $code[$ip++]; $rCnt = $code[$ip++];
                     $idx  = (int)$stack[--$sp];
                     $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
                     $targetIp = $code[$base]; $spDelta = $code[$base + 1];
-                    $ip += ($cnt + 1) * 2;
                     if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
                     if ($rCnt > 0 && $spDelta !== 0) { $srcBase=$sp-$rCnt; $dstBase=$srcBase+$spDelta; for($__i=0;$__i<$rCnt;$__i++) $stack[$dstBase+$__i]=$stack[$srcBase+$__i]; }
                     $sp += $spDelta; $ip = $targetIp;
@@ -259,11 +273,11 @@ final class Executor
 
                 case Op::SB_BR_TABLE_VOID: {
                     // Format: [cnt, (targetIp, spDelta)*(cnt+1)] — all targets have 0 results
+                    // br_table always branches — $ip += skip is dead (overwritten by targetIp or break 2)
                     $cnt = $code[$ip++];
                     $idx = (int)$stack[--$sp];
                     $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
                     $targetIp = $code[$base]; $spDelta = $code[$base + 1];
-                    $ip += ($cnt + 1) * 2;
                     if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
                     $sp += $spDelta; $ip = $targetIp;
                     break;
