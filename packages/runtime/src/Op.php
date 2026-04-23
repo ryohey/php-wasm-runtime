@@ -354,7 +354,10 @@ final class Op
     public const SB_BRIF_PRECOMP_ESC  = 379; // br_if that escapes function frame (conditional return) → []
 
     // ---- Fused if-dispatch (IF_ with common patterns) ----
-    public const SB_LGET_IF_          = 380; // local.get $x + if → [x, falseTargetIp]
-    public const SB_I32EQZ_IF_        = 381; // i32.eqz + if → [falseTargetIp]  (branch when TOS≠0)
-    public const SB_LGET_I32EQZ_IF_   = 382; // local.get $x + i32.eqz + if → [x, falseTargetIp]
+    public const SB_LGET_IF_               = 380; // local.get $x + if → [x, falseTargetIp]
+    public const SB_I32EQZ_IF_             = 381; // i32.eqz + if → [falseTargetIp]  (branch when TOS≠0)
+    public const SB_LGET_I32EQZ_IF_        = 382; // local.get $x + i32.eqz + if → [x, falseTargetIp]
+    public const SB_LGET_ICONST_I32EQ_IF_  = 383; // local.get $x + i32.const $c + i32.eq + if → [x, c, falseTargetIp]
+    public const SB_LGET_ICONST_I32NE_IF_  = 384; // local.get $x + i32.const $c + i32.ne + if → [x, c, falseTargetIp]
+    public const SB_LGET_LGET_I32EQ_IF_   = 385; // local.get $a + local.get $b + i32.eq + if → [a, b, falseTargetIp]
 }

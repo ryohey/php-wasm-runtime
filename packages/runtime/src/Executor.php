@@ -217,6 +217,27 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_LGET_ICONST_I32EQ_IF_: {
+                    // Reads: [x, c, falseTargetIp] — if (local[x] == c) enter body else jump to falseTargetIp.
+                    $__x = $code[$ip++]; $__c = $code[$ip++];
+                    if ((int)$stack[$lbase + $__x] !== $__c) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
+                case Op::SB_LGET_ICONST_I32NE_IF_: {
+                    // Reads: [x, c, falseTargetIp] — if (local[x] != c) enter body else jump to falseTargetIp.
+                    $__x = $code[$ip++]; $__c = $code[$ip++];
+                    if ((int)$stack[$lbase + $__x] === $__c) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
+                case Op::SB_LGET_LGET_I32EQ_IF_: {
+                    // Reads: [a, b, falseTargetIp] — if (local[a] == local[b]) enter body else jump to falseTargetIp.
+                    $__a = $code[$ip++]; $__b = $code[$ip++];
+                    if ((int)$stack[$lbase + $__a] !== (int)$stack[$lbase + $__b]) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
                 case Op::ELSE_: {
                     $ip = $code[$ip]; // endIp (points past else body, no Op::END)
                     break;

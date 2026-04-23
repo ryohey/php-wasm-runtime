@@ -821,8 +821,26 @@ final class Decoder
                       else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $sd--;  // condition is popped by IF_
                     $cLenIf = count($code);
-                    // Peephole priority: LGET+I32EQZ+IF_ > I32EQZ+IF_ > LGET+IF_ > IF_
-                    if ($cLenIf >= 1 && $code[$cLenIf - 1] === Op::I32_EQZ) {
+                    // Peephole priority (longest match first):
+                    //   SB_LGET_ICONST+I32EQ/NE+IF_ > SB_LGET_LGET+I32EQ+IF_
+                    //   > LGET+I32EQZ+IF_ > I32EQZ+IF_ > LGET+IF_ > IF_
+                    if ($cLenIf >= 4 && $code[$cLenIf - 4] === Op::SB_LGET_ICONST
+                            && ($code[$cLenIf - 1] === Op::I32_EQ || $code[$cLenIf - 1] === Op::I32_NE)) {
+                        // SB_LGET_ICONST $x $c + I32_EQ/NE + IF_ → SB_LGET_ICONST_I32EQ/NE_IF_ [x, c, falseTargetIp]
+                        $ifIp = $cLenIf - 4;
+                        $code[$ifIp] = ($code[$cLenIf - 1] === Op::I32_EQ)
+                            ? Op::SB_LGET_ICONST_I32EQ_IF_
+                            : Op::SB_LGET_ICONST_I32NE_IF_;
+                        $code[$cLenIf - 1] = -1; // overwrite I32_EQ/NE slot with falseTargetIp
+                        $falseSlot = $cLenIf - 1;
+                    } elseif ($cLenIf >= 4 && $code[$cLenIf - 4] === Op::SB_LGET_LGET
+                            && $code[$cLenIf - 1] === Op::I32_EQ) {
+                        // SB_LGET_LGET $a $b + I32_EQ + IF_ → SB_LGET_LGET_I32EQ_IF_ [a, b, falseTargetIp]
+                        $ifIp = $cLenIf - 4;
+                        $code[$ifIp] = Op::SB_LGET_LGET_I32EQ_IF_;
+                        $code[$cLenIf - 1] = -1; // overwrite I32_EQ slot with falseTargetIp
+                        $falseSlot = $cLenIf - 1;
+                    } elseif ($cLenIf >= 1 && $code[$cLenIf - 1] === Op::I32_EQZ) {
                         if ($cLenIf >= 3 && $code[$cLenIf - 3] === Op::LOCAL_GET) {
                             // LGET $x + I32EQZ + IF_ → SB_LGET_I32EQZ_IF_ [x, falseTargetIp]
                             // Branch to falseTarget when local[x] != 0 (eqz would give 0 → if branches)
