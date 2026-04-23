@@ -196,6 +196,13 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_LGET_IF_: {
+                    // Reads: [localIdx, falseTargetIp] — local.get+if fused; no stack push/pop.
+                    $__lIdx = $code[$ip++];
+                    if ((int)$stack[$lbase + $__lIdx] === 0) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
                 case Op::ELSE_: {
                     $ip = $code[$ip]; // endIp (points past else body, no Op::END)
                     break;

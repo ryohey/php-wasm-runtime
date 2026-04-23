@@ -786,8 +786,8 @@ final class Decoder
                 $topIdx = count($controlStack) - 1;
                 $elseIp = count($code);
                 $controlStack[$topIdx]['elseIp'] = $elseIp;
-                // Patch IF_'s falseTargetIp to first instruction of else body ($elseIp + 2)
-                $code[$controlStack[$topIdx]['ip'] + 1] = $elseIp + 2;
+                // Patch IF_/SB_LGET_IF_'s falseTargetIp to first instruction of else body ($elseIp + 2)
+                $code[$controlStack[$topIdx]['falseSlot']] = $elseIp + 2;
                 $code[] = Op::ELSE_;
                 $code[] = -1; // endIp placeholder (filled by fixupIf at END)
                 // Reset $sd to the if-body entry state for the else body
@@ -819,12 +819,23 @@ final class Decoder
                     { $btb = $r->peekByte(); if ($btb === 0x40) { $r->readByte(); $btp = 0; $btr = 0; }
                       elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; $btr = 1; }
                       else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
-                    $ifIp = count($code);
-                    $code[] = Op::IF_; // IF_ [falseTargetIp] — single imm, no elseIp/endIp compare
-                    $code[] = -1; // falseTargetIp placeholder
                     $sd--;  // condition is popped by IF_
+                    $cLenIf = count($code);
+                    // Peephole: LOCAL_GET $x + IF_ → SB_LGET_IF_ [x, falseTargetIp]
+                    if ($cLenIf >= 2 && $code[$cLenIf - 2] === Op::LOCAL_GET) {
+                        // Overwrite LOCAL_GET opcode slot; localIdx slot ($cLenIf-1) is already correct
+                        $ifIp = $cLenIf - 2;
+                        $code[$ifIp] = Op::SB_LGET_IF_; // [localIdx, falseTargetIp]
+                        $code[$cLenIf] = -1;             // falseTargetIp placeholder
+                        $falseSlot = $cLenIf;
+                    } else {
+                        $ifIp = $cLenIf;
+                        $code[$ifIp] = Op::IF_;   // IF_ [falseTargetIp]
+                        $code[$ifIp + 1] = -1;    // falseTargetIp placeholder
+                        $falseSlot = $ifIp + 1;
+                    }
                     // frame.sd = $sd AFTER condition pop, so spDelta formula is uniform
-                    $controlStack[] = ['kind'=>'if','sd'=>$sd,'p'=>$btp,'r'=>$btr,'ip'=>$ifIp,'patches'=>[]];
+                    $controlStack[] = ['kind'=>'if','sd'=>$sd,'p'=>$btp,'r'=>$btr,'ip'=>$ifIp,'falseSlot'=>$falseSlot,'patches'=>[]];
                     break;
 
                 // ---- Branch ----
@@ -1251,12 +1262,12 @@ final class Decoder
     {
         $elseIp = $frame['elseIp'] ?? null;
         if ($elseIp !== null) {
-            // if with else: IF_ falseTargetIp was patched to $elseIp+2 when 0x05 was seen.
+            // if with else: falseTargetIp was already patched to $elseIp+2 when 0x05 was seen.
             // Now fix up ELSE_ [endIp] slot.
             $code[$elseIp + 1] = $endIp;
         } else {
             // if without else: falseTargetIp = $endIp (jump past body when condition false)
-            $code[$frame['ip'] + 1] = $endIp;
+            $code[$frame['falseSlot']] = $endIp;
         }
     }
 

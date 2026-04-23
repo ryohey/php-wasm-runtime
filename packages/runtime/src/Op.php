@@ -352,4 +352,7 @@ final class Op
     public const SB_BR_PRECOMP        = 377; // br  with precomputed target    → [targetIp, spDelta, resultCount]
     public const SB_BRIF_PRECOMP      = 378; // br_if with precomputed target  → [targetIp, spDelta, resultCount]
     public const SB_BRIF_PRECOMP_ESC  = 379; // br_if that escapes function frame (conditional return) → []
+
+    // ---- Fused if-dispatch (IF_ with common patterns) ----
+    public const SB_LGET_IF_          = 380; // local.get $x + if → [x, falseTargetIp]
 }
