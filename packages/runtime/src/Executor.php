@@ -190,14 +190,9 @@ final class Executor
                 // BLOCK and LOOP are never emitted by the new decoder — dead cases removed.
 
                 case Op::IF_: {
-                    // Reads: [elseIp, endIp] — endIp points past block body (no Op::END emitted).
-                    $elseIp = $code[$ip++];
-                    $endIp  = $code[$ip++];
-                    $cond   = (int)$stack[--$sp];
-                    if ($cond === 0) {
-                        $ip = ($elseIp !== $endIp) ? $elseIp + 2 : $endIp;
-                    }
-                    // cond != 0: fall through into then-body
+                    // Reads: [falseTargetIp] — single imm; falseTargetIp is else body start or past block.
+                    // No elseIp/endIp comparison needed — falseTargetIp encodes both cases.
+                    if ((int)$stack[--$sp] === 0) { $ip = $code[$ip]; } else { $ip++; }
                     break;
                 }
 

@@ -786,6 +786,8 @@ final class Decoder
                 $topIdx = count($controlStack) - 1;
                 $elseIp = count($code);
                 $controlStack[$topIdx]['elseIp'] = $elseIp;
+                // Patch IF_'s falseTargetIp to first instruction of else body ($elseIp + 2)
+                $code[$controlStack[$topIdx]['ip'] + 1] = $elseIp + 2;
                 $code[] = Op::ELSE_;
                 $code[] = -1; // endIp placeholder (filled by fixupIf at END)
                 // Reset $sd to the if-body entry state for the else body
@@ -818,9 +820,8 @@ final class Decoder
                       elseif ($btb >= 0x6F && $btb <= 0x7F) { $r->readByte(); $btp = 0; $btr = 1; }
                       else { $bt = $this->decodeBlockType($r); $btp = $bt ? count($bt->params) : 0; $btr = $bt ? count($bt->results) : 0; } }
                     $ifIp = count($code);
-                    $code[] = Op::IF_; // IF_ [elseIp, endIp] — paramCount/resultCount not needed at runtime
-                    $code[] = -1; // elseIp placeholder
-                    $code[] = -1; // endIp placeholder
+                    $code[] = Op::IF_; // IF_ [falseTargetIp] — single imm, no elseIp/endIp compare
+                    $code[] = -1; // falseTargetIp placeholder
                     $sd--;  // condition is popped by IF_
                     // frame.sd = $sd AFTER condition pop, so spDelta formula is uniform
                     $controlStack[] = ['kind'=>'if','sd'=>$sd,'p'=>$btp,'r'=>$btr,'ip'=>$ifIp,'patches'=>[]];
@@ -1250,14 +1251,12 @@ final class Decoder
     {
         $elseIp = $frame['elseIp'] ?? null;
         if ($elseIp !== null) {
-            // if with else: Op::IF_ [elseIp, endIp] (slots +1, +2)
-            $code[$frame['ip'] + 1] = $elseIp;   // elseIp
-            $code[$frame['ip'] + 2] = $endIp;     // endIp (points past else body, no END)
-            $code[$elseIp + 1] = $endIp;          // ELSE_ [endIp] slot
+            // if with else: IF_ falseTargetIp was patched to $elseIp+2 when 0x05 was seen.
+            // Now fix up ELSE_ [endIp] slot.
+            $code[$elseIp + 1] = $endIp;
         } else {
-            // if without else: elseIp = endIp (condition false → jump past body)
-            $code[$frame['ip'] + 1] = $endIp;     // elseIp = endIp
-            $code[$frame['ip'] + 2] = $endIp;     // endIp
+            // if without else: falseTargetIp = $endIp (jump past body when condition false)
+            $code[$frame['ip'] + 1] = $endIp;
         }
     }
 
