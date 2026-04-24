@@ -994,6 +994,12 @@ final class Decoder
                                     if($brDls>=$csLls){$code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_LT_S;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
                                     $code[]=Op::SB_LGET_LGET_I32LTS_BRIF;$code[]=$localIdx;$code[]=$localIdx2;$this->emitBranchImms($code,$controlStack,$brDls,$sd);break;}
                                 $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_LT_S;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x4A){$r->readByte(); // I32_GT_S
+                                if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDgs=$r->readU32();$csLgs=count($controlStack);
+                                    if($brDgs>=$csLgs){$code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_GT_S;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
+                                    $code[]=Op::SB_LGET_LGET_I32GTS_BRIF;$code[]=$localIdx;$code[]=$localIdx2;$this->emitBranchImms($code,$controlStack,$brDgs,$sd);break;}
+                                $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_GT_S;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x6B){$r->readByte();$code[]=Op::SB_LGET_LGET_I32SUB;$code[]=$localIdx;$code[]=$localIdx2;$sd++;break;} // I32_SUB
                             $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$sd+=2;break;
                         }
                         if ($nb === 0x41) { // I32_CONST follows
