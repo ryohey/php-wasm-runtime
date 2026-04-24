@@ -621,6 +621,22 @@ final class Executor
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
                                 }
+                                case Op::SB_LGET_I32LOAD_I32EQ_BRIF: { // [x, off, tag, tIp, spD, rCnt]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $tag=$code[$ip+2];$targetIp=$code[$ip+3];$spDelta=$code[$ip+4];$rCnt=$code[$ip+5];$ip+=6;
+                                    if($v===$tag){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_I32LOAD_I32NE_BRIF: { // [x, off, tag, tIp, spD, rCnt]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $tag=$code[$ip+2];$targetIp=$code[$ip+3];$spDelta=$code[$ip+4];$rCnt=$code[$ip+5];$ip+=6;
+                                    if($v!==$tag){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
                                 case Op::SB_I32LOAD_LTEE: { // i32.load $off + local.tee $y  → [off, y]
                                     $addr = (((int)$stack[$sp - 1]) & 0xFFFFFFFF) + $code[$ip];
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();

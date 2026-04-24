@@ -1211,10 +1211,12 @@ final class Decoder
                     $code[]=Op::I32_EQZ;/* net 0 */break;
                 }
                 case 0x46: { if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDepth=$r->readU32();$csLen=count($controlStack);if($brDepth>=$csLen){$code[]=Op::I32_EQ;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd-=2;break;}
-                    $cL46=count($code);if($cL46>=2&&$code[$cL46-2]===Op::I32_CONST){$code[$cL46-2]=Op::SB_I32CONST_I32EQ_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
+                    $cL46=count($code);if($cL46>=5&&$code[$cL46-5]===Op::SB_LGET_I32LOAD&&$code[$cL46-2]===Op::I32_CONST){$tagV46=array_pop($code);$code[$cL46-5]=Op::SB_LGET_I32LOAD_I32EQ_BRIF;$code[$cL46-2]=$tagV46;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
+                    if($cL46>=2&&$code[$cL46-2]===Op::I32_CONST){$code[$cL46-2]=Op::SB_I32CONST_I32EQ_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
                     $code[]=Op::SB_I32EQ_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;} $code[]=Op::I32_EQ;$sd--;break; }
                 case 0x47: { if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDepth=$r->readU32();$csLen=count($controlStack);if($brDepth>=$csLen){$code[]=Op::I32_NE;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd-=2;break;}
-                    $cL47=count($code);if($cL47>=2&&$code[$cL47-2]===Op::I32_CONST){$code[$cL47-2]=Op::SB_I32CONST_I32NE_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
+                    $cL47=count($code);if($cL47>=5&&$code[$cL47-5]===Op::SB_LGET_I32LOAD&&$code[$cL47-2]===Op::I32_CONST){$tagV47=array_pop($code);$code[$cL47-5]=Op::SB_LGET_I32LOAD_I32NE_BRIF;$code[$cL47-2]=$tagV47;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
+                    if($cL47>=2&&$code[$cL47-2]===Op::I32_CONST){$code[$cL47-2]=Op::SB_I32CONST_I32NE_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;}
                     $code[]=Op::SB_I32NE_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;} $code[]=Op::I32_NE;$sd--;break; }
                 case 0x48: { if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDepth=$r->readU32();$csLen=count($controlStack);if($brDepth>=$csLen){$code[]=Op::I32_LT_S;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd-=2;break;}$code[]=Op::SB_I32LTS_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;} $code[]=Op::I32_LT_S;$sd--;break; }
                 case 0x49: { if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDepth=$r->readU32();$csLen=count($controlStack);if($brDepth>=$csLen){$code[]=Op::I32_LT_U;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd-=2;break;}$code[]=Op::SB_I32LTU_BRIF;$this->emitBranchImms($code,$controlStack,$brDepth,$sd-2);$sd-=2;break;} $code[]=Op::I32_LT_U;$sd--;break; }

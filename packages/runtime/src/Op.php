@@ -392,4 +392,7 @@ final class Op
     public const SB_LGET_ICONST_IADD_I32LOAD_I32NE_BRIF = 406; // lget $x + iconst $c + iadd + i32.load $off + iconst $tag + i32.ne + br_if → [x,c,off,tag,tIp,spD,rCnt]
 
     public const SB_LGET_I32EQZ_BRIF = 407; // local.get $x + i32.eqz + br_if → [x, targetIp, spDelta, rCnt]  (branch when local[x]==0)
+
+    public const SB_LGET_I32LOAD_I32EQ_BRIF = 408; // lget $x + i32.load $off + iconst $tag + i32.eq + br_if → [x, off, tag, tIp, spD, rCnt]
+    public const SB_LGET_I32LOAD_I32NE_BRIF = 409; // lget $x + i32.load $off + iconst $tag + i32.ne + br_if → [x, off, tag, tIp, spD, rCnt]
 }
