@@ -593,6 +593,19 @@ final class Executor
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
                                 }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD_LSET: { // [x, c, off, y] — local[y] = mem[local[x]+c+off]
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$lbase + $code[$ip+3]] = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $ip += 4; break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD_LTEE: { // [x, c, off, y] — local[y] = push(mem[local[x]+c+off])
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $stack[$lbase + $code[$ip+3]] = $v; $stack[$sp++] = $v;
+                                    $ip += 4; break;
+                                }
                                 case Op::SB_LGET_ICONST_IADD_I32LOAD8U: { // [x, c, off] — push unsigned byte mem[local[x]+c+off]
                                     $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
                                     $ip += 3;
