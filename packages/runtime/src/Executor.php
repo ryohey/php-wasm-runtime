@@ -238,6 +238,27 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_LGET_ICONST_I32LTS_IF_: {
+                    // Reads: [x, c, falseTargetIp] — if (local[x] < c) enter body else jump to falseTargetIp.
+                    $__x = $code[$ip++]; $__c = $code[$ip++];
+                    if ((int)$stack[$lbase + $__x] >= $__c) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
+                case Op::SB_LGET_ICONST_I32GTS_IF_: {
+                    // Reads: [x, c, falseTargetIp] — if (local[x] > c) enter body else jump to falseTargetIp.
+                    $__x = $code[$ip++]; $__c = $code[$ip++];
+                    if ((int)$stack[$lbase + $__x] <= $__c) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
+                case Op::SB_LGET_LGET_I32NE_IF_: {
+                    // Reads: [a, b, falseTargetIp] — if (local[a] != local[b]) enter body else jump to falseTargetIp.
+                    $__a = $code[$ip++]; $__b = $code[$ip++];
+                    if ((int)$stack[$lbase + $__a] === (int)$stack[$lbase + $__b]) { $ip = $code[$ip]; } else { $ip++; }
+                    break;
+                }
+
                 case Op::ELSE_: {
                     $ip = $code[$ip]; // endIp (points past else body, no Op::END)
                     break;
@@ -571,6 +592,12 @@ final class Executor
                                     $ip += 3;
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD8U: { // [x, c, off] — push unsigned byte mem[local[x]+c+off]
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    $ip += 3;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = ord($bytes[$addr]); break;
                                 }
                                 case Op::SB_LGET_I32LOAD: { // local.get $x + i32.load $off
                                     $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
