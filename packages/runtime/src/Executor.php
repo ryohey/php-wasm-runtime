@@ -723,8 +723,17 @@ final class Executor
                                 case Op::SB_LGET_ICONST_I32AND: { // local.get $x + i32.const $c + i32.and → [x, c]
                                     $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] & $code[$ip+1]; $ip += 2; break;
                                 }
+                                case Op::SB_LGET_ICONST_I32OR: { // local.get $x + i32.const $c + i32.or → [x, c]
+                                    $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] | $code[$ip+1]; $ip += 2; break;
+                                }
                                 case Op::SB_LGET_ICONST_I32SHL: { // local.get $x + i32.const $c + i32.shl → [x, c]
                                     $stack[$sp++] = ((int)$stack[$lbase + $code[$ip]] << ($code[$ip+1] & 31)) << 32 >> 32; $ip += 2; break;
+                                }
+                                case Op::SB_LGET_ICONST_I32SHR_S: { // local.get $x + i32.const $c + i32.shr_s → [x, c]
+                                    $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] >> ($code[$ip+1] & 31); $ip += 2; break;
+                                }
+                                case Op::SB_LGET_ICONST_I32SHR_U: { // local.get $x + i32.const $c + i32.shr_u → [x, c]
+                                    $stack[$sp++] = (((int)$stack[$lbase + $code[$ip]] & 0xFFFFFFFF) >> ($code[$ip+1] & 31)) << 32 >> 32; $ip += 2; break;
                                 }
                                 case Op::SB_LGET_LGET_I32ADD: { // local.get $a + local.get $b + i32.add → [a, b]
                                     $stack[$sp++] = ((int)$stack[$lbase + $code[$ip]] + (int)$stack[$lbase + $code[$ip+1]]) << 32 >> 32; $ip += 2; break;

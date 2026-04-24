@@ -1043,7 +1043,10 @@ final class Decoder
                                 $code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$code[]=Op::I32_EQ;$sd++;break;
                             }
                             if(!$r->eof()&&$r->peekByte()===0x71){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32AND;$code[]=$localIdx;$code[]=$constVal;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x72){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32OR;$code[]=$localIdx;$code[]=$constVal;$sd++;break;}
                             if(!$r->eof()&&$r->peekByte()===0x74){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32SHL;$code[]=$localIdx;$code[]=$constVal;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x75){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32SHR_S;$code[]=$localIdx;$code[]=$constVal;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x76){$r->readByte();$code[]=Op::SB_LGET_ICONST_I32SHR_U;$code[]=$localIdx;$code[]=$constVal;$sd++;break;}
                             if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_ICONST_I32STORE;$code[]=$localIdx;$code[]=$constVal;$code[]=$r->readU32();/* net 0 */break;}
                             $code[]=Op::SB_LGET_ICONST;$code[]=$localIdx;$code[]=$constVal;$sd+=2;break;
                         }
