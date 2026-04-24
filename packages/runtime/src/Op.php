@@ -381,4 +381,7 @@ final class Op
     public const SB_LGET_ICONST_I32OR    = 398; // local.get $x + i32.const $c + i32.or    → [x, c]
     public const SB_LGET_ICONST_I32SHR_S = 399; // local.get $x + i32.const $c + i32.shr_s → [x, c]
     public const SB_LGET_ICONST_I32SHR_U = 400; // local.get $x + i32.const $c + i32.shr_u → [x, c]
+
+    public const SB_LGET_ICONST_IADD_LTEE_I32LOAD8U = 401; // local.get $x + i32.const $c + i32.add + local.tee $y + i32.load8_u $off → [x,c,y,off]
+    public const SB_LGET_LGET_I32LTS_BRIF           = 402; // local.get $a + local.get $b + i32.lt_s + br_if → [a, b, targetIp, spDelta, rCnt]
 }

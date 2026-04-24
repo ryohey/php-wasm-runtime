@@ -673,6 +673,14 @@ final class Executor
                                     $stack[$sp++] = unpack('V', $bytes, $raddr)[1] << 32 >> 32;
                                     break;
                                 }
+                                case Op::SB_LGET_ICONST_IADD_LTEE_I32LOAD8U: { // local.get+i32.const+i32.add+local.tee+i32.load8_u [x,c,y,off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) << 32 >> 32;
+                                    $stack[$lbase + $code[$ip+2]] = $addr;
+                                    $raddr = ($addr & 0xFFFFFFFF) + $code[$ip+3]; $ip += 4;
+                                    if ($raddr < 0 || $raddr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = ord($bytes[$raddr]);
+                                    break;
+                                }
                                 case Op::SB_I32EQZ_BRIF: { // [targetIp,spDelta,rCnt] branch if TOS==0
                                     $targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
                                     $cond=(int)$stack[--$sp];
@@ -834,6 +842,11 @@ final class Executor
                                 case Op::SB_LGET_LGET_I32EQ_BRIF: { // [a,b,targetIp,spDelta,rCnt]
                                     $a=(int)$stack[$lbase+$code[$ip]];$b=(int)$stack[$lbase+$code[$ip+1]];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
                                     if($a===$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_LGET_I32LTS_BRIF: { // [a,b,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=(int)$stack[$lbase+$code[$ip+1]];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a<$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                                     break;
                                 }
 

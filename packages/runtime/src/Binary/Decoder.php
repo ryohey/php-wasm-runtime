@@ -989,6 +989,11 @@ final class Decoder
                                     if($brDlq>=$csLlq){$code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_EQ;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
                                     $code[]=Op::SB_LGET_LGET_I32EQ_BRIF;$code[]=$localIdx;$code[]=$localIdx2;$this->emitBranchImms($code,$controlStack,$brDlq,$sd);break;}
                                 $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_EQ;$sd++;break;}
+                            if(!$r->eof()&&$r->peekByte()===0x48){$r->readByte(); // I32_LT_S
+                                if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDls=$r->readU32();$csLls=count($controlStack);
+                                    if($brDls>=$csLls){$code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_LT_S;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
+                                    $code[]=Op::SB_LGET_LGET_I32LTS_BRIF;$code[]=$localIdx;$code[]=$localIdx2;$this->emitBranchImms($code,$controlStack,$brDls,$sd);break;}
+                                $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$code[]=Op::I32_LT_S;$sd++;break;}
                             $code[]=Op::SB_LGET_LGET;$code[]=$localIdx;$code[]=$localIdx2;$sd+=2;break;
                         }
                         if ($nb === 0x41) { // I32_CONST follows
@@ -1003,6 +1008,7 @@ final class Decoder
                                         $this->emitBranchImms($code,$controlStack,$brD2,$sd);break;
                                     }
                                     if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$ldOff2=$r->readU32();$code[]=Op::SB_LGET_ICONST_IADD_LTEE_I32LOAD;$code[]=$localIdx;$code[]=$constVal;$code[]=$teeIdx2;$code[]=$ldOff2;$sd++;break;}
+                                    if(!$r->eof()&&$r->peekByte()===0x2D){$r->readByte();$r->readU32();$ldOff2=$r->readU32();$code[]=Op::SB_LGET_ICONST_IADD_LTEE_I32LOAD8U;$code[]=$localIdx;$code[]=$constVal;$code[]=$teeIdx2;$code[]=$ldOff2;$sd++;break;}
                                     $code[]=Op::SB_LGET_ICONST_IADD_LTEE;$code[]=$localIdx;$code[]=$constVal;$code[]=$teeIdx2;$sd++;break;
                                 }
                                 if(!$r->eof()&&$r->peekByte()===0x28){$r->readByte();$r->readU32();$ldOff=$r->readU32();$code[]=Op::SB_LGET_ICONST_IADD_I32LOAD;$code[]=$localIdx;$code[]=$constVal;$code[]=$ldOff;$sd++;break;}
