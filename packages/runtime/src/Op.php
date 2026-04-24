@@ -386,4 +386,8 @@ final class Op
     public const SB_LGET_LGET_I32LTS_BRIF           = 402; // local.get $a + local.get $b + i32.lt_s + br_if → [a, b, targetIp, spDelta, rCnt]
     public const SB_LGET_LGET_I32SUB                = 403; // local.get $a + local.get $b + i32.sub          → [a, b]
     public const SB_LGET_LGET_I32GTS_BRIF           = 404; // local.get $a + local.get $b + i32.gt_s + br_if → [a, b, targetIp, spDelta, rCnt]
+
+    // JSValue tag-check mega-fusions (7 wasm instructions → 1 dispatch)
+    public const SB_LGET_ICONST_IADD_I32LOAD_I32EQ_BRIF = 405; // lget $x + iconst $c + iadd + i32.load $off + iconst $tag + i32.eq + br_if → [x,c,off,tag,tIp,spD,rCnt]
+    public const SB_LGET_ICONST_IADD_I32LOAD_I32NE_BRIF = 406; // lget $x + iconst $c + iadd + i32.load $off + iconst $tag + i32.ne + br_if → [x,c,off,tag,tIp,spD,rCnt]
 }

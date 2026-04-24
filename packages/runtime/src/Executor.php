@@ -599,6 +599,22 @@ final class Executor
                                     if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $stack[$sp++] = ord($bytes[$addr]); break;
                                 }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD_I32EQ_BRIF: { // [x,c,off,tag,tIp,spD,rCnt] — JSValue tag-check eq
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $tag=$code[$ip+3];$targetIp=$code[$ip+4];$spDelta=$code[$ip+5];$rCnt=$code[$ip+6];$ip+=7;
+                                    if($v===$tag){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD_I32NE_BRIF: { // [x,c,off,tag,tIp,spD,rCnt] — JSValue tag-check ne
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $v = unpack('V', $bytes, $addr)[1] << 32 >> 32;
+                                    $tag=$code[$ip+3];$targetIp=$code[$ip+4];$spDelta=$code[$ip+5];$rCnt=$code[$ip+6];$ip+=7;
+                                    if($v!==$tag){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
                                 case Op::SB_LGET_I32LOAD: { // local.get $x + i32.load $off
                                     $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
                                     $ip += 2;
