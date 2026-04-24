@@ -367,4 +367,9 @@ final class Op
     public const SB_LGET_ICONST_I32EQ_BRIF  = 388; // local.get $x + i32.const $c + i32.eq + br_if → [x, c, targetIp, spDelta, rCnt]
     public const SB_LGET_LGET_I32NE_BRIF   = 389; // local.get $a + local.get $b + i32.ne + br_if → [a, b, targetIp, spDelta, rCnt]
     public const SB_LGET_LGET_I32EQ_BRIF   = 390; // local.get $a + local.get $b + i32.eq + br_if → [a, b, targetIp, spDelta, rCnt]
+
+    // ---- Memory + constant compare fusions ----
+    public const SB_LGET_ICONST_IADD_I32LOAD = 391; // local.get $x + i32.const $c + i32.add + i32.load $off → [x, c, off]
+    public const SB_I32CONST_I32EQ_BRIF      = 392; // i32.const $c + i32.eq + br_if → [c, targetIp, spDelta, rCnt]  (pops 1: TOS vs c)
+    public const SB_I32CONST_I32NE_BRIF      = 393; // i32.const $c + i32.ne + br_if → [c, targetIp, spDelta, rCnt]  (pops 1: TOS vs c)
 }

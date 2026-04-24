@@ -566,6 +566,12 @@ final class Executor
                                     $stack[$sp++] = ($stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32;
                                     $ip += 2; break;
                                 }
+                                case Op::SB_LGET_ICONST_IADD_I32LOAD: { // [x, c, off] — push mem[local[x]+c+off]
+                                    $addr = ((((int)$stack[$lbase + $code[$ip]]) + $code[$ip+1]) & 0xFFFFFFFF) + $code[$ip+2];
+                                    $ip += 3;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp++] = unpack('V', $bytes, $addr)[1] << 32 >> 32; break;
+                                }
                                 case Op::SB_LGET_I32LOAD: { // local.get $x + i32.load $off
                                     $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1];
                                     $ip += 2;
@@ -805,6 +811,18 @@ final class Executor
                                     $targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
                                     $b=(int)$stack[--$sp];$a=(int)$stack[--$sp];
                                     if($a===$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_I32CONST_I32EQ_BRIF: { // [c,targetIp,spDelta,rCnt] — pops 1 TOS, compares with code-immediate c
+                                    $c=$code[$ip++];$targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
+                                    $a=(int)$stack[--$sp];
+                                    if($a===$c){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_I32CONST_I32NE_BRIF: { // [c,targetIp,spDelta,rCnt] — pops 1 TOS, compares with code-immediate c
+                                    $c=$code[$ip++];$targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
+                                    $a=(int)$stack[--$sp];
+                                    if($a!==$c){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                                     break;
                                 }
                                 case Op::SB_I32GTU_BRIF: { // [targetIp,spDelta,rCnt]
