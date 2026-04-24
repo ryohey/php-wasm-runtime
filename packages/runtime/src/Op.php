@@ -360,4 +360,11 @@ final class Op
     public const SB_LGET_ICONST_I32EQ_IF_  = 383; // local.get $x + i32.const $c + i32.eq + if → [x, c, falseTargetIp]
     public const SB_LGET_ICONST_I32NE_IF_  = 384; // local.get $x + i32.const $c + i32.ne + if → [x, c, falseTargetIp]
     public const SB_LGET_LGET_I32EQ_IF_   = 385; // local.get $a + local.get $b + i32.eq + if → [a, b, falseTargetIp]
+
+    // ---- Fused comparison+brif with two register operands ----
+    public const SB_LGET_ICONST_I32NE_BRIF  = 386; // local.get $x + i32.const $c + i32.ne + br_if → [x, c, targetIp, spDelta, rCnt]
+    public const SB_LGET_ICONST_I32LTS_BRIF = 387; // local.get $x + i32.const $c + i32.lt_s + br_if → [x, c, targetIp, spDelta, rCnt]
+    public const SB_LGET_ICONST_I32EQ_BRIF  = 388; // local.get $x + i32.const $c + i32.eq + br_if → [x, c, targetIp, spDelta, rCnt]
+    public const SB_LGET_LGET_I32NE_BRIF   = 389; // local.get $a + local.get $b + i32.ne + br_if → [a, b, targetIp, spDelta, rCnt]
+    public const SB_LGET_LGET_I32EQ_BRIF   = 390; // local.get $a + local.get $b + i32.eq + br_if → [a, b, targetIp, spDelta, rCnt]
 }

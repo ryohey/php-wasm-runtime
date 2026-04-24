@@ -769,6 +769,31 @@ final class Executor
                                     if($a>$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                                     break;
                                 }
+                                case Op::SB_LGET_ICONST_I32NE_BRIF: { // [x,c,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=$code[$ip+1];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a!==$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_I32LTS_BRIF: { // [x,c,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=$code[$ip+1];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a<$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_ICONST_I32EQ_BRIF: { // [x,c,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=$code[$ip+1];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a===$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_LGET_I32NE_BRIF: { // [a,b,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=(int)$stack[$lbase+$code[$ip+1]];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a!==$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
+                                case Op::SB_LGET_LGET_I32EQ_BRIF: { // [a,b,targetIp,spDelta,rCnt]
+                                    $a=(int)$stack[$lbase+$code[$ip]];$b=(int)$stack[$lbase+$code[$ip+1]];$targetIp=$code[$ip+2];$spDelta=$code[$ip+3];$rCnt=$code[$ip+4];$ip+=5;
+                                    if($a===$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
 
                                 case Op::SB_I32LTS_BRIF: { // [targetIp,spDelta,rCnt]
                                     $targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
