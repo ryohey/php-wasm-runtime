@@ -703,6 +703,11 @@ final class Executor
                                     if($cond===0){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                                     break;
                                 }
+                                case Op::SB_LGET_I32EQZ_BRIF: { // [x,targetIp,spDelta,rCnt] branch when local[x]==0
+                                    $targetIp=$code[$ip+1];$spDelta=$code[$ip+2];$rCnt=$code[$ip+3];
+                                    if((int)$stack[$lbase+$code[$ip]]===0){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}else{$ip+=4;}
+                                    break;
+                                }
                                 case Op::SB_ICONST_IADD: { // i32.const $c + i32.add
                                     $stack[$sp - 1] = (((int)$stack[$sp - 1]) + $code[$ip++]) << 32 >> 32;
                                     break;

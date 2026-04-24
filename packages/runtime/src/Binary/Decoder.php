@@ -1105,6 +1105,11 @@ final class Decoder
                         }
                         if ($nb === 0x21) { $r->readByte();$code[]=Op::SB_LGET_LSET;$code[]=$localIdx;$code[]=$r->readU32();/* net 0 */break; }
                         if ($nb === 0x6B) { $r->readByte();$code[]=Op::SB_LGET_I32SUB;$code[]=$localIdx;/* net 0 */break; }
+                        if ($nb === 0x45) { $r->readByte(); // I32_EQZ — look ahead for BRIF
+                            if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDez=$r->readU32();$csLez=count($controlStack);
+                                if($brDez>=$csLez){$code[]=Op::LOCAL_GET;$code[]=$localIdx;$sd++;$code[]=Op::I32_EQZ;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
+                                $code[]=Op::SB_LGET_I32EQZ_BRIF;$code[]=$localIdx;$this->emitBranchImms($code,$controlStack,$brDez,$sd);break;}
+                            $code[]=Op::LOCAL_GET;$code[]=$localIdx;$sd++;$code[]=Op::I32_EQZ;break;}
                     }
                     $code[]=Op::LOCAL_GET;$code[]=$localIdx;$sd++;break;
                 }
