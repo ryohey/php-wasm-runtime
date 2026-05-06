@@ -280,6 +280,14 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_LGET_ICONST_IADD_LSET_BR: { // [x,c,y,targetIp,spDelta,rCnt] — local[y]=local[x]+c; branch
+                    $stack[$lbase + $code[$ip+2]] = (int)$stack[$lbase + $code[$ip]] + $code[$ip+1];
+                    $targetIp = $code[$ip+3]; $spDelta = $code[$ip+4]; $rCnt = $code[$ip+5]; $ip += 6;
+                    if ($rCnt > 0 && $spDelta !== 0) { $srcBase=$sp-$rCnt; $dstBase=$srcBase+$spDelta; for($__i=0;$__i<$rCnt;$__i++) $stack[$dstBase+$__i]=$stack[$srcBase+$__i]; }
+                    $sp += $spDelta; $ip = $targetIp;
+                    break;
+                }
+
                 case Op::SB_BRIF_PRECOMP: {
                     // Conditional branch: [targetIp, spDelta, rCnt]
                     $targetIp = $code[$ip++]; $spDelta = $code[$ip++]; $rCnt = $code[$ip++];
@@ -318,6 +326,17 @@ final class Executor
                     // br_table always branches — $ip += skip is dead (overwritten by targetIp or break 2)
                     $cnt = $code[$ip++];
                     $idx = (int)$stack[--$sp];
+                    $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
+                    $targetIp = $code[$base]; $spDelta = $code[$base + 1];
+                    if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
+                    $sp += $spDelta; $ip = $targetIp;
+                    break;
+                }
+
+                case Op::SB_ICONST_IADD_BR_TABLE_VOID: {
+                    // Format: [c, cnt, (targetIp, spDelta)*(cnt+1)] — iconst $c + iadd + br_table (all-void)
+                    $c = $code[$ip++]; $cnt = $code[$ip++];
+                    $idx = (int)$stack[--$sp] + $c;
                     $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
                     $targetIp = $code[$base]; $spDelta = $code[$base + 1];
                     if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
@@ -562,6 +581,12 @@ final class Executor
                 case Op::SB_LGET_I32WRAP:  { $stack[$sp++] = (int)$stack[$lbase + $code[$ip++]] << 32 >> 32; break; }
                 case Op::SB_LGET_I32SUB:   { $stack[$sp-1] = ((int)$stack[$sp-1] - (int)$stack[$lbase + $code[$ip++]]) << 32 >> 32; break; }
                 case Op::SB_LTEE_ICONST:   { $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp++] = $code[$ip+1]; $ip += 2; break; }
+                case Op::SB_LTEE_ICONST_I32SHL: { // [y,c] — save TOS to local[y]; TOS <<= (c&31)
+                    $v = (int)$stack[$sp-1]; $stack[$lbase + $code[$ip]] = $v;
+                    $stack[$sp-1] = ($v << ($code[$ip+1] & 31)) << 32 >> 32; $ip += 2; break; }
+                case Op::SB_LTEE_ICONST_I32AND: { // [y,c] — save TOS to local[y]; TOS &= c
+                    $v = (int)$stack[$sp-1]; $stack[$lbase + $code[$ip]] = $v;
+                    $stack[$sp-1] = $v & $code[$ip+1]; $ip += 2; break; }
                 case Op::SB_LTEE_I64CONST: { $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp++] = $code[$ip+1]; $ip += 2; break; }
                 case Op::SB_LTEE_BRIF: { // [teeIdx, targetIp, spDelta, rCnt] — local.tee + br_if
                     $teeIdx=$code[$ip++];$targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
@@ -752,6 +777,12 @@ final class Executor
                                     $stack[$sp - 1] = (((int)$stack[$sp - 1]) + $code[$ip++]) << 32 >> 32;
                                     break;
                                 }
+                                case Op::SB_I32LOAD_ICONST_IADD: { // [off,c] — i32.load $off + iconst $c + iadd  (TOS=addr → TOS=mem[addr+off]+c)
+                                    $addr = (((int)$stack[$sp-1]) & 0xFFFFFFFF) + $code[$ip];
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp-1] = ((unpack('V', $bytes, $addr)[1] << 32 >> 32) + $code[$ip+1]) << 32 >> 32;
+                                    $ip += 2; break;
+                                }
                                 case Op::SB_I64CONST_I64AND: { // i64.const $c + i64.and  → [c]
                                     $stack[$sp - 1] = ((int)$stack[$sp - 1]) & $code[$ip++]; break;
                                 }
@@ -846,6 +877,17 @@ final class Executor
                                     $stack[$sp++] = $stack[$idxA];
                                     $stack[$sp++] = $stack[$idxB];
                                     break;
+                                }
+                                case Op::SB_LGET_LGET_ICONST_IADD: { // [a,b,c] — push local[a]; push (local[b]+c)
+                                    $stack[$sp] = $stack[$lbase + $code[$ip]];
+                                    $stack[$sp+1] = (((int)$stack[$lbase + $code[$ip+1]]) + $code[$ip+2]) << 32 >> 32;
+                                    $sp += 2; $ip += 3; break;
+                                }
+                                case Op::SB_LGET_LGET_ICONST_IADD_I32STORE: { // [a,b,c,off] — store (local[b]+c) @ (local[a]+off); sp unchanged
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+3];
+                                    $v = (((int)$stack[$lbase + $code[$ip+1]]) + $code[$ip+2]) << 32 >> 32; $ip += 4;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
                                 }
                                 case Op::SB_LGET_LGET_I32LOAD: { // [a, b, off] — push local[a], load mem[local[b]+off]
                                     $addr = (((int)$stack[$lbase + $code[$ip+1]]) & 0xFFFFFFFF) + $code[$ip+2];

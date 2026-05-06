@@ -884,8 +884,18 @@ final class Decoder
                     if ($brDepth >= $csLen) {
                         $code[] = Op::RETURN_; // escape = function return
                     } else {
-                        $code[] = Op::SB_BR_PRECOMP;
-                        $this->emitBranchImms($code, $controlStack, $brDepth, $sd);
+                        // Backward peephole: SB_LGET_ICONST_IADD_LSET [x,c,y] + br → SB_LGET_ICONST_IADD_LSET_BR [x,c,y,tIp,spD,rCnt]
+                        $cLIALB = count($code) - 1;
+                        if ($cLIALB >= 3 && $code[$cLIALB - 3] === Op::SB_LGET_ICONST_IADD_LSET) {
+                            $yLB = $code[$cLIALB]; $cLB = $code[$cLIALB-1]; $xLB = $code[$cLIALB-2];
+                            array_pop($code); array_pop($code); array_pop($code); array_pop($code);
+                            $code[] = Op::SB_LGET_ICONST_IADD_LSET_BR;
+                            $code[] = $xLB; $code[] = $cLB; $code[] = $yLB;
+                            $this->emitBranchImms($code, $controlStack, $brDepth, $sd);
+                        } else {
+                            $code[] = Op::SB_BR_PRECOMP;
+                            $this->emitBranchImms($code, $controlStack, $brDepth, $sd);
+                        }
                     }
                     break;
                 }
@@ -927,9 +937,20 @@ final class Decoder
                         if ($_fi < 0 || $controlStack[$_fi]['r'] !== 0) { $_allVoid = false; break; }
                     }
                     // Choose opcode: SB_BR_TABLE_VOID (no result copy) or BR_TABLE (general)
+                    // Backward peephole: SB_ICONST_IADD [c] + br_table(void) → SB_ICONST_IADD_BR_TABLE_VOID [c, cnt, ...]
                     $_defaultFrame = ($csLen - 1 - $default >= 0) ? $controlStack[$csLen - 1 - $default] : null;
                     $_rCnt = $_defaultFrame ? ($_allVoid ? 0 : $_defaultFrame['r']) : 0;
-                    $code[] = $_allVoid ? Op::SB_BR_TABLE_VOID : Op::BR_TABLE;
+                    if ($_allVoid) {
+                        $cBTV = count($code) - 1;
+                        if ($cBTV >= 1 && $code[$cBTV-1] === Op::SB_ICONST_IADD) {
+                            $_btvc = $code[$cBTV]; array_pop($code); array_pop($code); // remove [SB_ICONST_IADD, c]
+                            $code[] = Op::SB_ICONST_IADD_BR_TABLE_VOID; $code[] = $_btvc;
+                        } else {
+                            $code[] = Op::SB_BR_TABLE_VOID;
+                        }
+                    } else {
+                        $code[] = Op::BR_TABLE;
+                    }
                     $code[] = count($labels); // label count
                     if (!$_allVoid) $code[] = $_rCnt; // result count stored once for BR_TABLE
                     foreach (array_merge($labels, [$default]) as $_d) {
@@ -1192,6 +1213,19 @@ final class Decoder
                 case 0x41: {
                     $constVal=$r->readS32();
                     if(!$r->eof()&&$r->peekByte()===0x6A){$r->readByte();
+                        // Backward peephole: SB_LGET_LGET [a,b] + (iconst $c + iadd) → SB_LGET_LGET_ICONST_IADD [a,b,c]
+                        $cLLIA41 = count($code) - 1;
+                        if ($cLLIA41 >= 2 && $code[$cLLIA41 - 2] === Op::SB_LGET_LGET) {
+                            $bI41 = $code[$cLLIA41]; $aI41 = $code[$cLLIA41-1]; array_pop($code); array_pop($code); array_pop($code);
+                            if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LGET_LGET_ICONST_IADD_I32STORE;$code[]=$aI41;$code[]=$bI41;$code[]=$constVal;$code[]=$r->readU32();$sd-=2;break;}
+                            $code[]=Op::SB_LGET_LGET_ICONST_IADD;$code[]=$aI41;$code[]=$bI41;$code[]=$constVal;break; // sd: +2 already from SB_LGET_LGET, no change
+                        }
+                        // Backward peephole: I32_LOAD [off] + (iconst $c + iadd) → SB_I32LOAD_ICONST_IADD [off,c]
+                        $cIL41 = count($code) - 1;
+                        if ($cIL41 >= 1 && $code[$cIL41-1] === Op::I32_LOAD) {
+                            $off41 = $code[$cIL41]; array_pop($code); array_pop($code);
+                            $code[]=Op::SB_I32LOAD_ICONST_IADD;$code[]=$off41;$code[]=$constVal;break; // net 0
+                        }
                         if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_ICONST_IADD_I32STORE;$code[]=$constVal;$code[]=$r->readU32();$sd-=2;break;}
                         $code[]=Op::SB_ICONST_IADD;$code[]=$constVal;/* net 0 */break;
                     }
@@ -1293,10 +1327,24 @@ final class Decoder
                 case 0x6E: $code[]=Op::I32_DIV_U;$sd--;break;
                 case 0x6F: $code[]=Op::I32_REM_S;$sd--;break;
                 case 0x70: $code[]=Op::I32_REM_U;$sd--;break;
-                case 0x71: $code[]=Op::I32_AND;$sd--;break;
+                case 0x71: { // i32.and — backward: SB_LTEE_ICONST+i32.and → SB_LTEE_ICONST_I32AND
+                    $cL71 = count($code) - 1;
+                    if ($cL71 >= 2 && $code[$cL71-2] === Op::SB_LTEE_ICONST) {
+                        $c71 = array_pop($code); $t71 = array_pop($code); array_pop($code);
+                        $code[] = Op::SB_LTEE_ICONST_I32AND; $code[] = $t71; $code[] = $c71; $sd--; break;
+                    }
+                    $code[]=Op::I32_AND;$sd--;break;
+                }
                 case 0x72: $code[]=Op::I32_OR;$sd--;break;
                 case 0x73: $code[]=Op::I32_XOR;$sd--;break;
-                case 0x74: $code[]=Op::I32_SHL;$sd--;break;
+                case 0x74: { // i32.shl — backward: SB_LTEE_ICONST+i32.shl → SB_LTEE_ICONST_I32SHL
+                    $cL74 = count($code) - 1;
+                    if ($cL74 >= 2 && $code[$cL74-2] === Op::SB_LTEE_ICONST) {
+                        $c74 = array_pop($code); $t74 = array_pop($code); array_pop($code);
+                        $code[] = Op::SB_LTEE_ICONST_I32SHL; $code[] = $t74; $code[] = $c74; $sd--; break;
+                    }
+                    $code[]=Op::I32_SHL;$sd--;break;
+                }
                 case 0x75: $code[]=Op::I32_SHR_S;$sd--;break;
                 case 0x76: $code[]=Op::I32_SHR_U;$sd--;break;
                 case 0x77: $code[]=Op::I32_ROTL;$sd--;break;

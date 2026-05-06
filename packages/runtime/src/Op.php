@@ -409,4 +409,13 @@ final class Op
     public const SB_LTEE_I32LOAD8U        = 418; // local.tee $y + i32.load8_u $off → [y, off]  (save TOS-as-addr to local, load byte)
     public const SB_LGET_I32LOAD8S        = 419; // local.get $x + i32.load8_s $off → [x, off]  net +1
     public const SB_LGET_I32STORE8        = 420; // local.get $x + i32.store8 $off → [x, off]  (store local byte; pop addr from stack)
+
+    // ---- New fusions (profiler-guided, round 2, 2026-05-06) ----
+    public const SB_LGET_LGET_ICONST_IADD          = 421; // lget $a + lget $b + iconst $c + iadd → [a,b,c]  net +2: push local[a]; push (local[b]+c)
+    public const SB_LGET_LGET_ICONST_IADD_I32STORE  = 422; // lget $a + lget $b + iconst $c + iadd + i32.store $off → [a,b,c,off]  net 0: store (local[b]+c) @ (local[a]+off)
+    public const SB_ICONST_IADD_BR_TABLE_VOID       = 423; // iconst $c + iadd + br_table (all-void) → [c,cnt,(tIp,spD)*(cnt+1)]  net -1
+    public const SB_LGET_ICONST_IADD_LSET_BR        = 424; // lget $x + iconst $c + iadd + lset $y + br → [x,c,y,tIp,spD,rCnt]  net 0
+    public const SB_I32LOAD_ICONST_IADD             = 425; // i32.load $off + iconst $c + iadd → [off,c]  net 0: TOS = mem[TOS+off]+c
+    public const SB_LTEE_ICONST_I32SHL              = 426; // local.tee $y + iconst $c + i32.shl → [y,c]  net 0: save TOS to local[y]; TOS <<= (c&31)
+    public const SB_LTEE_ICONST_I32AND              = 427; // local.tee $y + iconst $c + i32.and → [y,c]  net 0: save TOS to local[y]; TOS &= c
 }
