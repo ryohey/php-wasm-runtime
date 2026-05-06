@@ -418,4 +418,10 @@ final class Op
     public const SB_I32LOAD_ICONST_IADD             = 425; // i32.load $off + iconst $c + iadd → [off,c]  net 0: TOS = mem[TOS+off]+c
     public const SB_LTEE_ICONST_I32SHL              = 426; // local.tee $y + iconst $c + i32.shl → [y,c]  net 0: save TOS to local[y]; TOS <<= (c&31)
     public const SB_LTEE_ICONST_I32AND              = 427; // local.tee $y + iconst $c + i32.and → [y,c]  net 0: save TOS to local[y]; TOS &= c
+
+    // ---- New fusions (profiler-guided, round 3, 2026-05-07) ----
+    public const SB_LGET_ICONST_IADD_GSET             = 428; // lget $x + iconst $c + iadd + global.set $g → [x,c,g]  net 0: globals[g]=local[x]+c
+    public const SB_ICONST_I32SUB_LTEE               = 429; // iconst $c + i32.sub + local.tee $y → [c,y]  net 0: v=TOS-c; TOS=v; local[y]=v
+    public const SB_I32LOAD_ICONST_IADD_BR_TABLE_VOID = 430; // i32.load $off + iconst $c + iadd + br_table(void) → [off,c,cnt,(tIp,spD)*(cnt+1)]  net -1
+    public const SB_I32SHR_U_ICONST_I32AND           = 431; // i32.shr_u + iconst $c + i32.and → [c]  net -1: TOS=(TOS[-2]>>u TOS[-1])&c
 }

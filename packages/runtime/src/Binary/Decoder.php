@@ -945,6 +945,10 @@ final class Decoder
                         if ($cBTV >= 1 && $code[$cBTV-1] === Op::SB_ICONST_IADD) {
                             $_btvc = $code[$cBTV]; array_pop($code); array_pop($code); // remove [SB_ICONST_IADD, c]
                             $code[] = Op::SB_ICONST_IADD_BR_TABLE_VOID; $code[] = $_btvc;
+                        } elseif ($cBTV >= 2 && $code[$cBTV-2] === Op::SB_I32LOAD_ICONST_IADD) {
+                            // SB_I32LOAD_ICONST_IADD [off,c] + br_table(void) → SB_I32LOAD_ICONST_IADD_BR_TABLE_VOID [off,c,cnt,...]
+                            $_iac = $code[$cBTV]; $_iao = $code[$cBTV-1]; array_pop($code); array_pop($code); array_pop($code);
+                            $code[] = Op::SB_I32LOAD_ICONST_IADD_BR_TABLE_VOID; $code[] = $_iao; $code[] = $_iac;
                         } else {
                             $code[] = Op::SB_BR_TABLE_VOID;
                         }
@@ -1170,7 +1174,15 @@ final class Decoder
                     $code[]=Op::LOCAL_TEE;$code[]=$teeIdx;/* net 0 */break;
                 }
                 case 0x23: $code[]=Op::GLOBAL_GET;$code[]=$r->readU32();$sd++;break;
-                case 0x24: $code[]=Op::GLOBAL_SET;$code[]=$r->readU32();$sd--;break;
+                case 0x24: { // global.set — backward: SB_LGET_ICONST_IADD [x,c] + global.set $g → SB_LGET_ICONST_IADD_GSET [x,c,g]
+                    $gidx24 = $r->readU32();
+                    $cGS24 = count($code) - 1;
+                    if ($cGS24 >= 2 && $code[$cGS24 - 2] === Op::SB_LGET_ICONST_IADD) {
+                        $c24 = array_pop($code); $x24 = array_pop($code); array_pop($code);
+                        $code[] = Op::SB_LGET_ICONST_IADD_GSET; $code[] = $x24; $code[] = $c24; $code[] = $gidx24; $sd--; break;
+                    }
+                    $code[] = Op::GLOBAL_SET; $code[] = $gidx24; $sd--; break;
+                }
 
                 // ---- Table ----
                 case 0x25: $code[]=Op::TABLE_GET;$code[]=$r->readU32();/* net 0: pop idx push ref */break;
@@ -1229,7 +1241,12 @@ final class Decoder
                         if(!$r->eof()&&$r->peekByte()===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_ICONST_IADD_I32STORE;$code[]=$constVal;$code[]=$r->readU32();$sd-=2;break;}
                         $code[]=Op::SB_ICONST_IADD;$code[]=$constVal;/* net 0 */break;
                     }
-                    if(!$r->eof()&&$r->peekByte()===0x71){$r->readByte();$code[]=Op::SB_ICONST_I32AND;$code[]=$constVal;/* net 0 */break;}
+                    if(!$r->eof()&&$r->peekByte()===0x71){$r->readByte();
+                        // Backward: I32_SHR_U + (iconst $c + i32.and) → SB_I32SHR_U_ICONST_I32AND [c]
+                        $cISA41 = count($code) - 1;
+                        if ($code[$cISA41] === Op::I32_SHR_U) { array_pop($code); $code[]=Op::SB_I32SHR_U_ICONST_I32AND;$code[]=$constVal;$sd--;break; }
+                        $code[]=Op::SB_ICONST_I32AND;$code[]=$constVal;/* net 0 */break;
+                    }
                     if(!$r->eof()&&$r->peekByte()===0x21){$r->readByte();$code[]=Op::SB_ICONST_LSET;$code[]=$constVal;$code[]=$r->readU32();/* net 0 */break;}
                     if(!$r->eof()&&$r->peekByte()===0x74){$r->readByte();$code[]=Op::SB_ICONST_I32SHL;$code[]=$constVal;/* net 0 */break;}
                     $code[]=Op::I32_CONST;$code[]=$constVal;$sd++;break;
@@ -1321,7 +1338,18 @@ final class Decoder
                     }
                     $code[]=Op::I32_ADD;$sd--;break;
                 }
-                case 0x6B: { if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32SUB_LTEE;$code[]=$r->readU32();$sd--;break;} $code[]=Op::I32_SUB;$sd--;break; }
+                case 0x6B: { // i32.sub — forward peek for local.tee; backward peek for i32.const before sub
+                    if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$teeIdx6B=$r->readU32();
+                        // Backward: I32_CONST [c] + i32.sub + local.tee $y → SB_ICONST_I32SUB_LTEE [c,y]
+                        $cIST6B = count($code) - 1;
+                        if ($cIST6B >= 1 && $code[$cIST6B-1] === Op::I32_CONST) {
+                            $c6B = array_pop($code); array_pop($code); // remove [I32_CONST, c]
+                            $code[] = Op::SB_ICONST_I32SUB_LTEE; $code[] = $c6B; $code[] = $teeIdx6B; $sd--; break;
+                        }
+                        $code[]=Op::SB_I32SUB_LTEE;$code[]=$teeIdx6B;$sd--;break;
+                    }
+                    $code[]=Op::I32_SUB;$sd--;break;
+                }
                 case 0x6C: $code[]=Op::I32_MUL;$sd--;break;
                 case 0x6D: $code[]=Op::I32_DIV_S;$sd--;break;
                 case 0x6E: $code[]=Op::I32_DIV_U;$sd--;break;

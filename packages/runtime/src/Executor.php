@@ -344,6 +344,19 @@ final class Executor
                     break;
                 }
 
+                case Op::SB_I32LOAD_ICONST_IADD_BR_TABLE_VOID: {
+                    // Format: [off, c, cnt, (targetIp, spDelta)*(cnt+1)] — i32.load $off + iconst $c + iadd + br_table (all-void)
+                    $__off = $code[$ip++]; $__c = $code[$ip++]; $cnt = $code[$ip++];
+                    $__addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $__off;
+                    if ($__addr < 0 || $__addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                    $idx = (unpack('V', $bytes, $__addr)[1] << 32 >> 32) + $__c;
+                    $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
+                    $targetIp = $code[$base]; $spDelta = $code[$base + 1];
+                    if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
+                    $sp += $spDelta; $ip = $targetIp;
+                    break;
+                }
+
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
                     $pc   = $paramCounts[$fIdx];
@@ -606,6 +619,8 @@ final class Executor
                     break; }
                 case Op::GLOBAL_GET: $stack[$sp++] = $globals[$code[$ip++]]; break;
                 case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
+                case Op::SB_LGET_ICONST_IADD_GSET: { // [x,c,g] — globals[g] = local[x]+c; sp unchanged
+                    $globals[$code[$ip+2]] = ((int)$stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32; $ip += 3; break; }
 
                 // ---- Constants ----
                 case Op::I32_CONST: $stack[$sp++] = $code[$ip++]; break;
@@ -809,6 +824,10 @@ final class Executor
                                 case Op::SB_I32SUB_LTEE: { // i32.sub + local.tee $y → [y]
                                     $v = ((int)$stack[$sp-2] - (int)$stack[$sp-1]) << 32 >> 32; $sp--;
                                     $stack[$sp-1] = $v; $stack[$lbase + $code[$ip++]] = $v; break;
+                                }
+                                case Op::SB_ICONST_I32SUB_LTEE: { // [c,y] — v=TOS-c; TOS=v; local[y]=v; sp unchanged
+                                    $v = ((int)$stack[$sp-1] - $code[$ip]) << 32 >> 32;
+                                    $stack[$sp-1] = $v; $stack[$lbase + $code[$ip+1]] = $v; $ip += 2; break;
                                 }
                                 case Op::SB_I64CONST_I64STORE: { // i64.const $c + i64.store $off → [c, off]
                                     $v=(int)$code[$ip]; $off=$code[$ip+1]; $ip+=2; $addr=(((int)$stack[--$sp])&0xFFFFFFFF)+$off;
@@ -1109,6 +1128,9 @@ final class Executor
                 case Op::I32_SHR_U: {
                     $b=((int)$stack[--$sp])&0xFFFFFFFF; $a=((int)$stack[--$sp])&0xFFFFFFFF;
                         $stack[$sp++]=($a>>($b&31))<<32>>32; break;
+                }
+                case Op::SB_I32SHR_U_ICONST_I32AND: { // [c] — TOS=(TOS[-2]>>u(TOS[-1]&31))&c; sp-=1
+                    $b=(int)$stack[--$sp]; $stack[$sp-1]=(((int)$stack[$sp-1]&0xFFFFFFFF)>>($b&31))&$code[$ip++]; break;
                 }
                 case Op::I32_ROTL: {
                     $b=((int)$stack[--$sp])&31; $a=((int)$stack[--$sp])&0xFFFFFFFF;
