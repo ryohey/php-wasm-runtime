@@ -568,6 +568,17 @@ final class Executor
                     $v=$stack[$sp-1];$stack[$lbase+$teeIdx]=$v;$sp--;
                     if((int)$v!==0){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                     break; }
+                case Op::SB_LTEE_ICONST_IADD: { // [y, c] — local.tee $y + i32.const $c + i32.add
+                    $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp-1] += $code[$ip+1]; $ip += 2; break; }
+                case Op::SB_LTEE_LGET: { // [y, x] — local.tee $y + local.get $x
+                    $stack[$lbase + $code[$ip]] = $stack[$sp-1]; $stack[$sp++] = $stack[$lbase + $code[$ip+1]]; $ip += 2; break; }
+                case Op::SB_LGET_BRIF_PRECOMP: { // [x, targetIp, spDelta, rCnt] — local.get $x + br_if
+                    $cond = (int)$stack[$lbase + $code[$ip]]; $targetIp=$code[$ip+1]; $spDelta=$code[$ip+2]; $rCnt=$code[$ip+3]; $ip += 4;
+                    if ($cond !== 0) { if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];} $sp+=$spDelta; $ip=$targetIp; }
+                    break; }
+                case Op::SB_LGET_BRIF_PRECOMP_ESC: { // [x] — local.get $x + br_if (escape)
+                    if ((int)$stack[$lbase + $code[$ip++]] !== 0) { $retBase = $retCount > 0 ? max(0, $sp - $retCount) : $sp; break 2; }
+                    break; }
                 case Op::GLOBAL_GET: $stack[$sp++] = $globals[$code[$ip++]]; break;
                 case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
 
@@ -777,6 +788,33 @@ final class Executor
                                     $addr = ((int)$stack[$lbase + $code[$ip]] & 0xFFFFFFFF) + $code[$ip+2]; $v = $code[$ip+1]; $ip += 3;
                                     if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
                                     $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
+                                }
+                                case Op::SB_LGET_I32STORE: { // local.get $x + i32.store $off → [x, off]  (addr = stack TOS, val = local[x])
+                                    $v = (int)$stack[$lbase + $code[$ip]]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip+1]; $ip += 2;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
+                                }
+                                case Op::SB_LGET_I32STORE8: { // local.get $x + i32.store8 $off → [x, off]  (addr = stack TOS, val = local[x] & 0xFF)
+                                    $v = (int)$stack[$lbase + $code[$ip]]; $addr = (((int)$stack[--$sp]) & 0xFFFFFFFF) + $code[$ip+1]; $ip += 2;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr] = $chrStr[$v & 0xFF]; break;
+                                }
+                                case Op::SB_LTEE_I32STORE: { // local.tee $y + i32.store $off → [y, off]  (save TOS to local, store TOS to addr below)
+                                    $v = (int)$stack[$sp-1]; $stack[$lbase + $code[$ip]] = $v;
+                                    $addr = (((int)$stack[$sp-2]) & 0xFFFFFFFF) + $code[$ip+1]; $ip += 2; $sp -= 2;
+                                    if ($addr < 0 || $addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $bytes[$addr]=$chrStr[$v&0xFF];$bytes[$addr+1]=$chrStr[($v>>8)&0xFF];$bytes[$addr+2]=$chrStr[($v>>16)&0xFF];$bytes[$addr+3]=$chrStr[($v>>24)&0xFF]; break;
+                                }
+                                case Op::SB_LTEE_I32LOAD8U: { // local.tee $y + i32.load8_u $off → [y, off]  (save TOS as addr to local, load byte)
+                                    $addr = (((int)$stack[$sp-1]) & 0xFFFFFFFF) + $code[$ip+1];
+                                    $stack[$lbase + $code[$ip]] = (int)$stack[$sp-1]; $ip += 2;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $stack[$sp-1] = ord($bytes[$addr]); break;
+                                }
+                                case Op::SB_LGET_I32LOAD8S: { // local.get $x + i32.load8_s $off → [x, off]
+                                    $addr = (((int)$stack[$lbase + $code[$ip]]) & 0xFFFFFFFF) + $code[$ip+1]; $ip += 2;
+                                    if ($addr < 0 || $addr + 1 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                                    $b = ord($bytes[$addr]); $stack[$sp++] = ($b & 0x80) ? ($b | (-1 << 8)) : $b; break;
                                 }
                                 case Op::SB_LGET_ICONST_I32AND: { // local.get $x + i32.const $c + i32.and → [x, c]
                                     $stack[$sp++] = (int)$stack[$lbase + $code[$ip]] & $code[$ip+1]; $ip += 2; break;

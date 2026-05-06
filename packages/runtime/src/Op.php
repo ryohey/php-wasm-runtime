@@ -398,4 +398,15 @@ final class Op
 
     public const SB_LGET_ICONST_IADD_I32LOAD_LSET  = 410; // lget $x + iconst $c + iadd + i32.load $off + local.set $y → [x, c, off, y]  net 0
     public const SB_LGET_ICONST_IADD_I32LOAD_LTEE  = 411; // lget $x + iconst $c + iadd + i32.load $off + local.tee $y → [x, c, off, y]  net +1
+
+    // ---- New fusions (profiler-guided, 2026-05-06) ----
+    public const SB_LGET_BRIF_PRECOMP     = 412; // local.get $x + br_if → [x, targetIp, spDelta, rCnt]  (branch if local != 0)
+    public const SB_LGET_BRIF_PRECOMP_ESC = 413; // local.get $x + br_if (escape) → [x]
+    public const SB_LTEE_ICONST_IADD      = 414; // local.tee $y + i32.const $c + i32.add → [y, c]  (local[y]=TOS; TOS+=c)
+    public const SB_LTEE_LGET             = 415; // local.tee $y + local.get $x → [y, x]  net +1
+    public const SB_LGET_I32STORE         = 416; // local.get $x + i32.store $off → [x, off]  (store local as value; pop addr from stack)
+    public const SB_LTEE_I32STORE         = 417; // local.tee $y + i32.store $off → [y, off]  (save TOS to local, store TOS to addr below)
+    public const SB_LTEE_I32LOAD8U        = 418; // local.tee $y + i32.load8_u $off → [y, off]  (save TOS-as-addr to local, load byte)
+    public const SB_LGET_I32LOAD8S        = 419; // local.get $x + i32.load8_s $off → [x, off]  net +1
+    public const SB_LGET_I32STORE8        = 420; // local.get $x + i32.store8 $off → [x, off]  (store local byte; pop addr from stack)
 }

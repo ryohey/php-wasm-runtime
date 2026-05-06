@@ -893,6 +893,18 @@ final class Decoder
                     $brDepth   = $r->readU32();
                     $csLen     = count($controlStack);
                     $sdAfterBr = $sd - 1; // br_if pops condition
+                    // Backward peephole: LOCAL_GET + br_if → SB_LGET_BRIF_PRECOMP[_ESC]
+                    $cL0D = count($code) - 1;
+                    if ($cL0D >= 1 && $code[$cL0D - 1] === Op::LOCAL_GET) {
+                        $lgIdx0D = $code[$cL0D]; array_pop($code); array_pop($code);
+                        if ($brDepth >= $csLen) {
+                            $code[] = Op::SB_LGET_BRIF_PRECOMP_ESC; $code[] = $lgIdx0D;
+                        } else {
+                            $code[] = Op::SB_LGET_BRIF_PRECOMP; $code[] = $lgIdx0D;
+                            $this->emitBranchImms($code, $controlStack, $brDepth, $sdAfterBr);
+                        }
+                        $sd--; break;
+                    }
                     if ($brDepth >= $csLen) {
                         $code[] = Op::SB_BRIF_PRECOMP_ESC;
                     } else {
@@ -1106,6 +1118,9 @@ final class Decoder
                             $code[]=Op::SB_LGET_I32WRAP;$code[]=$localIdx;$sd++;break;
                         }
                         if ($nb === 0x21) { $r->readByte();$code[]=Op::SB_LGET_LSET;$code[]=$localIdx;$code[]=$r->readU32();/* net 0 */break; }
+                        if ($nb === 0x36) { $r->readByte();$r->readU32();$code[]=Op::SB_LGET_I32STORE;$code[]=$localIdx;$code[]=$r->readU32();$sd--;break; } // i32.store: pop addr, store local
+                        if ($nb === 0x2C) { $r->readByte();$r->readU32();$code[]=Op::SB_LGET_I32LOAD8S;$code[]=$localIdx;$code[]=$r->readU32();$sd++;break; } // i32.load8_s
+                        if ($nb === 0x3A) { $r->readByte();$r->readU32();$code[]=Op::SB_LGET_I32STORE8;$code[]=$localIdx;$code[]=$r->readU32();$sd--;break; } // i32.store8: pop addr, store local byte
                         if ($nb === 0x6B) { $r->readByte();$code[]=Op::SB_LGET_I32SUB;$code[]=$localIdx;/* net 0 */break; }
                         if ($nb === 0x45) { $r->readByte(); // I32_EQZ — look ahead for BRIF
                             if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDez=$r->readU32();$csLez=count($controlStack);
@@ -1127,6 +1142,9 @@ final class Decoder
                             $this->emitBranchImms($code,$controlStack,$brDt,$sd-1);
                             $sd--;break;
                         }
+                        if($nb2===0x36){$r->readByte();$r->readU32();$code[]=Op::SB_LTEE_I32STORE;$code[]=$teeIdx;$code[]=$r->readU32();$sd-=2;break;} // tee+i32.store
+                        if($nb2===0x2D){$r->readByte();$r->readU32();$code[]=Op::SB_LTEE_I32LOAD8U;$code[]=$teeIdx;$code[]=$r->readU32();/* net 0 */break;} // tee+i32.load8_u
+                        if($nb2===0x20){$r->readByte();$code[]=Op::SB_LTEE_LGET;$code[]=$teeIdx;$code[]=$r->readU32();$sd++;break;} // tee+local.get
                     }
                     $code[]=Op::LOCAL_TEE;$code[]=$teeIdx;/* net 0 */break;
                 }
@@ -1260,7 +1278,15 @@ final class Decoder
                 case 0x67: $code[]=Op::I32_CLZ;break;
                 case 0x68: $code[]=Op::I32_CTZ;break;
                 case 0x69: $code[]=Op::I32_POPCNT;break;
-                case 0x6A: $code[]=Op::I32_ADD;$sd--;break;
+                case 0x6A: { // i32.add — backward peephole: SB_LTEE_ICONST + i32.add → SB_LTEE_ICONST_IADD
+                    $cL6A = count($code) - 1;
+                    if ($cL6A >= 2 && $code[$cL6A - 2] === Op::SB_LTEE_ICONST) {
+                        $cV6A = array_pop($code); $tI6A = array_pop($code); array_pop($code);
+                        $code[] = Op::SB_LTEE_ICONST_IADD; $code[] = $tI6A; $code[] = $cV6A;
+                        $sd--; break;
+                    }
+                    $code[]=Op::I32_ADD;$sd--;break;
+                }
                 case 0x6B: { if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$code[]=Op::SB_I32SUB_LTEE;$code[]=$r->readU32();$sd--;break;} $code[]=Op::I32_SUB;$sd--;break; }
                 case 0x6C: $code[]=Op::I32_MUL;$sd--;break;
                 case 0x6D: $code[]=Op::I32_DIV_S;$sd--;break;
