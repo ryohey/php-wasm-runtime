@@ -262,7 +262,11 @@ final class Memory
     {
         $len = strlen($data);
         $this->check($addr, $len);
-        $this->bytes = substr_replace($this->bytes, $data, $addr, $len);
+        // Use byte-by-byte in-place write to avoid substr_replace allocating a new
+        // copy of the entire memory buffer (mmap overhead for buffers > ~1 MB).
+        for ($k = 0; $k < $len; $k++) {
+            $this->bytes[$addr + $k] = $data[$k];
+        }
     }
 
     public function fill(int $addr, int $byte, int $n): void
@@ -276,7 +280,10 @@ final class Memory
             $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
             $this->allocated = $needed;
         }
-        $this->bytes = substr_replace($this->bytes, str_repeat(chr($byte & 0xFF), $n), $addr, $n);
+        $c = chr($byte & 0xFF);
+        for ($k = 0; $k < $n; $k++) {
+            $this->bytes[$addr + $k] = $c;
+        }
     }
 
     public function copy(int $dst, int $src, int $n): void
@@ -290,8 +297,17 @@ final class Memory
             $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
             $this->allocated = $needed;
         }
-        $chunk = substr($this->bytes, $src, $n);
-        $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
+        // In-place byte-by-byte copy avoids substr_replace's full-buffer reallocation.
+        // Overlap-safe: copy forward if dst < src, backward if dst > src.
+        if ($dst <= $src || $dst >= $src + $n) {
+            for ($k = 0; $k < $n; $k++) {
+                $this->bytes[$dst + $k] = $this->bytes[$src + $k];
+            }
+        } else {
+            for ($k = $n - 1; $k >= 0; $k--) {
+                $this->bytes[$dst + $k] = $this->bytes[$src + $k];
+            }
+        }
     }
 
     public function initFromData(int $dst, string $data, int $src, int $n): void
@@ -306,8 +322,9 @@ final class Memory
             $this->bytes    .= str_repeat("\0", $needed - $this->allocated);
             $this->allocated = $needed;
         }
-        $chunk = substr($data, $src, $n);
-        $this->bytes = substr_replace($this->bytes, $chunk, $dst, $n);
+        for ($k = 0; $k < $n; $k++) {
+            $this->bytes[$dst + $k] = $data[$src + $k];
+        }
     }
 
     public function rawBytes(): string
