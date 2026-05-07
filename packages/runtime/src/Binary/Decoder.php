@@ -942,7 +942,12 @@ final class Decoder
                     $_rCnt = $_defaultFrame ? ($_allVoid ? 0 : $_defaultFrame['r']) : 0;
                     if ($_allVoid) {
                         $cBTV = count($code) - 1;
-                        if ($cBTV >= 1 && $code[$cBTV-1] === Op::SB_ICONST_IADD) {
+                        if ($cBTV >= 4 && $code[$cBTV-4] === Op::SB_ICONST_I32SHL && $code[$cBTV-2] === Op::SB_I32LOAD_ICONST_IADD) {
+                            // SB_ICONST_I32SHL[sc] + SB_I32LOAD_ICONST_IADD[off,c] + br_table(void) → SB_ICONST_I32SHL_I32LOAD_ICONST_IADD_BR_TABLE_VOID[sc,off,c,cnt,...]
+                            $_bac=$code[$cBTV];$_bao=$code[$cBTV-1];$_bsc=$code[$cBTV-3];
+                            array_pop($code);array_pop($code);array_pop($code);array_pop($code);array_pop($code);
+                            $code[]=Op::SB_ICONST_I32SHL_I32LOAD_ICONST_IADD_BR_TABLE_VOID;$code[]=$_bsc;$code[]=$_bao;$code[]=$_bac;
+                        } elseif ($cBTV >= 1 && $code[$cBTV-1] === Op::SB_ICONST_IADD) {
                             $_btvc = $code[$cBTV]; array_pop($code); array_pop($code); // remove [SB_ICONST_IADD, c]
                             $code[] = Op::SB_ICONST_IADD_BR_TABLE_VOID; $code[] = $_btvc;
                         } elseif ($cBTV >= 2 && $code[$cBTV-2] === Op::SB_I32LOAD_ICONST_IADD) {
@@ -1173,7 +1178,21 @@ final class Decoder
                     }
                     $code[]=Op::LOCAL_TEE;$code[]=$teeIdx;/* net 0 */break;
                 }
-                case 0x23: $code[]=Op::GLOBAL_GET;$code[]=$r->readU32();$sd++;break;
+                case 0x23: { // global.get — forward: gget+i32.const $c+i32.sub+local.tee $y+global.set $g_out → SB_GGET_ICONST_I32SUB_LTEE_GSET [gin,c,y,gout]
+                    $gidx23=$r->readU32();
+                    if(!$r->eof()&&$r->peekByte()===0x41){$r->readByte();$c23=$r->readS32();
+                        if(!$r->eof()&&$r->peekByte()===0x6B){$r->readByte();
+                            if(!$r->eof()&&$r->peekByte()===0x22){$r->readByte();$tee23=$r->readU32();
+                                if(!$r->eof()&&$r->peekByte()===0x24){$r->readByte();$gout23=$r->readU32();
+                                    $code[]=Op::SB_GGET_ICONST_I32SUB_LTEE_GSET;$code[]=$gidx23;$code[]=$c23;$code[]=$tee23;$code[]=$gout23;/* sd: net 0 */break;}
+                                // partial: gget+iconst+i32.sub+local.tee (no gset)
+                                $code[]=Op::GLOBAL_GET;$code[]=$gidx23;$sd++;$code[]=Op::I32_CONST;$code[]=$c23;$sd++;$code[]=Op::SB_I32SUB_LTEE;$code[]=$tee23;$sd--;break;}
+                            // partial: gget+iconst+i32.sub (no local.tee)
+                            $code[]=Op::GLOBAL_GET;$code[]=$gidx23;$sd++;$code[]=Op::I32_CONST;$code[]=$c23;$sd++;$code[]=Op::I32_SUB;$sd--;break;}
+                        // partial: gget+iconst (no i32.sub)
+                        $code[]=Op::GLOBAL_GET;$code[]=$gidx23;$sd++;$code[]=Op::I32_CONST;$code[]=$c23;$sd++;break;}
+                    $code[]=Op::GLOBAL_GET;$code[]=$gidx23;$sd++;break;
+                }
                 case 0x24: { // global.set — backward: SB_LGET_ICONST_IADD [x,c] + global.set $g → SB_LGET_ICONST_IADD_GSET [x,c,g]
                     $gidx24 = $r->readU32();
                     $cGS24 = count($code) - 1;
@@ -1256,19 +1275,19 @@ final class Decoder
                     if(!$r->eof()&&$r->peekByte()===0x54){$r->readByte(); // I64_LT_U follows
                         if(!$r->eof()&&$r->peekByte()===0x0D){$r->readByte();$brDlt=$r->readU32();$csLlt=count($controlStack);
                             // i64const+i64lt_u+brif: sdAfterBr=$sd-1 (TOS was i64, const+ltu = net 0, brif pops → -1)
-                            if($brDlt>=$csLlt){$code[]=Op::I64_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
+                            if($brDlt>=$csLlt){$code[]=Op::I32_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;$code[]=Op::SB_BRIF_PRECOMP_ESC;$sd--;break;}
                             $code[]=Op::SB_I64CONST_I64LTU_BRIF;$code[]=$c64;
                             $this->emitBranchImms($code,$controlStack,$brDlt,$sd-1);
                             $sd--;break;
                         }
-                        $code[]=Op::I64_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;$sd--;break;
+                        $code[]=Op::I32_CONST;$code[]=$c64;$code[]=Op::I64_LT_U;$sd--;break;
                     }
                     if(!$r->eof()&&$r->peekByte()===0x37){$r->readByte();$r->readU32();$code[]=Op::SB_I64CONST_I64STORE;$code[]=$c64;$code[]=$r->readU32();$sd--;break;}
                     if(!$r->eof()&&$r->peekByte()===0x83){$r->readByte();$code[]=Op::SB_I64CONST_I64AND;$code[]=$c64;/* net 0 */break;}
-                    $code[]=Op::I64_CONST;$code[]=$c64;$sd++;break;
+                    $code[]=Op::I32_CONST;$code[]=$c64;$sd++;break; // i64.const encoded as I32_CONST (same push semantics)
                 }
-                case 0x43: $code[]=Op::F32_CONST;$code[]=$r->readF32();$sd++;break;
-                case 0x44: $code[]=Op::F64_CONST;$code[]=$r->readF64();$sd++;break;
+                case 0x43: $code[]=Op::I32_CONST;$code[]=$r->readF32();$sd++;break; // f32.const → I32_CONST
+                case 0x44: $code[]=Op::I32_CONST;$code[]=$r->readF64();$sd++;break; // f64.const → I32_CONST
 
                 // ---- i32/i64 comparisons with BRIF peepholes ----
                 // Helper macro (inlined): binary-compare + br_if → [targetIp, spDelta, rCnt]

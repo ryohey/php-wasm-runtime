@@ -86,10 +86,11 @@ final class Op
     public const DATA_DROP = 85;      // segIdx
 
     // ---- Constants ----
-    public const I32_CONST = 90;  // value
-    public const I64_CONST = 91;  // value
-    public const F32_CONST = 92;  // value
-    public const F64_CONST = 93;  // value
+    // NOTE: i64.const/f32.const/f64.const are encoded as I32_CONST in flat bytecode (same push semantics, frees 3 case slots)
+    public const I32_CONST = 90;  // value (also used for i64/f32/f64 consts in flat bytecode)
+    // Values 91-93 repurposed as round-4 super-instructions (profiler-guided, 2026-05-07):
+    public const SB_GGET_ICONST_I32SUB_LTEE_GSET                    = 91; // global.get $g_in + i32.const $c + i32.sub + local.tee $y + global.set $g_out → [g_in,c,y,g_out]  net 0
+    public const SB_ICONST_I32SHL_I32LOAD_ICONST_IADD_BR_TABLE_VOID = 92; // (TOS<<sc) + i32.load $off + i32.const $c + iadd + br_table(void) → [sc,off,c,cnt,(tIp,spD)*(cnt+1)]  net -1
 
     // ---- i32 comparison ----
     public const I32_EQZ = 100;

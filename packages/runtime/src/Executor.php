@@ -356,6 +356,18 @@ final class Executor
                     $sp += $spDelta; $ip = $targetIp;
                     break;
                 }
+                case Op::SB_ICONST_I32SHL_I32LOAD_ICONST_IADD_BR_TABLE_VOID: {
+                    // Format: [shl_c, off, add_c, cnt, (targetIp, spDelta)*(cnt+1)] — (TOS<<shl_c) + i32.load off + add_c + br_table (all-void)
+                    $__shlc = $code[$ip++]; $__off = $code[$ip++]; $__c = $code[$ip++]; $cnt = $code[$ip++];
+                    $__addr = (((int)$stack[--$sp] << ($__shlc & 31)) & 0xFFFFFFFF) + $__off;
+                    if ($__addr < 0 || $__addr + 4 > $blimit) throw Trap::outOfBoundsMemoryAccess();
+                    $idx = (unpack('V', $bytes, $__addr)[1] << 32 >> 32) + $__c;
+                    $base = ($idx >= 0 && $idx < $cnt) ? $ip + $idx * 2 : $ip + $cnt * 2;
+                    $targetIp = $code[$base]; $spDelta = $code[$base + 1];
+                    if ($targetIp === -1) { $retBase = ($retCount > 0 && $sp >= $retCount) ? $sp - $retCount : $sp; break 2; }
+                    $sp += $spDelta; $ip = $targetIp;
+                    break;
+                }
 
                 case Op::CALL: {
                     $fIdx = $code[$ip++];
@@ -621,12 +633,12 @@ final class Executor
                 case Op::GLOBAL_SET: $globals[$code[$ip++]] = $stack[--$sp]; break;
                 case Op::SB_LGET_ICONST_IADD_GSET: { // [x,c,g] — globals[g] = local[x]+c; sp unchanged
                     $globals[$code[$ip+2]] = ((int)$stack[$lbase + $code[$ip]] + $code[$ip+1]) << 32 >> 32; $ip += 3; break; }
+                case Op::SB_GGET_ICONST_I32SUB_LTEE_GSET: { // [g_in,c,y,g_out] — v=(globals[g_in]-c)i32; local[y]=v; globals[g_out]=v
+                    $v=((int)$globals[$code[$ip]]-$code[$ip+1])<<32>>32; $stack[$lbase+$code[$ip+2]]=$v; $globals[$code[$ip+3]]=$v; $ip+=4; break; }
 
                 // ---- Constants ----
                 case Op::I32_CONST: $stack[$sp++] = $code[$ip++]; break;
-                case Op::I64_CONST: $stack[$sp++] = $code[$ip++]; break;
-                case Op::F32_CONST: $stack[$sp++] = $code[$ip++]; break;
-                case Op::F64_CONST: $stack[$sp++] = $code[$ip++]; break;
+                // i64/f32/f64 consts encoded as I32_CONST (same push semantics); freed slots reused for round-4 super-instructions above
 
                 // ---- i32 arithmetic ----
                 // sign32 inline: $stack[]= expr <<32>>32;  (branchless, |0xFFFF| mask no longer needed)
