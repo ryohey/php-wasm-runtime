@@ -1049,6 +1049,12 @@ final class Executor
                                     if($a>$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
                                     break;
                                 }
+                                case Op::SB_LGET_ICONST_I32GTU_BRIF: { // [x,c,targetIp,spDelta,rCnt] — branch if local[x]>c (u32)
+                                    $__x=$code[$ip++];$__c=(int)$code[$ip++];$targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
+                                    $a=((int)$stack[$lbase+$__x])&0xFFFFFFFF;$b=((int)$__c)&0xFFFFFFFF;
+                                    if($a>$b){if($rCnt>0&&$spDelta!==0){$srcBase=$sp-$rCnt;$dstBase=$srcBase+$spDelta;for($__i=0;$__i<$rCnt;$__i++)$stack[$dstBase+$__i]=$stack[$srcBase+$__i];}$sp+=$spDelta;$ip=$targetIp;}
+                                    break;
+                                }
                                 case Op::SB_I64EQ_BRIF: { // [targetIp,spDelta,rCnt]
                                     $targetIp=$code[$ip++];$spDelta=$code[$ip++];$rCnt=$code[$ip++];
                                     $b=(int)$stack[--$sp];$a=(int)$stack[--$sp];

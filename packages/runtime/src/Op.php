@@ -425,4 +425,6 @@ final class Op
     public const SB_ICONST_I32SUB_LTEE               = 429; // iconst $c + i32.sub + local.tee $y → [c,y]  net 0: v=TOS-c; TOS=v; local[y]=v
     public const SB_I32LOAD_ICONST_IADD_BR_TABLE_VOID = 430; // i32.load $off + iconst $c + iadd + br_table(void) → [off,c,cnt,(tIp,spD)*(cnt+1)]  net -1
     public const SB_I32SHR_U_ICONST_I32AND           = 431; // i32.shr_u + iconst $c + i32.and → [c]  net -1: TOS=(TOS[-2]>>u TOS[-1])&c
+    // ---- round-5 (profiler-guided, 2026-05-07) ----
+    public const SB_LGET_ICONST_I32GTU_BRIF = 432; // local.get $x + i32.const $c + i32.gt_u + br_if → [x,c,targetIp,spDelta,rCnt]  net 0: branch if local[x]>c(u32)
 }
